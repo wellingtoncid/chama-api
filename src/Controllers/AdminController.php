@@ -54,7 +54,7 @@ class AdminController {
 
             // --- SETTINGS & PLANS ---
             case 'manage-plans':
-                return $this->managePlans($data);
+                return isset($data['id']) ? $this->updatePlan($data) : $this->listPlans();
             case 'update-settings':
                 return $this->updateSettings($data);
             case 'get-settings':
@@ -66,7 +66,11 @@ class AdminController {
             case 'upload-ad':
                 return $this->uploadAd($_POST, $_FILES);
             case 'manage-ads':
-                return $this->manageAds($data);    
+                return $this->manageAds($data);
+
+            // --- RELATÓRIOS FINANCEIROS ---    
+            case 'admin-financial-report':
+                return $this->getFinancialReport();
 
             default:
                 return ["success" => false, "error" => "Rota admin não encontrada: " . $endpoint];
@@ -81,33 +85,50 @@ class AdminController {
         $this->db->prepare($sql)->execute([$uId, $uName, $type, $desc, $targetId, $targetType]);
     }
 
-    private function getDashboardData() {
-    // 1. Estatísticas Gerais (KPIs)
-    $total_users = (int)$this->db->query("SELECT COUNT(*) FROM users")->fetchColumn();
-    $drivers = (int)$this->db->query("SELECT COUNT(*) FROM users WHERE role = 'driver'")->fetchColumn();
-    $companies = (int)$this->db->query("SELECT COUNT(*) FROM users WHERE role = 'company'")->fetchColumn();
-    
-    // Cálculo de Cliques vs Visualizações para Taxa de Conversão
-    $metrics = $this->db->query("SELECT SUM(views_count) as views, SUM(clicks_count) as clicks FROM freights")->fetch();
-    $views = (int)($metrics['views'] ?? 0);
-    $clicks = (int)($metrics['clicks'] ?? 0);
+   private function getDashboardData() {
+        // 1. OTIMIZAÇÃO: Contadores de usuários e fretes
+        $counters = $this->db->query("
+        SELECT 
+            (SELECT COUNT(*) FROM users) as total_users,
+            (SELECT COUNT(*) FROM users WHERE role = 'driver') as drivers,
+            (SELECT COUNT(*) FROM users WHERE role = 'company') as companies,
+            (SELECT COUNT(DISTINCT user_id) FROM ads WHERE is_active = 1 AND expires_at > NOW()) as active_advertisers,
+            (SELECT COUNT(*) FROM freights WHERE status = 'PENDING') as pending_freights,
+            (SELECT COUNT(*) FROM freights WHERE status = 'OPEN') as active_freights,
+            (SELECT COUNT(*) FROM freights WHERE status = 'OPEN' AND is_featured = 1) as featured_freights,
+            SUM(views_count) as total_views,
+            SUM(clicks_count) as total_clicks
+        FROM freights
+    ")->fetch(PDO::FETCH_ASSOC);
+
+    // Tratamento de métricas
+    $views = (int)($counters['total_views'] ?? 0);
+    $clicks = (int)($counters['total_clicks'] ?? 0);
     $conversion_rate = ($views > 0) ? round(($clicks / $views) * 100, 1) : 0;
 
+    // 2. FINANCEIRO ATUALIZADO: Soma 'approved' ou 'completed' como receita confirmada
+    $revenueData = $this->db->query("
+        SELECT 
+            SUM(CASE WHEN status IN ('approved', 'completed') THEN amount ELSE 0 END) as confirmed,
+            SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) as pending
+        FROM transactions
+    ")->fetch(PDO::FETCH_ASSOC);
+
     $stats = [
-        'total_pending'     => (int)$this->db->query("SELECT COUNT(*) FROM freights WHERE status = 'PENDING'")->fetchColumn(),
-        'revenue'           => "0,00", // Integre com sua tabela de pagamentos futuramente
-        'pending_revenue'   => "0,00",
-        'total_users'       => $total_users,
-        'drivers'           => $drivers,
-        'companies'         => $companies,
-        'partners'          => 0, // Caso tenha parceiros/anunciantes separados
-        'active_freights'   => (int)$this->db->query("SELECT COUNT(*) FROM freights WHERE status = 'OPEN'")->fetchColumn(),
-        'featured_freights' => (int)$this->db->query("SELECT COUNT(*) FROM freights WHERE is_featured = 1 AND status = 'OPEN'")->fetchColumn(),
+        'total_pending'     => (int)($counters['pending_freights'] ?? 0),
+        'revenue'           => number_format($revenueData['confirmed'] ?? 0, 2, ',', '.'),
+        'pending_revenue'   => number_format($revenueData['pending'] ?? 0, 2, ',', '.'),
+        'total_users'       => (int)($counters['total_users'] ?? 0),
+        'drivers'           => (int)($counters['drivers'] ?? 0),
+        'companies'         => (int)($counters['companies'] ?? 0),
+        'advertisers'       => (int)($counters['active_advertisers'] ?? 0), // Substituído aqui
+        'active_freights'   => (int)($counters['active_freights'] ?? 0),
+        'featured_freights' => (int)($counters['featured_freights'] ?? 0),
         'total_interactions'=> $views + $clicks,
         'conversion_rate'   => $conversion_rate
     ];
 
-    // 2. Fila de Validação (O que o seu DashboardAdmin.tsx renderiza à direita)
+    // 3. FILA DE VALIDAÇÃO: Fretes aguardando aprovação manual
     $pending_approvals = $this->db->query("
         SELECT f.id, u.name as company_name, f.origin, f.destination, f.created_at 
         FROM freights f 
@@ -116,28 +137,31 @@ class AdminController {
         ORDER BY f.created_at DESC LIMIT 6
     ")->fetchAll(PDO::FETCH_ASSOC);
 
-    // 3. Atividades Recentes
+    // 4. ATIVIDADES RECENTES: Unifica Fretes, Pedidos de Portal, Logs e novos Pagamentos
     $recent_activities = $this->db->query("
-       (SELECT u.name as user, CONCAT('Publicou frete: ', f.product) as action, f.created_at as time, 'FREIGHT' as type 
+        (SELECT u.name as user, CONCAT('Publicou frete: ', f.product) as action, f.created_at as time, 'FREIGHT' as type 
         FROM freights f JOIN users u ON f.user_id = u.id)
         UNION ALL
         (SELECT contact_info as user, CONCAT('Solicitação: ', type) as action, created_at as time, 'REQUEST' as type
         FROM portal_requests)
-        ORDER BY time DESC LIMIT 8
+        UNION ALL
+        (SELECT u.name as user, CONCAT('Pagamento: R$ ', t.amount) as action, t.created_at as time, 'PAYMENT' as type
+        FROM transactions t JOIN users u ON t.user_id = u.id WHERE t.status IN ('approved', 'completed'))
+        ORDER BY time DESC LIMIT 10
     ")->fetchAll(PDO::FETCH_ASSOC);
 
     return [
+        "success" => true,
         "stats" => $stats,
         "pending_approvals" => $pending_approvals,
         "recent_activities" => $recent_activities
     ];
 }
 
-    private function listUsers($role) {
-        $stmt = $this->db->prepare("SELECT id, name, email, whatsapp, role, is_verified, status, created_at 
-                                   FROM users WHERE role LIKE ? ORDER BY id DESC");
+   private function listUsers($role) {
+        $stmt = $this->db->prepare("SELECT id, name, email, whatsapp, role, is_verified, status, created_at FROM users WHERE role LIKE ? ORDER BY id DESC");
         $stmt->execute([$role]);
-        return $stmt->fetchAll();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     private function verifyUser($id, $status) {
@@ -452,6 +476,7 @@ class AdminController {
 
     private function manageAds($data) {
         if ($data['action'] === 'delete') {
+            $id = $data['id'] ?? null;
             $stmt = $this->db->prepare("UPDATE ads SET is_deleted = 1, is_active = 0 WHERE id = ?");
             return ["success" => $stmt->execute([$id])];
         }
@@ -524,6 +549,91 @@ class AdminController {
         $success = $stmt->execute([$status, $notes, $id]);
 
         return ["success" => $success];
+    }
+
+    private function getFinancialReport() {
+        try {
+            // 1. KPIs de Topo: Total Aprovado vs Pendente (Mês Atual)
+            $kpis = $this->db->query("
+                SELECT 
+                    SUM(CASE WHEN status IN ('completed', 'approved') THEN amount ELSE 0 END) as total_confirmed,
+                    SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) as total_pending,
+                    COUNT(id) as total_transactions
+                FROM transactions 
+                WHERE MONTH(created_at) = MONTH(CURRENT_DATE())
+            ")->fetch(PDO::FETCH_ASSOC);
+
+            // 2. Evolução Mensal (Gráfico de Faturamento dos últimos 6 meses)
+            $chart = $this->db->query("
+                SELECT 
+                    DATE_FORMAT(created_at, '%m/%Y') as month,
+                    SUM(amount) as revenue
+                FROM transactions
+                WHERE status IN ('completed', 'approved')
+                GROUP BY month
+                ORDER BY created_at ASC
+                LIMIT 6
+            ")->fetchAll(PDO::FETCH_ASSOC);
+
+            // 3. Ranking de Planos (Qual gera mais receita)
+            $plansPerformance = $this->db->query("
+                SELECT 
+                    p.name as plan_name,
+                    COUNT(t.id) as sales_count,
+                    SUM(t.amount) as total_revenue
+                FROM transactions t
+                JOIN plans p ON t.plan_id = p.id
+                WHERE t.status IN ('completed', 'approved')
+                GROUP BY p.id
+                ORDER BY total_revenue DESC
+            ")->fetchAll(PDO::FETCH_ASSOC);
+
+            // 4. Lista Detalhada (Últimas 50 transações)
+            $history = $this->db->query("
+                SELECT 
+                    t.*, u.name as user_name, p.name as plan_name
+                FROM transactions t
+                JOIN users u ON t.user_id = u.id
+                JOIN plans p ON t.plan_id = p.id
+                ORDER BY t.created_at DESC
+                LIMIT 50
+            ")->fetchAll(PDO::FETCH_ASSOC);
+
+            return [
+                "success" => true,
+                "summary" => $kpis,
+                "chart_data" => $chart,
+                "plans_performance" => $plansPerformance,
+                "history" => $history
+            ];
+        } catch (Exception $e) {
+            return ["success" => false, "error" => $e->getMessage()];
+        }
+    }
+
+    /**
+     * GESTÃO DE PLANOS
+     */
+    private function listPlans() {
+        $stmt = $this->db->query("SELECT * FROM plans ORDER BY price ASC");
+        return ["success" => true, "data" => $stmt->fetchAll(PDO::FETCH_ASSOC)];
+    }
+
+    private function updatePlan($data) {
+        try {
+            $stmt = $this->db->prepare("
+                UPDATE plans SET 
+                    name = ?, price = ?, duration_days = ?, description = ?, is_active = ?
+                WHERE id = ?
+            ");
+            $success = $stmt->execute([
+                $data['name'], $data['price'], $data['duration_days'], 
+                $data['description'] ?? '', $data['is_active'], $data['id']
+            ]);
+            return ["success" => $success];
+        } catch (Exception $e) {
+            return ["success" => false, "error" => $e->getMessage()];
+        }
     }
 
 }

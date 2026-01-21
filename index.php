@@ -5,14 +5,8 @@ ob_start();
  * 1. CONFIGURAÇÕES DE CORS
  */
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-$allowed_origins = ['http://localhost:5173', 'http://127.0.0.1:5173', 'https://seu-dominio.com'];
-
-if (in_array($origin, $allowed_origins)) {
-    header("Access-Control-Allow-Origin: $origin");
-} else {
-    header("Access-Control-Allow-Origin: http://127.0.0.1:5173");
-}
-
+// Adicionado suporte dinâmico para evitar bloqueios de CORS em produção ou local
+header("Access-Control-Allow-Origin: $origin");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Origin, Accept");
 header("Access-Control-Allow-Credentials: true");
@@ -30,40 +24,43 @@ header("Content-Type: application/json; charset=utf-8");
 require_once __DIR__ . '/vendor/autoload.php';
 
 try {
-    // Carrega o .env se existir
     if (file_exists(__DIR__ . '/.env')) {
         $dotenv = Dotenv\Dotenv::createImmutable(__DIR__); 
         $dotenv->load();
     }
 
+    // Configuração de Erros para Debug (Pode ser desligado em produção)
     ini_set('display_errors', 1); 
     error_reporting(E_ALL);
 
-    // Requisitos de arquivos
+    // Requisitos de arquivos de estrutura
     require_once __DIR__ . '/config/Database.php';
     require_once __DIR__ . '/src/Models/User.php';
+    
+    // Controladores
     require_once __DIR__ . '/src/Controllers/AuthController.php';
     require_once __DIR__ . '/src/Controllers/FreightController.php';
     require_once __DIR__ . '/src/Controllers/AdminController.php'; 
-    require_once __DIR__ . '/src/Controllers/AdController.php'; // NOVO CONTROLLER
-    require_once __DIR__ . '/src/Services/MercadoPagoService.php';
+    require_once __DIR__ . '/src/Controllers/AdController.php';
     require_once __DIR__ . '/src/Controllers/NotificationController.php';
     require_once __DIR__ . '/src/Controllers/ReviewController.php';
     require_once __DIR__ . '/src/Controllers/GroupController.php';
     require_once __DIR__ . '/src/Controllers/UserController.php';
+    require_once __DIR__ . '/src/Services/MercadoPagoService.php';
 
     /**
-     * 3. PREPARAÇÃO DA REQUISIÇÃO
+     * 3. PREPARAÇÃO DA REQUISIÇÃO (CAPTURAR JSON OU FORM-DATA)
      */
     $db = Database::getConnection();
     $method = $_SERVER['REQUEST_METHOD'];
 
+    // Captura o corpo da requisição JSON
     $input = file_get_contents("php://input");
-    $data = json_decode($input, true);
+    $jsonData = json_decode($input, true) ?? [];
 
-    if (!is_array($data)) {
-        $data = array_merge($_GET, $_POST);
-    }
+    // Mescla TUDO para garantir que nada falte: JSON + $_POST (Multipart) + $_GET (Query Params)
+    // Isso é vital para que uploads de imagens funcionem junto com campos de texto
+    $data = array_merge($jsonData, $_POST, $_GET);
 
     // Identificação do Endpoint
     $endpoint = $data['endpoint'] ?? $_GET['endpoint'] ?? null;
@@ -80,7 +77,6 @@ try {
     $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
     $token = str_replace('Bearer ', '', $authHeader);
     
-    // Proteção: não valida se o token for inválido ou strings indesejadas
     $loggedUser = (empty($token) || $token === 'undefined' || $token === 'null') ? null : $auth->validateToken($token);
 
     /**
@@ -97,11 +93,9 @@ try {
 
         case 'freights':
             $controller = new FreightController($db);
-            // Se for GET, passamos o $_GET (que contém a busca)
-            // Se for POST/PUT, passamos o $data (JSON do body)
-            $payload = ($method === 'GET') ? $_GET : $data;
-            echo json_encode($controller->handle($method, $endpoint, $payload, $loggedUser));
+            echo json_encode($controller->handle($method, $endpoint, $data, $loggedUser));
             break;
+
         case 'list-my-freights':
         case 'update-freight':
         case 'delete-freight':
@@ -119,7 +113,6 @@ try {
             echo json_encode($freightCtrl->handle($method, $endpoint, $data, $loggedUser));
             break;
 
-        // NOVA SEÇÃO DE ANÚNCIOS (Utilizando o AdController específico)
         case 'ads':
         case 'upload-ad':
         case 'manage-ads':
@@ -127,10 +120,7 @@ try {
         case 'log-ad-view':
         case 'log-ad-click':
             $adCtrl = new AdController($db);
-            // IMPORTANTE: Para o endpoint 'ads' (GET), precisamos dos dados da URL
-            // Para 'manage-ads' (POST), precisamos do $data (JSON)
-            $payload = ($endpoint === 'ads') ? array_merge($data, $_GET) : $data;
-            echo json_encode($adCtrl->handle($method, $endpoint, $payload));
+            echo json_encode($adCtrl->handle($method, $endpoint, $data));
             break;
 
         case 'groups':
@@ -174,7 +164,7 @@ try {
         case 'webhook-mp':
         case 'webhook-payment':
             $mpService = new MercadoPagoService($db);
-            echo json_encode($mpService->handleNotification($data ?: $_GET));
+            echo json_encode($mpService->handleNotification($data));
             break;
 
         case 'list-notifications':
@@ -199,7 +189,6 @@ try {
             echo json_encode((new UserController($db))->handle($method, $endpoint, $data, $loggedUser));
             break;
 
-        // ÁREA ADMINISTRATIVA
         case 'admin-dashboard-data': 
         case 'admin-stats':
         case 'admin-list-users':
@@ -224,6 +213,22 @@ try {
             }
             break;
 
+        case 'my-services':
+        case 'payment-history':
+            $membership = new MembershipController($db);
+            echo json_encode($membership->handle($method, $endpoint, $data, $loggedUser));
+            break;
+
+        case 'admin-financial-report':
+            // Proteção: Apenas Admins acessam
+            if ($loggedUser['role'] !== 'admin') {
+                echo json_encode(["error" => "Acesso negado"]);
+                exit;
+            }
+            $admin = new AdminController($db);
+            echo json_encode($admin->getFinancialReport());
+            break;
+
         default:
             http_response_code(404);
             echo json_encode(["error" => "Endpoint não encontrado: " . $endpoint]);
@@ -231,7 +236,6 @@ try {
     }
     
 } catch (Throwable $e) {
-    // Captura erros fatais e exceções
     http_response_code(500);
     echo json_encode([
         "error" => "Erro crítico no roteador", 
