@@ -1,4 +1,7 @@
 <?php
+namespace App\Services;
+
+use Exception;
 
 class MercadoPagoService {
     private $db;
@@ -11,31 +14,30 @@ class MercadoPagoService {
         $access_token = $_ENV['MP_ACCESS_TOKEN'] ?? null;
         $baseUrl = $_ENV['BASE_URL'] ?? 'https://chamafrete.com.br';
 
-        if (!$access_token) return ["error" => "Token Mercado Pago não configurado"];
+        if (!$access_token) return ["error" => "Configuração ausente"];
 
-        $plan_id = (int)($data['plan_id'] ?? 0);
+        $plan_id = isset($data['plan_id']) ? (int)$data['plan_id'] : null;
         $freight_id = isset($data['freight_id']) ? (int)$data['freight_id'] : null;
-        
-        // 1. Busca o plano no banco
-        $stmt = $this->db->prepare("SELECT * FROM plans WHERE id = ?");
-        $stmt->execute([$plan_id]);
-        $plan = $stmt->fetch();
+        $listing_id = isset($data['listing_id']) ? (int)$data['listing_id'] : null;
+        $amount = (float)$data['amount'];
+        $title = $data['title'] ?? "Pagamento Chama Frete";
 
-        if (!$plan) return ["error" => "Plano não encontrado"];
-
-        // 2. Cria a transação no banco (Status Pendente) com freight_id se houver
-        $stmt = $this->db->prepare("INSERT INTO transactions (user_id, plan_id, amount, status, freight_id) VALUES (?, ?, ?, 'pending', ?)");
-        $stmt->execute([$user['id'] ?? null, $plan['id'], $plan['price'], $freight_id]);
+        // 1. Registra a transação unificada no banco
+        $stmt = $this->db->prepare("
+            INSERT INTO transactions (user_id, plan_id, freight_id, listing_id, amount, status) 
+            VALUES (?, ?, ?, ?, ?, 'pending')
+        ");
+        $stmt->execute([$user['id'], $plan_id, $freight_id, $listing_id, $amount]);
         $transactionId = $this->db->lastInsertId();
 
-        // 3. Monta a preferência para o Mercado Pago
+        // 2. Monta Preferência
         $preferenceData = [
             "items" => [[
-                "id" => (string)$plan['id'],
-                "title" => "CHAMA FRETE - " . $plan['name'],
+                "id" => (string)($plan_id ?? $listing_id ?? $freight_id),
+                "title" => "CHAMA FRETE - " . $title,
                 "quantity" => 1,
                 "currency_id" => "BRL",
-                "unit_price" => (float)$plan['price']
+                "unit_price" => $amount
             ]],
             "payer" => [
                 "email" => $user['email'],
@@ -44,136 +46,77 @@ class MercadoPagoService {
             "external_reference" => (string)$transactionId,
             "back_urls" => [
                 "success" => "$baseUrl/payment-success",
-                "failure" => "$baseUrl/anuncie",
-                "pending" => "$baseUrl/anuncie"
+                "failure" => "$baseUrl/dashboard",
+                "pending" => "$baseUrl/dashboard"
             ],
             "auto_return" => "approved",
             "notification_url" => "$baseUrl/api/webhook-mp", 
             "binary_mode" => true
         ];
 
-        $ch = curl_init("https://api.mercadopago.com/checkout/preferences");
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            "Authorization: Bearer $access_token",
-            "Content-Type: application/json"
-        ]);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($preferenceData));
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true); 
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2); // Segurança de produção
+        return $this->callMP($preferenceData, $access_token, $transactionId);
+    }
 
-        $rawResponse = curl_exec($ch);
-        $response = json_decode($rawResponse, true);
+    private function callMP($data, $token, $transId) {
+        $ch = curl_init("https://api.mercadopago.com/checkout/preferences");
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer $token", "Content-Type: application/json"]);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $response = json_decode(curl_exec($ch), true);
         curl_close($ch);
 
-        if (!isset($response['init_point'])) {
-            error_log("Erro MP Preference: " . $rawResponse);
-            return ["error" => "Erro ao gerar link de pagamento", "details" => $response];
-        }
-
-        return [
-            "success" => true,
-            "checkout_url" => $response['init_point'],
-            "transaction_id" => $transactionId
-        ];
+        return isset($response['init_point']) 
+            ? ["success" => true, "checkout_url" => $response['init_point'], "transaction_id" => $transId]
+            : ["error" => "Erro MP", "details" => $response];
     }
 
     public function handleNotification($params) {
-        // O MP pode enviar o ID via query param ou body
         $id = $params['data']['id'] ?? $params['id'] ?? null;
-        $type = $params['type'] ?? $params['topic'] ?? null;
-        
-        error_log("Webhook Recebido: Tipo [$type] ID [$id]");
+        if (!$id) return ["status" => "error"];
 
-        // Só buscamos detalhes se for uma notificação de pagamento
-        if ($id && ($type === 'payment' || !$type)) {
-            $access_token = $_ENV['MP_ACCESS_TOKEN'];
-            
-            $ch = curl_init("https://api.mercadopago.com/v1/payments/" . $id);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer $access_token"]);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-            
-            $payment = json_decode(curl_exec($ch), true);
-            curl_close($ch);
+        $access_token = $_ENV['MP_ACCESS_TOKEN'];
+        $ch = curl_init("https://api.mercadopago.com/v1/payments/" . $id);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer $access_token"]);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $payment = json_decode(curl_exec($ch), true);
+        curl_close($ch);
 
-            if (isset($payment['status']) && $payment['status'] === 'approved') {
-                return $this->processCompletion($payment['external_reference']);
-            }
+        if (isset($payment['status']) && $payment['status'] === 'approved') {
+            return $this->processCompletion($payment['external_reference']);
         }
-        return ["status" => "ignored"];
+        return ["status" => "pending"];
     }
 
     private function processCompletion($transId) {
         try {
-            // Busca transação e detalhes do plano
-            $stmt = $this->db->prepare("
-                SELECT t.*, p.type as plan_type, p.duration_days, p.name as plan_name 
-                FROM transactions t 
-                JOIN plans p ON t.plan_id = p.id 
-                WHERE t.id = ? AND t.status = 'pending'
-            ");
+            $stmt = $this->db->prepare("SELECT * FROM transactions WHERE id = ? AND status = 'pending'");
             $stmt->execute([$transId]);
             $trans = $stmt->fetch();
 
-            if ($trans) {
-                $this->db->beginTransaction();
-                
-                // 1. Finaliza a Transação (usamos 'completed' para bater com seu Dashboard)
-                $this->db->prepare("UPDATE transactions SET status = 'completed', paid_at = NOW(), updated_at = NOW() WHERE id = ?")
-                         ->execute([$transId]);
+            if (!$trans) return ["status" => "not_found_or_paid"];
 
-                $type = $trans['plan_type'];
-                $days = (int)$trans['duration_days'];
-                $userId = $trans['user_id'];
-                $freightId = $trans['freight_id'];
+            $this->db->beginTransaction();
 
-                // 2. Liberação de Benefícios
-                switch ($type) {
-                    case 'sidebar':
-                    case 'freight_list':
-                    case 'total':
-                        // Criar anúncio inativo (Admin deve subir a imagem depois)
-                        $this->db->prepare("INSERT INTO ads (user_id, title, is_active, expires_at, position) VALUES (?, ?, 0, DATE_ADD(NOW(), INTERVAL ? DAY), ?)")
-                                 ->execute([$userId, "Anúncio " . $trans['plan_name'], $days, $type]);
-                        break;
+            // 1. Marca como pago
+            $this->db->prepare("UPDATE transactions SET status = 'completed', paid_at = NOW() WHERE id = ?")->execute([$transId]);
 
-                    case 'featured':
-                        if($freightId) {
-                            $this->db->prepare("UPDATE freights SET is_featured = 1, featured_until = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE id = ?")
-                                     ->execute([$days, $freightId]);
-                        }
-                        break;
-
-                    case 'urgent':
-                        if($freightId) {
-                            $this->db->prepare("UPDATE freights SET is_urgent = 1, urgent_until = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE id = ?")
-                                     ->execute([$days, $freightId]);
-                        }
-                        break;
-
-                    case 'combo':
-                        if($freightId) {
-                            $this->db->prepare("UPDATE freights SET is_featured = 1, is_urgent = 1, featured_until = DATE_ADD(NOW(), INTERVAL ? DAY), urgent_until = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE id = ?")
-                                     ->execute([$days, $days, $freightId]);
-                        }
-                        break;
-
-                    case 'driver_verified':
-                        $this->db->prepare("UPDATE users SET is_verified = 1, verified_until = DATE_ADD(NOW(), INTERVAL ? DAY) WHERE id = ?")
-                                 ->execute([$days, $userId]);
-                        break;
-                }
-
-                $this->db->commit();
-                error_log("Pagamento $transId processado com sucesso.");
-                return ["success" => true];
+            // 2. Lógica de Liberação por tipo de alvo
+            if ($trans['listing_id']) {
+                // Ativa Destaque Marketplace (7 dias)
+                $this->db->prepare("UPDATE listings SET is_featured = 1, featured_until = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE id = ?")
+                         ->execute([$trans['listing_id']]);
+            } else if ($trans['plan_id']) {
+                // Lógica de Planos de Assinatura
+                $this->db->prepare("UPDATE users SET plan_type = (SELECT type FROM plans WHERE id = ?), is_subscriber = 1 WHERE id = ?")
+                         ->execute([$trans['plan_id'], $trans['user_id']]);
             }
+
+            $this->db->commit();
+            return ["success" => true];
         } catch (Exception $e) {
-            if ($this->db->inTransaction()) $this->db->rollBack();
-            error_log("Erro Crítico Webhook: " . $e->getMessage());
+            $this->db->rollBack();
+            return ["error" => $e->getMessage()];
         }
-        return ["success" => false];
     }
 }

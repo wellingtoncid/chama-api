@@ -48,6 +48,7 @@ try {
     require_once __DIR__ . '/src/Controllers/UserController.php';
     require_once __DIR__ . '/src/Services/MercadoPagoService.php';
     require_once __DIR__ . '/src/Controllers/ListingsController.php';
+    require_once __DIR__ . '/src/Controllers/PaymentController.php';
 
     /**
      * 3. PREPARAÇÃO DA REQUISIÇÃO (CAPTURAR JSON OU FORM-DATA)
@@ -160,15 +161,31 @@ try {
             }
             break; 
 
-        case 'process-checkout':
-            $mpService = new MercadoPagoService($db);
-            echo json_encode($mpService->createPreference($data, $loggedUser));
+        case 'listings':
+        case 'my-listings':
+        case 'create-listing':
+        case 'update-listing':
+        case 'delete-listing':
+        case 'log-listing-activity':
+            $listingCtrl = new ListingsController($db);
+            echo json_encode($listingCtrl->handle($method, $endpoint, $data, $loggedUser));
             break;
 
+        case 'process-checkout':
+        case 'checkout':
+            $paymentCtrl = new PaymentController($db, new MercadoPagoService($db));
+            if ($method === 'POST') {
+                echo json_encode($paymentCtrl->checkout($data));
+            } else {
+                http_response_code(405);
+                echo json_encode(["error" => "Método não permitido"]);
+            }
+            break;
+            
         case 'webhook-mp':
         case 'webhook-payment':
-            $mpService = new MercadoPagoService($db);
-            echo json_encode($mpService->handleNotification($data));
+            $paymentCtrl = new PaymentController($db, new MercadoPagoService($db));
+            echo json_encode($paymentCtrl->webhook());
             break;
 
         case 'list-notifications':
@@ -195,21 +212,19 @@ try {
 
         case 'my-services':
         case 'payment-history':
+        case 'check-expirations':
             $membership = new MembershipController($db);
             echo json_encode($membership->handle($method, $endpoint, $data, $loggedUser));
             break;
 
-        
-
         case 'admin-financial-report':
-            // Proteção: Apenas Admins acessam
             if (!$loggedUser || strtoupper($loggedUser['role'] ?? '') !== 'ADMIN') {
-                echo json_encode(["error" => "Acesso negado"]);
-                exit;
+                http_response_code(403);
+                echo json_encode(["success" => false, "message" => "Acesso restrito."]);
+            } else {
+                $adminCtrl = new AdminController($db);
+                echo json_encode($adminCtrl->handle($endpoint, $data));
             }
-            $admin = new AdminController($db);
-            echo json_encode($admin->getFinancialReport());
-            break;
 
         case 'admin-dashboard-data': 
         case 'admin-stats':
