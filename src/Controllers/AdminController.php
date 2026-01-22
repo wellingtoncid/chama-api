@@ -67,6 +67,8 @@ class AdminController {
                 // Apenas planos ativos e que NÃO sejam de verificação de motorista (opcional)
                 $stmt = $this->db->query("SELECT * FROM plans WHERE active = 1 AND type != 'driver_verified' ORDER BY price ASC");
                 return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            case 'get-advertising-plans':
+                return $this->getAdvertisingPlans();
 
             // --- ADS MANAGEMENT ---    
             case 'ads':
@@ -690,6 +692,46 @@ class AdminController {
             "last_contact" => date('Y-m-d H:i:s') // Retorna para o front atualizar o "visto por último"
         ];
     }
+
+    public function getAdvertisingPlans() {
+        try {
+            // Busca planos de publicidade ativos
+            $sql = "SELECT * FROM plans WHERE category LIKE 'ad_%' AND active = 1 ORDER BY price ASC";
+            $stmt = $this->db->query($sql);
+            $allPlans = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $formatted = [
+                'Bronze' => ['ids' => [], 'prices' => []],
+                'Prata'  => ['ids' => [], 'prices' => []],
+                'Ouro'   => ['ids' => [], 'prices' => []]
+            ];
+
+            foreach ($allPlans as $plan) {
+                $label = '';
+                if (strpos($plan['category'], 'bronze') !== false) $label = 'Bronze';
+                elseif (strpos($plan['category'], 'silver') !== false) $label = 'Prata';
+                elseif (strpos($plan['category'], 'gold') !== false) $label = 'Ouro';
+
+                if ($label) {
+                    // Mapeia o ciclo baseado na duration_days do seu banco
+                    $days = (int)$plan['duration_days'];
+                    $cycle = 'monthly'; // default
+                    
+                    if ($days > 30 && $days <= 90) $cycle = 'quarterly';
+                    elseif ($days > 90 && $days <= 180) $cycle = 'semiannual';
+                    elseif ($days > 180) $cycle = 'yearly';
+
+                    $formatted[$label]['ids'][$cycle] = (int)$plan['id'];
+                    $formatted[$label]['prices'][$cycle] = (float)$plan['price'];
+                }
+            }
+
+            return $formatted;
+        } catch (Exception $e) {
+            return ["error" => $e->getMessage()];
+        }
+    }
+
     private function getFinancialReport() {
         try {
             // 1. KPIs de Topo: Total Aprovado vs Pendente (Mês Atual)

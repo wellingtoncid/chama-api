@@ -47,17 +47,16 @@ try {
     require_once __DIR__ . '/src/Controllers/GroupController.php';
     require_once __DIR__ . '/src/Controllers/UserController.php';
     require_once __DIR__ . '/src/Services/MercadoPagoService.php';
+    require_once __DIR__ . '/src/Controllers/ListingsController.php';
 
     /**
      * 3. PREPARAÇÃO DA REQUISIÇÃO (CAPTURAR JSON OU FORM-DATA)
      */
     $db = Database::getConnection();
     $method = $_SERVER['REQUEST_METHOD'];
-
     // Captura o corpo da requisição JSON
     $input = file_get_contents("php://input");
     $jsonData = json_decode($input, true) ?? [];
-
     // Mescla TUDO para garantir que nada falte: JSON + $_POST (Multipart) + $_GET (Query Params)
     // Isso é vital para que uploads de imagens funcionem junto com campos de texto
     $data = array_merge($jsonData, $_POST, $_GET);
@@ -84,6 +83,11 @@ try {
      */
     switch ($endpoint) {
         
+        case 'get-advertising-plans':
+            $adminCtrl = new AdminController($db);
+            echo json_encode($adminCtrl->getAdvertisingPlans());
+            break;
+
         case 'login':
         case 'register':
         case 'reset-password': 
@@ -189,6 +193,24 @@ try {
             echo json_encode((new UserController($db))->handle($method, $endpoint, $data, $loggedUser));
             break;
 
+        case 'my-services':
+        case 'payment-history':
+            $membership = new MembershipController($db);
+            echo json_encode($membership->handle($method, $endpoint, $data, $loggedUser));
+            break;
+
+        
+
+        case 'admin-financial-report':
+            // Proteção: Apenas Admins acessam
+            if (!$loggedUser || strtoupper($loggedUser['role'] ?? '') !== 'ADMIN') {
+                echo json_encode(["error" => "Acesso negado"]);
+                exit;
+            }
+            $admin = new AdminController($db);
+            echo json_encode($admin->getFinancialReport());
+            break;
+
         case 'admin-dashboard-data': 
         case 'admin-stats':
         case 'admin-list-users':
@@ -213,22 +235,6 @@ try {
                 $adminCtrl = new AdminController($db);
                 echo json_encode($adminCtrl->handle($endpoint, $data));
             }
-            break;
-
-        case 'my-services':
-        case 'payment-history':
-            $membership = new MembershipController($db);
-            echo json_encode($membership->handle($method, $endpoint, $data, $loggedUser));
-            break;
-
-        case 'admin-financial-report':
-            // Proteção: Apenas Admins acessam
-            if (!$loggedUser || strtoupper($loggedUser['role'] ?? '') !== 'ADMIN') {
-                echo json_encode(["error" => "Acesso negado"]);
-                exit;
-            }
-            $admin = new AdminController($db);
-            echo json_encode($admin->getFinancialReport());
             break;
 
         default:
