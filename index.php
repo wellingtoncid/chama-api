@@ -196,6 +196,8 @@ try {
         case 'admin-audit-logs':
         case 'admin-click-logs':
         case 'admin-portal-requests':
+        case 'admin-update-portal-request':   
+        case 'admin-update-portal-request-details':
         case 'list-all-users':
         case 'manage-users-admin':
         case 'manage-freights-admin':
@@ -221,7 +223,7 @@ try {
 
         case 'admin-financial-report':
             // Proteção: Apenas Admins acessam
-            if ($loggedUser['role'] !== 'admin') {
+            if (!$loggedUser || strtoupper($loggedUser['role'] ?? '') !== 'ADMIN') {
                 echo json_encode(["error" => "Acesso negado"]);
                 exit;
             }

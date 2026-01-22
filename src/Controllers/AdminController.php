@@ -24,6 +24,10 @@ class AdminController {
             // --- PORTAL REQUESTS (LEADS & COMUNIDADES) ---
             case 'admin-portal-requests':
                 return $this->getPortalRequests($data);
+            case 'admin-update-portal-request-details': 
+                return $this->updatePortalRequestDetails($data);
+            case 'update-lead-note':
+                return $this->updateLeadNote($data);
             case 'admin-update-portal-request':
                 return $this->updatePortalRequest($data);
             case 'portal-request':
@@ -54,11 +58,15 @@ class AdminController {
 
             // --- SETTINGS & PLANS ---
             case 'manage-plans':
-                return isset($data['id']) ? $this->updatePlan($data) : $this->listPlans();
+                return $this->managePlans($data);
             case 'update-settings':
                 return $this->updateSettings($data);
             case 'get-settings':
                 return $this->getSettings();
+            case 'get-public-plans':
+                // Apenas planos ativos e que NÃO sejam de verificação de motorista (opcional)
+                $stmt = $this->db->query("SELECT * FROM plans WHERE active = 1 AND type != 'driver_verified' ORDER BY price ASC");
+                return $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             // --- ADS MANAGEMENT ---    
             case 'ads':
@@ -96,6 +104,8 @@ class AdminController {
             (SELECT COUNT(*) FROM freights WHERE status = 'PENDING') as pending_freights,
             (SELECT COUNT(*) FROM freights WHERE status = 'OPEN') as active_freights,
             (SELECT COUNT(*) FROM freights WHERE status = 'OPEN' AND is_featured = 1) as featured_freights,
+            (SELECT COUNT(*) FROM portal_requests WHERE status = 'pending') as pending_leads,
+            (SELECT COUNT(*) FROM portal_requests WHERE priority = 1 AND status = 'pending') as hot_leads,
             SUM(views_count) as total_views,
             SUM(clicks_count) as total_clicks
         FROM freights
@@ -121,9 +131,11 @@ class AdminController {
         'total_users'       => (int)($counters['total_users'] ?? 0),
         'drivers'           => (int)($counters['drivers'] ?? 0),
         'companies'         => (int)($counters['companies'] ?? 0),
-        'advertisers'       => (int)($counters['active_advertisers'] ?? 0), // Substituído aqui
+        'advertisers'       => (int)($counters['active_advertisers'] ?? 0), 
         'active_freights'   => (int)($counters['active_freights'] ?? 0),
         'featured_freights' => (int)($counters['featured_freights'] ?? 0),
+        'pending_leads' => (int)($counters['pending_leads'] ?? 0),
+        'hot_leads'     => (int)($counters['hot_leads'] ?? 0),
         'total_interactions'=> $views + $clicks,
         'conversion_rate'   => $conversion_rate
     ];
@@ -302,22 +314,36 @@ class AdminController {
                                 LEFT JOIN users u ON f.user_id = u.id ORDER BY f.created_at DESC")->fetchAll();
     }
 
-    private function managePlans($data) {
-        $action = $data['action'] ?? '';
-        if ($action === 'save') {
-            if (isset($data['id']) && $data['id'] > 0) {
-                $sql = "UPDATE plans SET name=?, type=?, price=?, duration_days=?, description=? WHERE id=?";
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute([$data['name'], $data['type'], $data['price'], $data['duration_days'], $data['description'] ?? '', $data['id']]);
+   private function managePlans($data) {
+        $action = $data['action'] ?? 'list'; // Se não vier ação, ele lista
+
+        try {
+            if ($action === 'save') {
+                if (isset($data['id']) && $data['id'] > 0) {
+                    $sql = "UPDATE plans SET name=?, type=?, price=?, duration_days=?, description=? WHERE id=?";
+                    $stmt = $this->db->prepare($sql);
+                    $stmt->execute([$data['name'], $data['type'], $data['price'], $data['duration_days'], $data['description'] ?? '', $data['id']]);
+                } else {
+                    $sql = "INSERT INTO plans (name, type, price, duration_days, description, active) VALUES (?, ?, ?, ?, ?, 1)";
+                    $stmt = $this->db->prepare($sql);
+                    $stmt->execute([$data['name'], $data['type'], $data['price'], $data['duration_days'], $data['description'] ?? '']);
+                }
+                return ["success" => true, "message" => "Plano salvo com sucesso"];
+
+            } elseif ($action === 'delete') {
+                // Em vez de deletar fisicamente, desativamos (é mais seguro para o histórico financeiro)
+                $this->db->prepare("UPDATE plans SET active = 0 WHERE id = ?")->execute([$data['id']]);
+                return ["success" => true, "message" => "Plano desativado"];
+
             } else {
-                $sql = "INSERT INTO plans (name, type, price, duration_days, description, active) VALUES (?, ?, ?, ?, ?, 1)";
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute([$data['name'], $data['type'], $data['price'], $data['duration_days'], $data['description'] ?? '']);
+                // AÇÃO: LISTAR (Padrão)
+                // Trazemos todos, inclusive os inativos, para o Admin poder reativar se quiser
+                $stmt = $this->db->query("SELECT * FROM plans ORDER BY price ASC");
+                return $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
-        } elseif ($action === 'delete') {
-            $this->db->prepare("UPDATE plans SET active = 0 WHERE id = ?")->execute([$data['id']]);
+        } catch (Exception $e) {
+            return ["success" => false, "error" => $e->getMessage()];
         }
-        return ["success" => true];
     }
 
     private function updateSettings($data) {
@@ -503,8 +529,25 @@ class AdminController {
 
     private function storePortalRequest($data) {
         try {
-            $sql = "INSERT INTO portal_requests (type, title, link, contact_info, status, description) 
-                    VALUES (?, ?, ?, ?, 'pending', ?)";
+            // --- NOVO: LÓGICA DE PRIORIDADE (LEAD SCORING) ---
+            // Definimos como prioridade 1 (Quente 🔥) se:
+            // 1. For do tipo anúncio E
+            // 2. Tiver uma descrição longa (> 50 caracteres) OU tiver um link preenchido
+            $priority = 0;
+            $isBusinessAd = (isset($data['type']) && $data['type'] === 'business_ad');
+            
+            if ($isBusinessAd) {
+                $hasLongDesc = isset($data['description']) && strlen($data['description']) > 50;
+                $hasLink = !empty($data['link']);
+                
+                if ($hasLongDesc || $hasLink) {
+                    $priority = 1;
+                }
+            }
+
+            // SQL atualizado para incluir a coluna 'priority'
+            $sql = "INSERT INTO portal_requests (type, title, link, contact_info, status, description, priority) 
+                    VALUES (?, ?, ?, ?, 'pending', ?, ?)";
             
             $stmt = $this->db->prepare($sql);
             $success = $stmt->execute([
@@ -512,10 +555,81 @@ class AdminController {
                 $data['title'] ?? null,
                 $data['link'] ?? null,
                 $data['contact_info'] ?? null,
-                $data['description'] ?? null
+                $data['description'] ?? null,
+                $priority // Novo campo salvo no banco
             ]);
 
+            if ($success) {
+                // Prepara a mensagem para o alerta com indicador de prioridade
+                $emoji = ($priority === 1) ? "🔥" : "🔔";
+                $typeLabel = $isBusinessAd ? "NOVO LEAD DE ANÚNCIO" : "NOVA SOLICITAÇÃO";
+                
+                $msg = "{$emoji} *{$typeLabel}*\n\n";
+                $msg .= "*Empresa:* " . ($data['title'] ?? 'Não informada') . "\n";
+                $msg .= "*Prioridade:* " . ($priority === 1 ? 'ALTA (Quente) 🔥' : 'Normal') . "\n";
+                $msg .= "*Contato:* " . ($data['contact_info'] ?? 'Não informado') . "\n";
+                $msg .= "*Mensagem:* " . ($data['description'] ?? 'Sem mensagem') . "\n\n";
+                $msg .= "📱 _Gerencie no seu novo Painel CRM._";
+
+                // Dispara a notificação gratuita via Telegram
+                $notif = new NotificationController($this->db);
+                $notif->sendFreeAlert($msg); 
+            }
+
             return ["success" => $success];
+        } catch (Exception $e) {
+            return ["success" => false, "error" => $e->getMessage()];
+        }
+    }
+
+    public function updateLeadNote($data) {
+        $sql = "UPDATE portal_requests SET notes = ?, last_contact = NOW() WHERE id = ?";
+        $stmt = $this->db->prepare($sql);
+        return ["success" => $stmt->execute([$data['notes'], $data['id']])];
+    }
+
+   public function updatePortalRequestDetails($data) {
+        try {
+            if (!isset($data['id'])) {
+                return ["success" => false, "message" => "ID do lead não fornecido."];
+            }
+
+            $id = $data['id'];
+            $status = $data['status'] ?? 'pending';
+            $notes = $data['notes'] ?? null;
+
+            // Buscamos o estado atual para comparar se as notas mudaram
+            $stmtCheck = $this->db->prepare("SELECT notes FROM portal_requests WHERE id = ?");
+            $stmtCheck->execute([$id]);
+            $current = $stmtCheck->fetch();
+
+            // Se a nota enviada for diferente da nota atual, atualizamos o 'last_contact'
+            $shouldUpdateContactDate = ($notes !== ($current['notes'] ?? null));
+
+            if ($shouldUpdateContactDate) {
+                $sql = "UPDATE portal_requests 
+                        SET status = ?, 
+                            notes = ?, 
+                            last_contact = NOW() 
+                        WHERE id = ?";
+                $params = [$status, $notes, $id];
+            } else {
+                $sql = "UPDATE portal_requests 
+                        SET status = ?, 
+                            notes = ? 
+                        WHERE id = ?";
+                $params = [$status, $notes, $id];
+            }
+
+            $stmt = $this->db->prepare($sql);
+            $success = $stmt->execute($params);
+
+            return [
+                "success" => $success,
+                "message" => $success ? "Lead atualizado com sucesso" : "Erro ao atualizar",
+                "last_contact" => $shouldUpdateContactDate ? date('Y-m-d H:i:s') : null
+            ];
+
         } catch (Exception $e) {
             return ["success" => false, "error" => $e->getMessage()];
         }
@@ -524,13 +638,17 @@ class AdminController {
     private function getPortalRequests($data) {
         $status = $data['status'] ?? '%';
         $type = $data['type'] ?? '%';
+        $search = isset($data['search']) ? "%{$data['search']}%" : '%';
 
+        // Ordenação: 1º Prioridade (1 antes de 0), 2º Data de criação
         $sql = "SELECT * FROM portal_requests 
-                WHERE status LIKE ? AND type LIKE ? 
-                ORDER BY created_at DESC";
+                WHERE status LIKE ? 
+                AND type LIKE ? 
+                AND (title LIKE ? OR contact_info LIKE ? OR description LIKE ?)
+                ORDER BY priority DESC, created_at DESC";
         
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$status, $type]);
+        $stmt->execute([$status, $type, $search, $search, $search]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
@@ -539,18 +657,39 @@ class AdminController {
      */
     private function updatePortalRequest($data) {
         $id = $data['id'] ?? null;
-        $status = $data['status'] ?? 'analyzed';
-        $notes = $data['admin_notes'] ?? null;
+        $action = $data['action'] ?? 'update'; // 'update' ou 'delete'
 
-        if (!$id) return ["success" => false, "error" => "ID necessário"];
+        if (!$id) {
+            return ["success" => false, "error" => "ID necessário"];
+        }
 
-        $sql = "UPDATE portal_requests SET status = ?, admin_notes = ? WHERE id = ?";
+        // 1. Lógica de Exclusão
+        if ($action === 'delete') {
+            $sql = "DELETE FROM portal_requests WHERE id = ?";
+            $stmt = $this->db->prepare($sql);
+            $success = $stmt->execute([$id]);
+            return ["success" => $success, "message" => "Lead removido com sucesso"];
+        }
+
+        // 2. Lógica de Atualização (CRM)
+        $status = $data['status'] ?? 'pending';
+        $notes  = $data['notes'] ?? null;
+        
+        // Atualizamos o status, as notas e a data do último contato
+        $sql = "UPDATE portal_requests 
+                SET status = ?, 
+                    notes = ?, 
+                    last_contact = NOW() 
+                WHERE id = ?";
+                
         $stmt = $this->db->prepare($sql);
         $success = $stmt->execute([$status, $notes, $id]);
 
-        return ["success" => $success];
+        return [
+            "success" => $success,
+            "last_contact" => date('Y-m-d H:i:s') // Retorna para o front atualizar o "visto por último"
+        ];
     }
-
     private function getFinancialReport() {
         try {
             // 1. KPIs de Topo: Total Aprovado vs Pendente (Mês Atual)
