@@ -1,0 +1,208 @@
+<?php
+namespace App\Controllers;
+
+use App\Core\Response;
+use App\Core\Auth;
+use App\Repositories\UserRepository;
+use Exception;
+
+class ProfileController {
+    private $userRepo;
+
+    public function __construct($db) {
+        $this->userRepo = new UserRepository($db);
+    }
+
+    public function me() {
+        $user = Auth::user();
+        $profile = $this->userRepo->getProfileData($user['id']);
+        
+        if (!$profile) return Response::json(["success" => false, "message" => "Perfil não encontrado"], 404);
+
+        // Decodifica os atributos extras para o Front-end ler como objeto JS
+        if (!empty($profile['extended_attributes'])) {
+            $profile['extras'] = json_decode($profile['extended_attributes'], true);
+        }
+
+        return Response::json(["success" => true, "data" => $profile]);
+    }
+
+    public function update($data) {
+        $user = Auth::user();
+        
+        try {
+            // 1. Prepara Atributos Baseados no Role (Motorista ou Empresa)
+            $extraAttributes = $this->prepareExtraAttributes($user['role'], $data);
+
+            $updateData = [
+                'bio' => $data['bio'] ?? null,
+                'avatar_url' => $data['avatar_url'] ?? null,
+                'company_name' => $data['company_name'] ?? null,
+                'extended_attributes' => !empty($extraAttributes) ? json_encode($extraAttributes) : null
+            ];
+
+            $this->userRepo->updateProfile($user['id'], $updateData);
+
+            return Response::json(["success" => true, "message" => "Perfil atualizado!"]);
+        } catch (Exception $e) {
+            return Response::json(["success" => false, "message" => $e->getMessage()], 500);
+        }
+    }
+
+    public function uploadAvatar() {
+        $user = Auth::user();
+        $file = $_FILES['avatar'] ?? null;
+
+        if (!$file) return Response::json(["success" => false, "message" => "Arquivo não enviado"], 400);
+
+        // Validação simples de imagem
+        $allowed = ['image/jpeg', 'image/png', 'image/webp'];
+        if (!in_array($file['type'], $allowed)) {
+            return Response::json(["success" => false, "message" => "Formato inválido"], 400);
+        }
+
+        // Simulação de salvamento (Poderia usar um StorageService)
+        $fileName = "avatar_" . $user['id'] . "_" . time() . ".webp";
+        $uploadPath = __DIR__ . "/../../public/uploads/avatars/" . $fileName;
+
+        if (move_uploaded_file($file['tmp_name'], $uploadPath)) {
+            $url = "/uploads/avatars/" . $fileName;
+            $this->userRepo->updateProfile($user['id'], ['avatar_url' => $url]);
+            return Response::json(["success" => true, "url" => $url]);
+        }
+
+        return Response::json(["success" => false, "message" => "Erro no upload"], 500);
+    }
+
+    private function prepareExtraAttributes($role, $data) {
+        $extra = [];
+        $role = strtoupper($role);
+
+        if ($role === 'DRIVER') {
+            $fields = ['vehicle_type', 'license_plate', 'capacity', 'body_type'];
+            foreach ($fields as $f) if (isset($data[$f])) $extra[$f] = $data[$f];
+        }
+
+        if (in_array($role, ['COMPANY', 'SHIPPER'])) {
+            $fields = ['website', 'cnpj', 'foundation_date'];
+            foreach ($fields as $f) if (isset($data[$f])) $extra[$f] = $data[$f];
+        }
+
+        return $extra;
+    }
+
+    public function updateQuickProfile($data) {
+        $user = Auth::user();
+        if (!$user) {
+            return Response::json(["success" => false, "message" => "Sessão expirada."], 401);
+        }
+
+        // Limpeza de strings
+        $document = preg_replace('/\D/', '', $data['document'] ?? '');
+        $phone = preg_replace('/\D/', '', $data['whatsapp'] ?? '');
+        $displayName = strip_tags($data['display_name'] ?? '');
+        $role = strtolower($user['role'] ?? '');
+
+        // 1. REGRA RESTRITA: Empresa SÓ PODE CNPJ (14 dígitos)
+        $isCompanyRole = in_array($role, ['company', 'shipper', 'transportadora']);
+        
+        if ($isCompanyRole) {
+            if (strlen($document) !== 14) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => "Empresas devem obrigatoriamente informar um CNPJ válido (14 dígitos)."
+                ], 400);
+            }
+        } else {
+            // Motorista pode ser CPF (11) ou CNPJ (14)
+            if (strlen($document) !== 11 && strlen($document) !== 14) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => "Documento deve ser um CPF ou CNPJ válido."
+                ], 400);
+            }
+        }
+
+        // 2. Validação Matemática de CPF/CNPJ (Sua função interna)
+        if (!$this->isValidDocument($document)) {
+            return Response::json(["success" => false, "message" => "O número do documento informado é inválido."], 400);
+        }
+
+        if (strlen($phone) < 10) {
+            return Response::json(["success" => false, "message" => "WhatsApp inválido."], 400);
+        }
+
+        try {
+            $this->db->beginTransaction(); // Iniciando transação
+
+            // Se for empresa, o 'display_name' do front vai para o 'company_name' na tabela companies
+            // Mas no 'users.name' guardamos o nome do operador (ou o mesmo nome se preferir)
+            $userData = [
+                'name' => $isCompanyRole ? ($user['name'] ?: $displayName) : $displayName,
+                'phone' => $phone,
+                'document' => $document,
+                'is_verified' => 1 // Ativa o selo de verificação
+            ];
+
+            $profileData = [
+                'city' => strip_tags($data['city'] ?? ''),
+                'state' => strtoupper(substr($data['state'] ?? '', 0, 2))
+            ];
+
+            // Atualiza Users e User_Profiles
+            $this->userRepo->saveQuickProfile($user['id'], $userData, $profileData);
+
+            // Se for empresa, vincula ou cria na tabela 'companies'
+            if ($isCompanyRole) {
+                // O linkOrCreateCompany deve atualizar o company_name baseado no $displayName vindo do front
+                $this->userRepo->linkOrCreateCompany($user['id'], $displayName, $document);
+            }
+
+            $this->db->commit();
+
+            // Busca dados atualizados (Certifique-se que o getProfileData faz o JOIN com companies)
+            $updatedUser = $this->userRepo->getProfileData($user['id']);
+
+            return Response::json([
+                "success" => true,
+                "message" => "Perfil verificado com sucesso!",
+                "user" => $updatedUser
+            ]);
+
+        } catch (Exception $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            return Response::json([
+                "success" => false, 
+                "message" => "Erro ao processar: " . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    private function isValidDocument($doc) {
+        if (strlen($doc) == 11) return $this->validateCPF($doc);
+        if (strlen($doc) == 14) return $this->validateCNPJ($doc);
+        return false;
+    }
+
+    private function validateCPF($cpf) {
+        if (preg_match('/(\d)\1{10}/', $cpf)) return false;
+        for ($t = 9; $t < 11; $t++) {
+            for ($d = 0, $c = 0; $c < $t; $c++) $d += $cpf[$c] * (($t + 1) - $c);
+            $d = ((10 * $d) % 11) % 10;
+            if ($cpf[$c] != $d) return false;
+        }
+        return true;
+    }
+
+    private function validateCNPJ($cnpj) {
+        if (preg_match('/(\d)\1{13}/', $cnpj)) return false;
+        $b = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+        for ($i = 0, $n = 0; $i < 12; $n += $cnpj[$i] * $b[++$i]);
+        if ($cnpj[12] != ((($n %= 11) < 2) ? 0 : 11 - $n)) return false;
+        for ($i = 0, $n = 0; $i <= 12; $n += $cnpj[$i] * $b[$i++]);
+        if ($cnpj[13] != ((($n %= 11) < 2) ? 0 : 11 - $n)) return false;
+        return true;
+    }
+}

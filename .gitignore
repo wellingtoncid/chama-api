@@ -1,0 +1,53 @@
+# --- DEPENDÊNCIAS (COMPOSER) ---
+# Jamais suba a pasta vendor, ela é baixada via 'composer install'
+/vendor/
+
+# --- AMBIENTE E SEGURANÇA (CRÍTICO) ---
+.env
+.env.local
+.env.testing
+.env.production
+.env.php
+config.local.php
+*.key
+*.pem
+
+# --- XAMPP E SERVIDOR ---
+# Ignora arquivos de configuração do Apache que podem variar por máquina
+.htaccess (se você tiver um específico para produção, ignore o local)
+error_log
+access_log
+php_errors.log
+
+# --- BANCO DE DATOS ---
+# Evita subir dumps de SQL ou bases SQLite do XAMPP
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+
+# --- FERRAMENTAS DE TESTE E CACHE ---
+.phpunit.result.cache
+.phpunit.cache/
+/coverage/
+.php-cs-fixer.cache
+
+# --- EDITORES E SISTEMA ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- TEMPORÁRIOS E UPLOADS ---
+# Se o seu sistema salva fotos ou PDFs de usuários localmente:
+/storage/*.log
+/storage/framework/cache/
+/storage/framework/sessions/
+/storage/framework/views/
+/public/storage
+/public/uploads/*
+# Mantém a pasta de uploads mas ignora os arquivos dentro dela
+!/public/uploads/.gitkeep
