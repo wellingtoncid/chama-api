@@ -60,7 +60,11 @@ class FreightRepository {
             $params[':fav_id'] = $viewerId;
 
             // 3. Contagem Total
-            $sqlCount = "SELECT COUNT(DISTINCT f.id) FROM freights f LEFT JOIN users u ON f.user_id = u.id $where";
+            $sqlCount = "SELECT COUNT(DISTINCT f.id) 
+                        FROM freights f 
+                        LEFT JOIN users u ON f.user_id = u.id 
+                        LEFT JOIN companies c ON c.owner_id = u.id
+                        $where";
             $stmtCount = $this->db->prepare($sqlCount);
             // BIND INTELIGENTE: Só vincula o que existe no $where
             foreach ($params as $key => $val) {
@@ -73,7 +77,7 @@ class FreightRepository {
 
             $sql = "SELECT 
                     f.*, 
-                    u.name as company_name, 
+                    COALESCE(c.name_fantasy, u.name) as company_name,
                     p.avatar_url,
                     -- 1. Cliques de WhatsApp (Leads Reais)
                     (SELECT COUNT(*) FROM click_logs 
@@ -96,6 +100,7 @@ class FreightRepository {
 
                 FROM freights f 
                 LEFT JOIN users u ON f.user_id = u.id 
+                LEFT JOIN companies c ON c.owner_id = u.id 
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 LEFT JOIN favorites fav ON f.id = fav.target_id 
                     AND fav.target_type = 'FREIGHT' 
@@ -213,6 +218,12 @@ class FreightRepository {
     }
     
     public function update($id, $data) {
+        // 1. Removemos o slug do array de dados se ele existir
+        // Isso impede que o slug seja alterado mesmo que o nome do produto mude
+        if (isset($data['slug'])) {
+            unset($data['slug']);
+        }
+
         $fields = "";
         foreach ($data as $key => $value) {
             $fields .= "{$key} = :{$key}, ";
@@ -224,7 +235,7 @@ class FreightRepository {
         $data['id'] = (int)$id;
         return $this->db->prepare($sql)->execute($data);
     }
-
+ 
     /**
      * Registra métricas de visualização e cliques de forma otimizada.
      */
@@ -772,7 +783,7 @@ class FreightRepository {
                             u.phone as user_phone_raw,
                             u.email as user_email,
                             u.user_type,
-                            u.rating_avg as user_rating_avg,
+                            u.rating_avg,
                             p.avatar_url, 
                             p.verification_status,
                             c.name_fantasy as company_name_fantasy
@@ -792,87 +803,59 @@ class FreightRepository {
                     ? $user['company_name_fantasy'] 
                     : $user['user_real_name'];
 
+                $rating = (float)$user['rating_avg'];
+                $freight['owner_rating'] = ($rating <= 0) ? 5.0 : round($rating, 1);
+
                 // 2. Mapeamento de Contato (Vital para o WhatsApp)
                 // Na sua tabela, os dados estão em 'whatsapp'. Vamos garantir que isso chegue no format
-                $freight['owner_whatsapp_field'] = !empty($user['user_whatsapp_raw']) 
+                $freight['owner_whatsapp_field'] = !empty($user['user_whatsapp_raw'])
                     ? $user['user_whatsapp_raw'] 
                     : (!empty($user['user_phone_raw']) ? $user['user_phone_raw'] : '');
 
                 // 3. Dados Complementares
                 $freight['avatar_url'] = $user['avatar_url'];
-                $freight['owner_rating'] = $user['user_rating_avg'];
                 $freight['owner_verified'] = $user['verification_status'];
                 $freight['user_type'] = $user['user_type'];
             }
+
+            return $this->formatFreightData($freight);
+
         } catch (\Exception $e) {
             error_log("❌ ERRO attachOwnerData: " . $e->getMessage());
         }
-        
-        return $this->formatFreightData($freight);
     }
 
     /**
      * Formata e normaliza os dados para o Front-end (React).
      */
-    private function formatFreightData($result) {
-        if (!$result) return null;
+    private function formatFreightData($f) {
+        // Garante que campos numéricos sejam retornados com o tipo correto
+        $f['id'] = (int)$f['id'];
+        $f['user_id'] = (int)$f['user_id'];
+        $f['weight'] = (float)($f['weight'] ?? 0);
+        $f['price'] = (float)($f['price'] ?? 0);
+        $f['is_featured'] = (bool)($f['is_featured'] ?? false);
+        $f['owner_rating'] = (float)($f['owner_rating'] ?? 5.0);
+        
+        // Inteligência de Contato: Prioriza o WhatsApp direto do frete,
+        // caso contrário usa o do perfil do proprietário.
+        $f['display_phone'] = !empty($f['whatsapp']) 
+            ? $f['whatsapp'] 
+            : ($f['owner_whatsapp_field'] ?? '');
 
-        // --- 1. WHATSAPP E CONTATO (Onde estava o erro) ---
-        // Busca o número em todas as chaves possíveis para garantir o envio
-        $rawContact = !empty($result['owner_whatsapp_field']) ? $result['owner_whatsapp_field'] : '';
-                    (!empty($result['user_phone']) ? $result['user_phone'] : 
-                    (!empty($result['user_whatsapp']) ? $result['user_whatsapp'] : ''));
+        // Formatação de Datas
+        if (!empty($f['created_at'])) {
+            $f['created_at_formatted'] = date('d/m/Y H:i', strtotime($f['created_at']));
+        }
         
-        // Limpeza rigorosa: mantém apenas números
-        $clean = preg_replace('/[^0-9]/', '', $rawContact);
-        
-        // Se o número tiver 10 ou 11 dígitos (DDD + número), adiciona o DDI 55 (Brasil)
-        if (!empty($clean) && (strlen($clean) === 10 || strlen($clean) === 11)) {
-            $clean = '55' . $clean;
+        if (!empty($f['expires_at'])) {
+            $f['is_expired'] = strtotime($f['expires_at']) < time();
         }
 
-        $result['contact_phone_clean'] = $clean;
-        $result['contact_phone_display'] = $this->formatPhoneNumber($rawContact);
+        // Limpeza de campos auxiliares internos
+        unset($f['owner_whatsapp_field']);
 
-        // --- 2. LÓGICA DE VALIDADE ---
-        $expiresAt = !empty($result['expires_at']) ? strtotime($result['expires_at']) : null;
-        $result['is_expired'] = ($expiresAt && $expiresAt < time());
-        
-        $result['is_deleted_logic'] = (
-            ($result['is_deleted'] ?? 0) == 1 || 
-            !empty($result['deleted_at'])
-        );
-
-        // --- 3. PERMISSÃO DE CONTATO ---
-        $status = strtoupper($result['status'] ?? '');
-        $result['can_contact'] = (
-            $status === 'OPEN' && 
-            !$result['is_expired'] && 
-            !$result['is_deleted_logic']
-        );
-
-        // --- 4. IDENTIDADE DO ANUNCIANTE ---
-        // Ordem de prioridade: Nome Fantasia > Nome do Usuário > Texto Padrão
-        $result['company_name'] = !empty($result['company_name_fantasy']) 
-            ? $result['company_name_fantasy'] 
-            : (!empty($result['user_name']) ? $result['user_name'] : "Anunciante Chama Frete");
-
-        // Rating (Garante que seja um número formatado, ex: 4.5)
-        $result['owner_rating'] = number_format((float)($result['rating_avg'] ?? 5.0), 1);
-        
-        // Verificação (Booleano para o Front-end mostrar o selo azul)
-        $vStatus = strtolower($result['owner_verified'] ?? '');
-        $result['is_owner_verified'] = in_array($vStatus, ['verified', 'approved', 'success']);
-
-        // --- 5. TIPAGEM PARA O JSON ---
-        // Forçar tipos evita que o React receba strings em vez de números
-        $result['id'] = (int)$result['id'];
-        $result['user_id'] = (int)$result['user_id'];
-        $result['price'] = (float)($result['price'] ?? 0);
-        $result['weight'] = (float)($result['weight'] ?? 0);
-        $result['is_featured'] = (int)($result['is_featured'] ?? 0);
-
-        return $result;
+        return $f;
     }
 
     /**
@@ -889,31 +872,12 @@ class FreightRepository {
     }
 
     private function generateSlug($text, $id) {
-        // 1. Converte para UTF-8 caso venha em outro formato e remove acentos manualmente
-        // O uso de matriz de substituição é mais confiável que iconv em diferentes servidores
-        $a = 'ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ';
-        $b = 'AAAAAAACEEEEIIIIDNOOOOOOUUUUYBsaaaaaaaceeeeiiiidnoooooouuuuyby';
-        $text = strtr(utf8_decode($text), utf8_decode($a), $b);
-        
-        // 2. Converte para minúsculo
-        $text = strtolower($text);
-
-        // 3. Remove caracteres que não são letras, números ou espaços
-        $text = preg_replace('/[^a-z0-9\s-]/', '', $text);
-
-        // 4. Transforma espaços e múltiplos hífens em um único hífen
-        $text = preg_replace('/[\s-]+/', '-', $text);
-
-        // 5. Trim de hífens nas extremidades
+        $text = preg_replace('~[^\pL\d]+~u', '-', $text);
+        $text = iconv('utf-8', 'us-ascii//TRANSLIT', $text);
+        $text = preg_replace('~[^-\w]+~', '', $text);
         $text = trim($text, '-');
-
-        // 6. Fallback caso o texto fique vazio
-        if (empty($text)) {
-            $text = 'frete';
-        }
-
-        // 7. Sufixo de ID para garantir unicidade sem precisar consultar o banco
-        return $text . '-' . $id; 
+        $text = strtolower($text);
+        return $text . '-' . $id;
     }
 
     public function softDelete($id, $userId) {
@@ -987,5 +951,18 @@ class FreightRepository {
     public function resetTestMetrics($freightId) {
         $sql = "DELETE FROM click_logs WHERE target_id = :id AND target_type = 'FREIGHT'";
         return $this->db->prepare($sql)->execute([':id' => $freightId]);
+    }
+
+    public function getUserStats($userId) {
+        $sql = "SELECT 
+                    COUNT(id) as total_active_freights,
+                    IFNULL(SUM(views_count), 0) as global_views,
+                    IFNULL(SUM(clicks_count), 0) as global_clicks
+                FROM freights 
+                WHERE user_id = :u_id AND deleted_at IS NULL";
+                
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':u_id' => (int)$userId]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC);
     }
 }

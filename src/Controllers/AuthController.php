@@ -134,11 +134,18 @@ class AuthController {
                 'whatsapp'  => $whatsapp,
                 'role'      => $role,      // Salva 'driver'
                 'user_type' => $userType,  // Salva 'motorista' ou 'empresa'
-                'password'  => password_hash($password, PASSWORD_BCRYPT)
+                'password'  => password_hash($password, PASSWORD_BCRYPT),
+                'rating_avg'=> 5.00
             ];
 
             // 5. Chamada do Repository
             $userId = $this->userRepo->create($preparedData);
+
+            // Criação da Empresa (Silenciosa e Segura)
+            if ($userId && $userType === 'empresa') {
+                // Passamos a responsabilidade para o repository que já tem a conexão
+                $this->userRepo->createCompanyRecord($userId, $name);
+            }
 
             return Response::json([
                 "success" => true, 

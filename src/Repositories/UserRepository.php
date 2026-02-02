@@ -779,4 +779,46 @@ class UserRepository {
             throw $e;
         }
     }
+
+    public function createCompanyRecord($userId, $name) {
+        try {
+            // 1. Cria a empresa
+            $sql = "INSERT INTO companies (owner_id, name_fantasy, created_at) VALUES (:owner_id, :name, NOW())";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([
+                ':owner_id' => $userId,
+                ':name'     => $name
+            ]);
+
+            $companyId = $this->db->lastInsertId();
+
+            // 2. Vincula a empresa ao usuário
+            $updateSql = "UPDATE users SET company_id = :c_id WHERE id = :u_id";
+            $updateStmt = $this->db->prepare($updateSql);
+            $updateStmt->execute([
+                ':c_id' => $companyId,
+                ':u_id' => $userId
+            ]);
+
+            return $companyId;
+        } catch (\Exception $e) {
+            // Loga o erro mas não trava o registro do usuário
+            error_log("Erro ao criar registro de empresa: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function getDashboardStats($userId) {
+        $sql = "SELECT 
+                    COUNT(id) as total_fretes,
+                    IFNULL(SUM(views_count), 0) as total_views,
+                    IFNULL(SUM(clicks_count), 0) as total_clicks,
+                    IFNULL(SUM(contact_requests_count), 0) as total_leads
+                FROM freights 
+                WHERE user_id = :u_id AND deleted_at IS NULL";
+                
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':u_id' => (int)$userId]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC);
+    }
 }

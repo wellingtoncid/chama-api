@@ -66,6 +66,15 @@ class FreightController {
             return Response::json(["success" => false, "message" => "Dados obrigatórios faltando."], 400);
         }
 
+        // --- NOVA VALIDAÇÃO DE DOCUMENTOS ---
+        $profile = $this->userRepo->getProfile($user['id']); 
+        if ($role !== 'ADMIN' && ($profile['document_status'] ?? '') !== 'approved') {
+            return Response::json([
+                "success" => false, 
+                "message" => "Seus documentos ainda não foram aprovados. Você não pode publicar fretes."
+            ], 403);
+        }
+
         try {
             // 3. Preparação dos Dados
             $status = ($role === 'ADMIN' || ($user['is_verified'] ?? 0) == 1) ? 'OPEN' : 'PENDING';
@@ -546,46 +555,48 @@ class FreightController {
             return Response::json(["success" => false, "message" => "Usuário não autenticado"], 401);
         }
 
+        $userId = (int) $loggedUser['id'];
+
         try {
-            $userId = (int) $loggedUser['id'];
             $page = (int) ($data['page'] ?? 1);
             $perPage = (int) ($data['perPage'] ?? 15);
 
-            // 2. Busca no Repository usando a listPaginated (que já tem os filtros de segurança)
-            // Passamos o $userId aqui para garantir que o WHERE user_id = :u_id seja aplicado
+            // 2. Busca de BI Global via Banco de Dados (Alta Performance)
+            // Isso substitui os array_sum que pesavam o servidor
+            $stats = $this->userRepo->getDashboardStats($userId);
+
+            // 3. Busca a listagem paginada de fretes
             $results = $this->repo->listPaginated($userId, $data, $page, $perPage);
 
             if (!$results['success']) {
-                throw new Exception($results['message'] ?? 'Erro no repositório');
+                throw new \Exception($results['message'] ?? 'Erro no repositório');
             }
 
             $freights = $results['data'];
 
-            // 3. Inteligência de BI - Funil de Conversão Consolidado
-            // Calculamos o acumulado de todos os fretes que retornaram na busca
+            // 4. Montagem do Resumo (Summary)
+            // Usamos os dados vindos direto do SQL ($stats)
+            $totalViews = (int)($stats['total_views'] ?? 0);
+            $totalLeads = (int)($stats['total_leads'] ?? 0);
+            
             $summary = [
                 'total'           => (int) $results['meta']['total_items'],
-                'open'            => count(array_filter($freights, fn($f) => ($f['status'] ?? '') === 'OPEN')),
-                'pending'         => count(array_filter($freights, fn($f) => ($f['status'] ?? '') === 'PENDING')),
-                
-                // Métricas de Engajamento Reais (Vindas das Subqueries)
-                'total_views'     => (int) array_sum(array_column($freights, 'total_views')),
-                'total_leads'     => (int) array_sum(array_column($freights, 'total_leads')),
-                'total_clicks'    => (int) array_sum(array_column($freights, 'total_clicks')),
-                
-                // Cálculo de Performance (Conversão de Visualização para WhatsApp)
+                'total_views'     => $totalViews,
+                'total_leads'     => $totalLeads,
+                'total_clicks'    => (int)($stats['total_clicks'] ?? 0),
                 'conversion_rate' => 0
             ];
 
-            if ($summary['total_views'] > 0) {
-                $summary['conversion_rate'] = round(($summary['total_leads'] / $summary['total_views']) * 100, 2);
+            // Cálculo de Performance (Conversão)
+            if ($totalViews > 0) {
+                $summary['conversion_rate'] = round(($totalLeads / $totalViews) * 100, 2);
             }
 
             return Response::json([
                 "success" => true,
                 "summary" => $summary,
                 "meta"    => $results['meta'],
-                "data"    => $freights // Cada item já possui seu BI individual
+                "data"    => $freights 
             ]);
 
         } catch (\Exception $e) {

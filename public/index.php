@@ -90,9 +90,9 @@ try {
     // --- ADS & BANNERS (MÉTRICAS ATIVAS) ---
     $router->get('/api/ads', 'AdController@list');
     $router->post('/api/upload-ad', 'AdController@create');
-    //$router->post('/api/log-ad-click', 'AdController@trackClick');
-    //$router->post('/api/log-ad-view', 'AdController@trackView');
-    //$router->post('/api/register-ad-event', 'AdController@trackClick');
+    $router->post('/api/log-ad-click', 'AdController@trackClick');
+    $router->post('/api/log-ad-view', 'AdController@trackView');
+    $router->post('/api/register-ad-event', 'AdController@trackClick');
 
     $router->post('/api/ads/click/:id', 'AdController@recordClick');
     $router->get('/api/ads/click/:id', 'AdController@recordClick');
