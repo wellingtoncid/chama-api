@@ -43,15 +43,20 @@ class UserController {
             return Response::json(["success" => true, "user" => $user]);
 
         } catch (\Throwable $e) {
-            error_log("ERRO FATAL getProfile: " . $e->getMessage());
-            return Response::json(["success" => false, "error" => $e->getMessage()], 500);
+            // Log detalhado para você ver no terminal/arquivo de log o que realmente quebrou
+            error_log("ERRO FATAL getProfile: " . $e->getMessage() . " em " . $e->getFile() . ":" . $e->getLine());
+            return Response::json([
+                "success" => false, 
+                "message" => "Erro interno no servidor",
+                "error" => $e->getMessage() // Opcional: remova em produção
+            ], 500);
         }
     }
     
     /**
      * Rota: GET /api/get-public-profile
      */
-    public function getPublicProfile($db, $loggedUser, $data) {
+    public function getPublicProfile($data, $loggedUser) {
         $id = $data['id'] ?? $data['user_id'] ?? 0;
         if (!$id) return Response::json(["success" => false, "message" => "ID inválido"], 400);
 
@@ -73,51 +78,46 @@ class UserController {
     /**
      * Rota: POST /api/update-profile
      */
-    public function updateProfile($db, $loggedUser, $data) {
-        if (!$loggedUser) return Response::json(["success" => false], 401);
+    public function updateProfile($data, $loggedUser) {
+        if (!$loggedUser) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
 
         try {
             $userId = $loggedUser['id'];
 
-            // 1. Validação de Documento
-            if (!empty($data['document'])) {
-                $doc = preg_replace('/\D/', '', $data['document']);
-                if (!$this->isValidDocument($doc)) {
-                    return Response::json(["success" => false, "message" => "Documento inválido"], 400);
+            // Lógica de Upload de Imagem
+            if (isset($_FILES['avatar_file']) && $_FILES['avatar_file']['error'] === UPLOAD_ERR_OK) {
+                $uploadDir = __DIR__ . '/../../public/uploads/avatars/';
+                if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
+
+                $fileExtension = pathinfo($_FILES['avatar_file']['name'], PATHINFO_EXTENSION);
+                $fileName = "avatar_" . $userId . "_" . time() . "." . $fileExtension;
+                $targetPath = $uploadDir . $fileName;
+
+                if (move_uploaded_file($_FILES['avatar_file']['tmp_name'], $targetPath)) {
+                    $data['avatar_url'] = "/uploads/avatars/" . $fileName;
                 }
-                $data['document'] = $doc;
             }
 
-            // 2. Atualiza Tabela 'users' (Mestre)
-            $this->userRepo->updateBasicInfo($userId, [
-                'name'     => $data['name'] ?? null,
-                'whatsapp' => preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
-                'document' => $data['document'] ?? null,
-                'city'     => $data['city'] ?? null,
-                'state'    => $data['state'] ?? null
-            ]);
+            // Validação de Documento usando o método existente no Controller
+            $document = preg_replace('/\D/', '', $data['cnpj'] ?? $data['document'] ?? '');
+            if ($document && !$this->isValidDocument($document)) {
+                return Response::json(["success" => false, "message" => "Documento inválido"], 400);
+            }
 
-            // 3. Atualiza Tabela 'user_profiles' (Detalhes)
-            $this->userRepo->updateProfileFields($userId, [
-                'bio'           => $data['bio'] ?? null,
-                'avatar_url'    => $data['avatar_url'] ?? null,
-                'cover_url'     => $data['cover_url'] ?? $data['banner_url'] ?? null,
-                'vehicle_type'  => $data['vehicle_type'] ?? null,
-                'body_type'     => $data['body_type'] ?? null,
-                'slug'          => $data['slug'] ?? null
-            ]);
+            // Chamada única para o Repository
+            $success = $this->userRepo->updateProfileFields($userId, $data);
 
-            // 4. Recalcula Verificação
-            $vResult = $this->runVerificationProcess($userId);
-            
             return Response::json([
                 "success" => true,
-                "message" => "Perfil atualizado!",
-                "is_verified" => $vResult->is_verified ?? false
+                "message" => "Perfil atualizado com sucesso!",
+                "user" => $this->userRepo->getProfileData($userId)
             ]);
 
         } catch (\Exception $e) {
-            return Response::json(["success" => false, "message" => $e->getMessage()], 500);
+            return Response::json([
+                "success" => false, 
+                "message" => "Erro ao salvar: " . $e->getMessage()
+            ], 500);
         }
     }
 
@@ -128,7 +128,8 @@ class UserController {
         $user = $this->userRepo->getProfileData($userId);
         
         $points = 0;
-        foreach (['name', 'whatsapp', 'avatar_url', 'city', 'bio'] as $f) {
+        $fieldsToTrack = ['name', 'whatsapp', 'avatar_url', 'city', 'bio'];
+        foreach ($fieldsToTrack as $f) {
             if (!empty($user[$f])) $points += 20;
         }
 
@@ -136,15 +137,17 @@ class UserController {
         $count = (int)($user['rating_count'] ?? 0);
 
         $deservesBadge = ($points >= 80) || ($count >= 5 && $avg >= 4.5);
+
+        $currentStatus = (int)($user['is_verified'] ?? 0);
         
         if ($deservesBadge && (int)$user['is_verified'] === 0) {
-            $this->userRepo->setVerified($userId, 1);
+            $this->userRepo->updateProfileField($userId, 'is_verified', 1);
             try {
                 $notif = new NotificationController($this->db);
                 $notif->notify($userId, "🎉 Perfil Verificado!", "Selo de confiança ativado.");
             } catch (\Throwable $e) {}
-        } elseif (!$deservesBadge && (int)$user['is_verified'] === 1) {
-            $this->userRepo->setVerified($userId, 0);
+        } elseif (!$deservesBadge && $currentStatus === 1) {
+            $this->userRepo->updateProfileField($userId, 'is_verified', 0);
         }
 
         return (object)['is_verified' => $deservesBadge, 'score' => $points];
@@ -285,7 +288,7 @@ class UserController {
     /**
      * Rota: POST /api/upload-avatar
      */
-    public function uploadAvatar($db, $loggedUser) {
+    public function uploadAvatar($db, $loggedUser, $data) {
         if (!$loggedUser) return Response::json(["success" => false], 401);
 
         $file = $_FILES['avatar'] ?? $_FILES['image'] ?? null;
@@ -294,7 +297,7 @@ class UserController {
         }
 
         // Validação Real de MIME Type
-        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $finfo = new \finfo(FILEINFO_MIME_TYPE);
         $mime = $finfo->file($file['tmp_name']);
         if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'])) {
             return Response::json(["success" => false, "message" => "Formato inválido"], 400);
@@ -354,13 +357,18 @@ class UserController {
      */
     private function validateCNPJ($cnpj) {
         if (preg_match('/(\d)\1{13}/', $cnpj)) return false;
-        $j = 5; $soma1 = 0;
-        for ($i = 0; $i < 12; $i++) {
-            $soma1 += $cnpj[$i] * $j;
+        for ($i = 0, $j = 5, $soma = 0; $i < 12; $i++) {
+            $soma += $cnpj[$i] * $j;
             $j = ($j == 2) ? 9 : $j - 1;
         }
-        $digito1 = (($soma1 % 11) < 2) ? 0 : 11 - ($soma1 % 11);
-        return (int)$cnpj[12] === $digito1;
+        $resto = $soma % 11;
+        if ($cnpj[12] != ($resto < 2 ? 0 : 11 - $resto)) return false;
+        for ($i = 0, $j = 6, $soma = 0; $i < 13; $i++) {
+            $soma += $cnpj[$i] * $j;
+            $j = ($j == 2) ? 9 : $j - 1;
+        }
+        $resto = $soma % 11;
+        return $cnpj[13] == ($resto < 2 ? 0 : 11 - $resto);
     }
 
 }

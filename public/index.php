@@ -57,7 +57,7 @@ try {
     $router->post('/api/update-quick-profile', 'UserController@updateProfile');
     $router->post('/api/update-user-basic', 'UserController@updateProfile');
 
-    $router->get('/api/get-public-profile', 'UserController@getPublicProfile');
+    $router->get('/api/get-public-profile', 'UserController@getPublicProfile'); //User
     $router->get('/api/get-by-slug', 'UserController@getBySlug');
     $router->get('/api/check-slug', 'UserController@checkSlug');
     $router->post('/api/upload-image', 'UserController@uploadImage');
@@ -65,7 +65,9 @@ try {
     $router->post('/api/delete-account', 'UserController@deleteAccount');
     
     $router->get('/api/public-freight/:slug', 'PublicController@getFreightDetails');
-    $router->get('/api/public-profile', 'PublicController@getPublicProfile');
+    $router->get('/api/public-profile', 'PublicController@getPublicProfile'); //Public profile
+    $router->get('/api/get-user-posts', 'PublicController@getPublicPosts');
+    $router->get('/api/get-user-ads', 'PublicController@getPublicAds'); //Criar
 
     $router->post('/api/upload-avatar', 'UserController@uploadAvatar');
     $router->post('/api/upload-banner', 'UserController@uploadImage');

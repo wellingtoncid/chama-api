@@ -102,6 +102,10 @@ class PublicController {
 
     public function getPublicProfile($data) {
         $slug = $data['slug'] ?? ''; 
+
+        if (empty($slug)) {
+            return Response::json(["success" => false, "message" => "O identificador do perfil é obrigatório."], 400);
+        }
         
         try {
             $profile = $this->userRepo->findBySlug($slug); 
@@ -151,6 +155,28 @@ class PublicController {
         } catch (\Exception $e) {
             error_log("Erro getPublicProfile: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro interno."], 500);
+        }
+    }
+
+    public function getPublicPosts($data) {
+        // Pegamos o user_id que o Front-end enviar
+        $userId = isset($data['user_id']) ? (int)$data['user_id'] : null;
+
+        if (!$userId) {
+            return Response::json(["success" => false, "message" => "ID do usuário não fornecido"], 400);
+        }
+
+        try {
+            // Usamos o seu repositório de fretes para buscar apenas o essencial
+            // Sem métricas privadas, apenas os cards de frete
+            $posts = $this->freightRepo->getPublicPostsByUser($userId);
+
+            return Response::json([
+                "success" => true,
+                "data" => $posts
+            ]);
+        } catch (\Exception $e) {
+            return Response::json(["success" => false, "message" => "Erro ao carregar posts"], 500);
         }
     }
 }

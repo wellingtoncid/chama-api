@@ -981,4 +981,20 @@ class FreightRepository {
             return false;
         }
     }
+
+    public function getPublicPostsByUser($userId) {
+        $sql = "SELECT 
+                    id, title, product, origin_city, destination_city, 
+                    created_at, slug, status, body_type, vehicle_type 
+                FROM freights 
+                WHERE user_id = :uid 
+                AND status = 'active' 
+                AND (deleted_at IS NULL)
+                ORDER BY created_at DESC 
+                LIMIT 50";
+                
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':uid' => $userId]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
 }

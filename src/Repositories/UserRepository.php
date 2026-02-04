@@ -175,35 +175,51 @@ class UserRepository {
      * Adicionado: suporte a documento e is_verified
      */
     public function updateBasicInfo($userId, $data) {
-        // 1. Sanitização preventiva
-        // Garante que campos vazios do front-end virem NULL para o COALESCE funcionar
+        // 1. Sanitização e Normalização de campos do Payload
+        // Note que verificamos 'cnpj' ou 'document' para preencher o campo de documento
         $name     = !empty($data['name'])     ? trim($data['name']) : null;
         $whatsapp = !empty($data['whatsapp']) ? preg_replace('/\D/', '', $data['whatsapp']) : null;
-        $document = !empty($data['document']) ? preg_replace('/\D/', '', $data['document']) : null;
         
-        // 2. Query com persistência de dados
+        // Prioriza 'cnpj' se vier preenchido, senão tenta 'document'
+        $rawDoc   = !empty($data['cnpj']) ? $data['cnpj'] : ($data['document'] ?? null);
+        $document = $rawDoc ? preg_replace('/\D/', '', $rawDoc) : null;
+
+        // Localização (essencial para aparecer no perfil e filtros)
+        $city     = !empty($data['city'])  ? trim($data['city']) : null;
+        $state    = !empty($data['state']) ? strtoupper(trim($data['state'])) : null;
+        
+        // 2. Query atualizada com os campos que faltavam
         $sql = "UPDATE users SET 
                     name = COALESCE(:name, name), 
                     whatsapp = COALESCE(:whatsapp, whatsapp),
                     document = COALESCE(:document, document),
-                    is_verified = COALESCE(:is_verified, is_verified),
-                    updated_at = NOW()
+                    city = COALESCE(:city, city),
+                    state = COALESCE(:state, state),
+                    is_verified = COALESCE(:is_verified, is_verified)
                 WHERE id = :id AND deleted_at IS NULL";
         
         $params = [
             ':name'        => $name,
             ':whatsapp'    => $whatsapp,
             ':document'    => $document,
+            ':city'        => $city,
+            ':state'       => $state,
             ':is_verified' => isset($data['is_verified']) ? (int)$data['is_verified'] : null,
             ':id'          => $userId
         ];
 
         try {
             $stmt = $this->db->prepare($sql);
-            return $stmt->execute($params);
+            $success = $stmt->execute($params);
+
+            // Debug opcional caso continue não salvando (remover em produção)
+            if ($stmt->rowCount() === 0) {
+                error_log("Aviso: updateBasicInfo executado mas nenhuma linha foi alterada para o ID $userId. Os dados podem ser idênticos aos já existentes.");
+            }
+
+            return $success;
         } catch (\PDOException $e) {
-            // Log de erro específico para duplicidade de documento ou whatsapp
-            error_log("Erro ao atualizar BasicInfo (ID $userId): " . $e->getMessage());
+            error_log("Erro crítico updateBasicInfo (ID $userId): " . $e->getMessage());
             return false;
         }
     }
@@ -213,46 +229,85 @@ class UserRepository {
      * Adicionado: extended_attributes (JSON) e avatar_url/banner_url
      */
     public function updateProfileFields($userId, $data) {
-        // 1. Prepara a query com COALESCE para evitar sobrescrever dados existentes com NULL
-        $sql = "UPDATE user_profiles SET 
-                    bio = COALESCE(:bio, bio), 
-                    city = COALESCE(:city, city), 
-                    state = COALESCE(:state, state), 
-                    vehicle_type = COALESCE(:v_type, vehicle_type), 
-                    body_type = COALESCE(:b_type, body_type),
-                    avatar_url = COALESCE(:avatar, avatar_url),
-                    cover_url = COALESCE(:cover, cover_url),
-                    extended_attributes = COALESCE(:extras, extended_attributes),
-                    updated_at = NOW() 
-                WHERE user_id = :id";
-        
-        // 2. Mapeamento de parâmetros com fallback para null 
-        // (O COALESCE do SQL ignorará o null e manterá o valor atual da coluna)
-        $params = [
-            ':bio'    => !empty($data['bio']) ? $data['bio'] : null,
-            ':city'   => !empty($data['city']) ? $data['city'] : null,
-            ':state'  => !empty($data['state']) ? $data['state'] : null,
-            ':v_type' => !empty($data['vehicle_type']) ? $data['vehicle_type'] : null,
-            ':b_type' => !empty($data['body_type']) ? $data['body_type'] : null,
-            ':avatar' => !empty($data['avatar_url']) ? $data['avatar_url'] : null,
-            ':cover'  => !empty($data['cover_url']) ? $data['cover_url'] : null,
-            ':extras' => !empty($data['extended_attributes']) ? $data['extended_attributes'] : null,
-            ':id'     => $userId
-        ];
-
         try {
-            $stmt = $this->db->prepare($sql);
-            return $stmt->execute($params);
-        } catch (\PDOException $e) {
-            error_log("Erro ao atualizar user_profiles (ID $userId): " . $e->getMessage());
-            return false;
+            if (!$this->db->inTransaction()) $this->db->beginTransaction();
+
+            $nullIfEmpty = fn($val) => (isset($val) && trim((string)$val) !== '') ? trim((string)$val) : null;
+
+            // 1. Atualiza Tabela 'users'
+            $sqlUser = "UPDATE users SET 
+                            name = COALESCE(:name, name), 
+                            whatsapp = :whatsapp,
+                            document = COALESCE(:doc, document),
+                            city = :city,
+                            state = :state
+                        WHERE id = :id LIMIT 1";
+            
+            $this->db->prepare($sqlUser)->execute([
+                ':name'     => $nullIfEmpty($data['name'] ?? null),
+                ':whatsapp' => preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
+                ':doc'      => preg_replace('/\D/', '', $data['cnpj'] ?? $data['document'] ?? ''),
+                ':city'     => $nullIfEmpty($data['city'] ?? null),
+                ':state'    => $nullIfEmpty($data['state'] ?? null),
+                ':id'       => $userId
+            ]);
+
+            // 2. Atualiza Tabela 'user_profiles'
+            $sqlProfile = "UPDATE user_profiles SET 
+                            bio = :bio, 
+                            slug = :slug,
+                            avatar_url = COALESCE(:avatar, avatar_url),
+                            cover_url = COALESCE(:cover, cover_url),
+                            vehicle_type = :v_type, 
+                            body_type = :b_type
+                        WHERE user_id = :id";
+            
+            $this->db->prepare($sqlProfile)->execute([
+                ':bio'    => $nullIfEmpty($data['bio'] ?? null),
+                ':slug'   => $data['slug'],
+                ':avatar' => $nullIfEmpty($data['avatar_url'] ?? null),
+                ':cover'  => $nullIfEmpty($data['cover_url'] ?? null),
+                ':v_type' => $data['vehicle_type'] ?? null,
+                ':b_type' => $data['body_type'] ?? null,
+                ':id'     => $userId
+            ]);
+
+            // 3. Atributos Dinâmicos no JSON (Campos extras do Front)
+            $extrasMapping = [
+                'plate', 'antt', 'anos_experiencia', 'company_name', 
+                'instagram', 'website', 'cidades_atendidas', 'phone'
+            ];
+            $newExtras = [];
+            foreach ($extrasMapping as $field) {
+                if (isset($data[$field])) {
+                    $val = is_string($data[$field]) ? trim($data[$field]) : $data[$field];
+                    $newExtras[$field] = ($val === '') ? null : $val;
+                }
+            }
+
+            if (!empty($newExtras)) {
+                $sqlJson = "UPDATE user_profiles SET 
+                                extended_attributes = JSON_MERGE_PATCH(COALESCE(extended_attributes, '{}'), :json) 
+                            WHERE user_id = :id";
+                $this->db->prepare($sqlJson)->execute([
+                    ':json' => json_encode($newExtras, JSON_UNESCAPED_UNICODE),
+                    ':id'   => $userId
+                ]);
+            }
+
+            $this->db->commit();
+            return true;
+        } catch (\Exception $e) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            error_log("Erro Repository: " . $e->getMessage());
+            throw $e;
         }
     }
 
     /**
      * getProfileData atualizado para trazer os atributos JSON
      */
-    public function getProfileData($userId) {
+   public function getProfileData($userId) {
         $sql = "SELECT 
                 u.id, u.name, u.email, u.whatsapp, u.role, u.status, u.document,
                 u.plan_id, u.is_verified, u.company_id, u.created_at,
@@ -275,21 +330,34 @@ class UserRepository {
 
         if (!$row) return null;
 
-        // 2. Normalização Centralizada (Sua lógica original mantida)
+        // 1. Extração de atributos dinâmicos (JSON para primeiro nível)
+        // Isso resolve o problema de company_name ou instagram não aparecerem no front
+        if (!empty($row['extended_attributes'])) {
+            $extras = json_decode($row['extended_attributes'], true);
+            if (is_array($extras)) {
+                foreach ($extras as $key => $value) {
+                    if (!isset($row[$key])) { // Não sobrescreve campos nativos
+                        $row[$key] = $value;
+                    }
+                }
+            }
+        }
+
+        // 2. Normalização de tipos
         $booleanFields = ['is_verified', 'is_subscriber', 'is_advertiser', 'is_shipper', 'is_seller'];
         foreach ($booleanFields as $field) {
             $row[$field] = (isset($row[$field]) && (int)$row[$field] === 1);
         }
 
         $row['rating_avg'] = round((float)($row['rating_avg'] ?? 0), 1);
-        $row['rating_count'] = (int)($row['rating_count'] ?? 0);
         $row['balance'] = (float)($row['balance'] ?? 0);
 
-        // 3. Fallbacks (Ajustado para usar user_city já que profile_city não existe)
-        $row['city'] = ($row['user_city'] ?? 'Brasil');
-        $row['state'] = ($row['user_state'] ?? '--');
+        // 3. Fallbacks e Aliases para o Front-end
+        $row['city'] = $row['user_city'] ?: 'Brasil';
+        $row['state'] = $row['user_state'] ?: '--';
         $row['avatar_url'] = $row['avatar_url'] ?: null;
-        $row['banner_url'] = $row['cover_url'] ?: null;
+        $row['cover_url'] = $row['cover_url'] ?: null;
+        $row['banner_url'] = $row['cover_url']; // Alias comum no seu front
 
         return $row;
     }
@@ -820,5 +888,33 @@ class UserRepository {
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':u_id' => (int)$userId]);
         return $stmt->fetch(\PDO::FETCH_ASSOC);
+    }
+
+    public function findBySlug($slug) {
+        $sql = "SELECT 
+                    u.*, 
+                    p.bio, 
+                    p.slug, 
+                    p.avatar_url, 
+                    p.cover_url, 
+                    p.vehicle_type, 
+                    p.body_type, 
+                    p.extended_attributes,
+                    p.verification_status
+                FROM users u
+                INNER JOIN user_profiles p ON u.id = p.user_id
+                WHERE p.slug = :slug AND u.status = 'active'
+                LIMIT 1";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':slug' => $slug]);
+        
+        $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($profile && !empty($profile['extended_attributes'])) {
+            $profile['extras'] = json_decode($profile['extended_attributes'], true);
+        }
+
+        return $profile;
     }
 }
