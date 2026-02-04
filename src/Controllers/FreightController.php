@@ -558,36 +558,39 @@ class FreightController {
         $userId = (int) $loggedUser['id'];
 
         try {
-            $page = (int) ($data['page'] ?? 1);
-            $perPage = (int) ($data['perPage'] ?? 15);
+            // Normalização de paginação
+            $page = max(1, (int)($data['page'] ?? 1));
+            $perPage = max(1, min(100, (int)($data['perPage'] ?? 15)));
 
-            // 2. Busca de BI Global via Banco de Dados (Alta Performance)
-            // Isso substitui os array_sum que pesavam o servidor
-            $stats = $this->userRepo->getDashboardStats($userId);
+            // 2. Busca de Estatísticas Globais (BI)
+            // Alterado para usar o $this->repo (FreightRepository) que já possui o método getUserStats
+            // ou $this->userRepo caso você o tenha injetado.
+            $stats = $this->repo->getUserStats($userId);
 
-            // 3. Busca a listagem paginada de fretes
+            // 3. Busca a listagem paginada
+            // Note que passamos filtros vazios ou o próprio $data para o repositório
             $results = $this->repo->listPaginated($userId, $data, $page, $perPage);
 
-            if (!$results['success']) {
-                throw new \Exception($results['message'] ?? 'Erro no repositório');
-            }
+            // O seu Repository retorna os dados em chaves diferentes dependendo da versão
+            // Ajustamos para garantir que pegamos o array de itens
+            $freights = $results['items'] ?? $results['data'] ?? [];
+            $totalItems = $results['total'] ?? $results['meta']['total_items'] ?? 0;
 
-            $freights = $results['data'];
+            // 4. Montagem do Resumo (Summary) com cálculos defensivos
+            $totalViews  = (int)($stats['global_views'] ?? 0);
+            $totalClicks = (int)($stats['global_clicks'] ?? 0);
+            // Leads geralmente são cliques no WhatsApp ou contatos diretos
+            $totalLeads  = (int)($stats['total_leads'] ?? $totalClicks); 
 
-            // 4. Montagem do Resumo (Summary)
-            // Usamos os dados vindos direto do SQL ($stats)
-            $totalViews = (int)($stats['total_views'] ?? 0);
-            $totalLeads = (int)($stats['total_leads'] ?? 0);
-            
             $summary = [
-                'total'           => (int) $results['meta']['total_items'],
+                'total'           => (int)$totalItems,
                 'total_views'     => $totalViews,
                 'total_leads'     => $totalLeads,
-                'total_clicks'    => (int)($stats['total_clicks'] ?? 0),
+                'total_clicks'    => $totalClicks,
                 'conversion_rate' => 0
             ];
 
-            // Cálculo de Performance (Conversão)
+            // Cálculo de Performance (Conversão de View para Clique/Lead)
             if ($totalViews > 0) {
                 $summary['conversion_rate'] = round(($totalLeads / $totalViews) * 100, 2);
             }
@@ -595,7 +598,12 @@ class FreightController {
             return Response::json([
                 "success" => true,
                 "summary" => $summary,
-                "meta"    => $results['meta'],
+                "meta"    => [
+                    "current_page" => $page,
+                    "per_page"     => $perPage,
+                    "total_items"  => $totalItems,
+                    "total_pages"  => ceil($totalItems / $perPage)
+                ],
                 "data"    => $freights 
             ]);
 
@@ -603,7 +611,8 @@ class FreightController {
             error_log("❌ Erro listMyFreights (User ID $userId): " . $e->getMessage());
             return Response::json([
                 "success" => false, 
-                "message" => "Erro ao processar métricas do painel."
+                "message" => "Erro ao processar métricas do painel.",
+                "debug"   => $e->getMessage() // Remova o debug em produção
             ], 500);
         }
     }

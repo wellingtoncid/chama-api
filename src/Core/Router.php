@@ -3,6 +3,11 @@ namespace App\Core;
 
 use App\Services\NotificationService;
 use App\Repositories\FreightRepository;
+use App\Repositories\ChatRepository;
+use App\Repositories\MetricsRepository;
+use App\Repositories\AdRepository;
+use App\Repositories\GroupRepository;
+use App\Repositories\ListingRepository;
 
 class Router {
     private $uri;
@@ -83,13 +88,28 @@ class Router {
 
         // --- Injeção de Dependências ---
         $notificationService = new NotificationService($db);
-        $chatRepo = new \App\Repositories\ChatRepository($db);
+        $chatRepo    = new ChatRepository($db);
+        $metricsRepo = new MetricsRepository($db);
+        $freightRepo = new FreightRepository($db);
+        $adRepo      = new AdRepository($db);
+        $groupRepo   = new GroupRepository($db);
+        $listingRepo = new ListingRepository($db);
 
         switch ($controllerName) {
             case 'FreightController':
                 $freightRepo = new FreightRepository($db);
                 $controller = new $controllerClass($freightRepo, $notificationService, $chatRepo);
                 break;
+
+            case 'MetricsController':
+                $controller = new $controllerClass(
+                    $metricsRepo, 
+                    $freightRepo, 
+                    $adRepo, 
+                    $groupRepo, 
+                    $listingRepo
+                );
+                break;    
 
             case 'ChatController':
                 $controller = new $controllerClass($db); 

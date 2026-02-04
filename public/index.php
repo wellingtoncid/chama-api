@@ -90,8 +90,8 @@ try {
     // --- ADS & BANNERS (MÉTRICAS ATIVAS) ---
     $router->get('/api/ads', 'AdController@list');
     $router->post('/api/upload-ad', 'AdController@create');
-    $router->post('/api/log-ad-click', 'AdController@trackClick');
-    $router->post('/api/log-ad-view', 'AdController@trackView');
+    $router->post('/api/log-ad-click', 'MetricsController@registerEvent');
+    $router->post('/api/log-ad-view', 'MetricsController@registerEvent');
     $router->post('/api/register-ad-event', 'AdController@trackClick');
 
     $router->post('/api/ads/click/:id', 'AdController@recordClick');
@@ -107,10 +107,15 @@ try {
     $router->post('/api/create-listing', 'ListingController@create');
     $router->post('/api/update-listing', 'ListingController@update');
     $router->post('/api/delete-listing', 'ListingController@delete');
-    $router->post('/api/log-listing-activity', 'ListingController@logActivity');
+    //$router->post('/api/log-listing-activity', 'ListingController@logActivity');
+
+    // --- MÉTRICAS UNIFICADAS (NOVO) ---
+    $router->post('/api/metrics/register', 'MetricsController@registerEvent');
+    $router->get('/api/metrics/dashboard-summary', 'MetricsController@getDashboardSummary');
+    $router->get('/api/metrics/global', 'MetricsController@getGlobalStats');
 
     // --- MÉTRICAS GERAIS ---
-    $router->post('/api/log-event', 'FreightController@logEvent');
+    $router->post('/api/log-event', 'MetricsController@registerEvent');
     $router->post('/api/register-click', 'FreightController@logEvent');
     $router->post('/api/track-metric', 'FreightController@logEvent');
 
@@ -125,7 +130,7 @@ try {
     // --- GRUPOS & COMUNIDADES ---
     $router->get('/api/list-groups', 'GroupController@listGroups');
     $router->post('/api/manage-groups', 'GroupController@manage');
-    $router->post('/api/log-group-click', 'GroupController@logClick');
+    //$router->post('/api/log-group-click', 'GroupController@logClick');
     $router->post('/api/portal-request', 'AdminController@storePortalRequest');
 
     // --- PAGAMENTOS & MEMBRESIA ---

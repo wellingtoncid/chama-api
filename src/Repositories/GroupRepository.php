@@ -94,4 +94,19 @@ class GroupRepository {
         return $this->db->prepare("UPDATE whatsapp_groups SET is_deleted = 1, status = 'inactive' WHERE id = ?")
                         ->execute([$id]);
     }
+
+    public function incrementCounter($id, $eventType) {
+        $column = ($eventType === 'VIEW' || $eventType === 'VIEW_DETAILS') ? 'views_count' : 'clicks_count';
+        $column = ($eventType === 'WHATSAPP_CLICK') ? 'clicks_count' : 'views_count';
+        
+        $tableName = 'whatsapp_groups';
+        $sql = "UPDATE {$tableName} SET {$column} = {$column} + 1 WHERE id = :id";
+            try {
+            $stmt = $this->db->prepare($sql);
+            return $stmt->execute([':id' => (int)$id]);
+        } catch (\Exception $e) {
+            error_log("Erro ao incrementar contador na tabela {$tableName}: " . $e->getMessage());
+            return false;
+        }
+    }
 }

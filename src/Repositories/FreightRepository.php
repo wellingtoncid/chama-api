@@ -254,9 +254,10 @@ class FreightRepository {
             // Dica: Certifique-ca de que adicionou views_count e clicks_count na tabela freights
             if ($targetType === 'FREIGHT') {
                 $column = ($eventType === 'VIEW') ? 'views_count' : 'clicks_count';
+                if ($eventType === 'WHATSAPP_CLICK') $column = 'clicks_count';
                 // Só executa se você tiver essas colunas, senão pule esta parte
-                // $sqlIncr = "UPDATE freights SET {$column} = {$column} + 1 WHERE id = :id";
-                // $this->db->prepare($sqlIncr)->execute(['id' => $targetId]);
+                $sqlIncr = "UPDATE freights SET {$column} = {$column} + 1 WHERE id = :id";
+                $this->db->prepare($sqlIncr)->execute(['id' => $targetId]);
             }
 
             // 3. Registro no Log Real (Sincronizado com sua tabela click_logs)
@@ -964,5 +965,20 @@ class FreightRepository {
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':u_id' => (int)$userId]);
         return $stmt->fetch(\PDO::FETCH_ASSOC);
+    }
+
+    public function incrementCounter($id, $eventType) {
+        $column = ($eventType === 'VIEW' || $eventType === 'VIEW_DETAILS') ? 'views_count' : 'clicks_count';
+        $column = ($eventType === 'WHATSAPP_CLICK') ? 'clicks_count' : 'views_count';
+        
+        $tableName = 'freights';
+        $sql = "UPDATE {$tableName} SET {$column} = {$column} + 1 WHERE id = :id";
+            try {
+            $stmt = $this->db->prepare($sql);
+            return $stmt->execute([':id' => (int)$id]);
+        } catch (\Exception $e) {
+            error_log("Erro ao incrementar contador na tabela {$tableName}: " . $e->getMessage());
+            return false;
+        }
     }
 }
