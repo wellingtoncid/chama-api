@@ -317,9 +317,11 @@ class UserRepository {
                 u.city as user_city, u.state as user_state, 
                 p.avatar_url, p.cover_url, 
                 p.bio, p.slug, p.vehicle_type, p.body_type, p.extended_attributes,
-                c.name_fantasy as company_name, c.cnpj as company_cnpj
+                c.name_fantasy as company_name, c.cnpj as company_cnpj,
+                c.business_type, c.operation_type
             FROM users u
             LEFT JOIN user_profiles p ON u.id = p.user_id
+            -- O segredo está neste JOIN: ele pega a empresa onde o usuário é dono
             LEFT JOIN companies c ON u.id = c.owner_id
             WHERE u.id = :id AND u.deleted_at IS NULL
             LIMIT 1";
@@ -330,8 +332,7 @@ class UserRepository {
 
         if (!$row) return null;
 
-        // 1. Extração de atributos dinâmicos (JSON para primeiro nível)
-        // Isso resolve o problema de company_name ou instagram não aparecerem no front
+        // Processa Atributos Dinâmicos (JSON)  
         if (!empty($row['extended_attributes'])) {
             $extras = json_decode($row['extended_attributes'], true);
             if (is_array($extras)) {
@@ -358,6 +359,10 @@ class UserRepository {
         $row['avatar_url'] = $row['avatar_url'] ?: null;
         $row['cover_url'] = $row['cover_url'] ?: null;
         $row['banner_url'] = $row['cover_url']; // Alias comum no seu front
+        // Se for empresa, o nome principal deve ser o Nome Fantasia
+        $row['display_name'] = ($row['user_type'] === 'COMPANY' && !empty($row['company_name'])) 
+            ? $row['company_name'] 
+            : $row['name'];
 
         return $row;
     }
@@ -892,29 +897,54 @@ class UserRepository {
 
     public function findBySlug($slug) {
         $sql = "SELECT 
-                    u.*, 
-                    p.bio, 
-                    p.slug, 
-                    p.avatar_url, 
-                    p.cover_url, 
-                    p.vehicle_type, 
-                    p.body_type, 
-                    p.extended_attributes,
-                    p.verification_status
+                    u.id, 
+                    u.name, 
+                    u.user_type, 
+                    u.whatsapp, 
+                    u.city, 
+                    u.state, 
+                    u.created_at,
+                    up.bio, 
+                    up.avatar_url, 
+                    up.cover_url, 
+                    up.vehicle_type, 
+                    up.body_type, 
+                    up.instagram, 
+                    up.website,
+                    up.private_data,
+                    c.name_fantasy,
+                    c.razao_social,
+                    c.cnpj
                 FROM users u
-                INNER JOIN user_profiles p ON u.id = p.user_id
-                WHERE p.slug = :slug AND u.status = 'active'
+                INNER JOIN user_profiles up ON u.id = up.user_id
+                LEFT JOIN companies c ON u.id = c.owner_id
+                WHERE up.slug = :slug AND u.status = 'active'
                 LIMIT 1";
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':slug' => $slug]);
         
-        $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+        $profile = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-        if ($profile && !empty($profile['extended_attributes'])) {
-            $profile['extras'] = json_decode($profile['extended_attributes'], true);
+        if ($profile) {
+            // Define um nome de exibição inteligente
+            $profile['display_name'] = !empty($profile['name_fantasy']) 
+                ? $profile['name_fantasy'] 
+                : $profile['name'];
+                
+            // Decodifica dados extras se existirem
+            if ($profile && !empty($profile['private_data'])) {
+                $profile['details'] = json_decode($profile['private_data'], true);
+            }
         }
 
         return $profile;
+    }
+
+    public function getUserTypeAndName($id) {
+        $sql = "SELECT id, user_type, name FROM users WHERE id = :id LIMIT 1";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':id' => (int)$id]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC);
     }
 }

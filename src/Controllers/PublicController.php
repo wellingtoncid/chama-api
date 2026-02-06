@@ -4,14 +4,17 @@ namespace App\Controllers;
 use App\Core\Response;
 use App\Repositories\FreightRepository;
 use App\Repositories\UserRepository;
+use App\Repositories\AdRepository;
 
 class PublicController {
     private $freightRepo;
     private $userRepo;
+    private $adRepo;
 
     public function __construct($db) {
         $this->freightRepo = new FreightRepository($db);
         $this->userRepo = new UserRepository($db);
+        $this->adRepo = new AdRepository($db);
     }
 
     public function getFreightDetails($data, $loggedUser = null) {
@@ -101,82 +104,84 @@ class PublicController {
     }
 
     public function getPublicProfile($data) {
-        $slug = $data['slug'] ?? ''; 
-
+        $slug = isset($data['slug']) ? trim($data['slug']) : '';
         if (empty($slug)) {
-            return Response::json(["success" => false, "message" => "O identificador do perfil é obrigatório."], 400);
+            return Response::json(["success" => false, "message" => "Identificador obrigatório."], 400);
         }
-        
-        try {
-            $profile = $this->userRepo->findBySlug($slug); 
 
+        try {
+            // O findBySlug agora já traz o display_name e dados da empresa (conforme ajustamos no Repo)
+            $profile = $this->userRepo->findBySlug($slug);
             if (!$profile) {
                 return Response::json(["success" => false, "message" => "Perfil não encontrado."], 404);
             }
 
-            // 1. Tratamento de Labels por tipo de perfil
-            $userTypeLabel = 'Usuário';
-            switch ($profile['user_type']) {
-                case 'DRIVER': $userTypeLabel = 'Motorista'; break;
-                case 'COMPANY': $userTypeLabel = 'Transportadora'; break;
-                case 'SHIPPER': $userTypeLabel = 'Embarcador'; break;
-            }
-
-            // 2. Padronização de dados para o Front (Booleano de Verificação)
-            $profile['is_verified'] = ($profile['verification_status'] === 'verified');
-            $profile['rating_avg'] = number_format((float)($profile['rating_avg'] ?? 5.0), 1);
+            // --- TRATAMENTO DE DADOS PARA O FRONT ---    
+            // WhatsApp limpo para o link do botão (usado no ProfileView.tsx)
+            $profile['whatsapp_clean'] = preg_replace('/\D/', '', $profile['whatsapp'] ?? '');
             
-            // 3. WhatsApp: Sanitização para o botão "Chamar no Zap"
-            $profile['whatsapp_clean'] = preg_replace('/[^0-9]/', '', $profile['whatsapp'] ?? '');
+            // Status de verificação amigável
+            $profile['is_verified'] = true; //pode vincular a um campo real do banco
 
-            // 4. Customização de SEO Dinâmico
-            $title = "{$userTypeLabel} Verificado: {$profile['name']}";
+            // --- SEO DINÂMICO ---
+            $userTypeLabel = match($profile['user_type']) {
+                'DRIVER'     => 'Motorista',
+                'ADVERTISER' => 'Parceiro Anunciante',
+                'COMPANY'    => 'Transportadora',
+                'SHIPPER'    => 'Embarcador',
+                default      => 'Logística'
+            };
+
+            $title = "{$profile['display_name']} | {$userTypeLabel} verificado no Chama Frete";
             
-            // Descrição muda conforme o tipo: se for motorista, mostra o veículo.
-            $description = "Avaliação: {$profile['rating_avg']}⭐";
-            if ($profile['user_type'] === 'DRIVER' && !empty($profile['vehicle_type'])) {
-                $description .= " | Veículo: {$profile['vehicle_type']} - {$profile['body_type']}";
-            }
-            $description .= " | Ver perfil completo e contatos no Chama Frete.";
-
-            $seo = [
-                "title" => $title,
-                "description" => $description,
-                "og_image" => $profile['avatar_url'] ?? "https://chamafrete.com.br/assets/img/default-avatar.jpg",
-                "type" => "profile"
-            ];
+            // Descrição curta para Google/Social
+            $seoDescription = $profile['bio'] ?? "Confira os serviços de {$profile['display_name']}. Localizado em {$profile['city']}-{$profile['state']}.";
 
             return Response::json([
                 "success" => true,
                 "data" => $profile,
-                "seo" => $seo
+                "seo" => [
+                    "title" => $title,
+                    "description" => $seoDescription,
+                    "og_image" => $profile['avatar_url'] ?? "https://chamafrete.com.br/assets/img/default-avatar.jpg",
+                    "type" => "profile"
+                ]
             ]);
 
         } catch (\Exception $e) {
             error_log("Erro getPublicProfile: " . $e->getMessage());
-            return Response::json(["success" => false, "message" => "Erro interno."], 500);
+            return Response::json(["success" => false, "message" => "Erro ao carregar perfil."], 500);
         }
     }
 
     public function getPublicPosts($data) {
-        // Pegamos o user_id que o Front-end enviar
         $userId = isset($data['user_id']) ? (int)$data['user_id'] : null;
-
-        if (!$userId) {
-            return Response::json(["success" => false, "message" => "ID do usuário não fornecido"], 400);
-        }
+        if (!$userId) return Response::json(["success" => false, "message" => "ID ausente"], 400);
 
         try {
-            // Usamos o seu repositório de fretes para buscar apenas o essencial
-            // Sem métricas privadas, apenas os cards de frete
-            $posts = $this->freightRepo->getPublicPostsByUser($userId);
+            // Buscamos apenas o tipo do usuário (método leve que sugerimos criar no Repo)
+            $user = $this->userRepo->getUserTypeAndName($userId);
+            if (!$user) return Response::json(["success" => false, "message" => "Usuário não encontrado"], 404);
+
+            $results = [];
+            
+            // Lógica de Chaveamento
+            if ($user['user_type'] === 'ADVERTISER') {
+                // Se for anunciante, busca na tabela de anúncios (ADS)
+                $results = $this->adRepo->getAdsByUserId($userId);
+            } else {
+                // Se for motorista ou empresa, busca na tabela de fretes (FREIGHTS)
+                $results = $this->freightRepo->getPublicPostsByUser($userId);
+            }
 
             return Response::json([
                 "success" => true,
-                "data" => $posts
+                "user_type" => $user['user_type'],
+                "data" => $results
             ]);
         } catch (\Exception $e) {
-            return Response::json(["success" => false, "message" => "Erro ao carregar posts"], 500);
+            error_log("Erro getPublicPosts: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao carregar itens"], 500);
         }
     }
 }

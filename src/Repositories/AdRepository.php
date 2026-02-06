@@ -156,4 +156,25 @@ class AdRepository {
             return false;
         }
     }
+
+    public function getAdsByUserId($userId) {
+        $sql = "SELECT 
+                    id, 
+                    title, 
+                    description, 
+                    image_url, 
+                    category, 
+                    destination_url, 
+                    created_at, 
+                    status
+                FROM ads 
+                WHERE user_id = :user_id 
+                AND status = 'active' 
+                AND is_deleted = 0
+                ORDER BY created_at DESC";
+                
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':user_id' => $userId]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
 }

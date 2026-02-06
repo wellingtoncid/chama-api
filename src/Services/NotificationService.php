@@ -150,4 +150,25 @@ class NotificationService {
         $stmt->execute([$days]);
         return $stmt->rowCount();
     }
+
+    public function notifyCompanyQuote(int $companyId, string $quoteData) {
+        // 1. Procura o telegram_chat_id da empresa no banco
+        $stmt = $this->db->prepare("SELECT telegram_chat_id FROM companies WHERE id = ?");
+        $stmt->execute([$companyId]);
+        $company = $stmt->fetch();
+
+        if ($company && $company['telegram_chat_id']) {
+            $message = "📦 <b>Nova Cotação!</b>\n\n" . $quoteData;
+            
+            // Envia para o telegram da empresa (que depois pode disparar o Zap)
+            $url = "https://api.telegram.org/bot{$this->tgToken}/sendMessage";
+            $data = [
+                'chat_id'    => $company['telegram_chat_id'],
+                'parse_mode' => 'HTML',
+                'text'       => $message
+            ];
+            return $this->executeRequest($url, $data, 'POST');
+        }
+        return false;
+    }
 }
