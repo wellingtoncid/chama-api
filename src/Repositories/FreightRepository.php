@@ -241,23 +241,35 @@ class FreightRepository {
      */
     public function logMetric($targetId, $targetType, $userId, $eventType = 'VIEW', $meta = []) {
         try {
+            $targetType = strtoupper($targetType);
+            $eventType  = strtoupper($eventType);   
+        
             // 1. Sanitização (Segurança)
             $allowedTypes  = ['FREIGHT', 'AD', 'WA_GROUP', 'LISTING']; // Conforme seu ENUM no SQL
-            $allowedEvents = ['VIEW', 'WHATSAPP_CLICK', 'SHARE', 'CONTACT_INIT'];
-            
-            $targetType = strtoupper($targetType);
-            $eventType  = strtoupper($eventType);
-
             if (!in_array($targetType, $allowedTypes)) return false;
 
-            // 2. Incremento no contador rápido (Se as colunas existirem na tabela freights)
-            // Dica: Certifique-ca de que adicionou views_count e clicks_count na tabela freights
-            if ($targetType === 'FREIGHT') {
-                $column = ($eventType === 'VIEW') ? 'views_count' : 'clicks_count';
-                if ($eventType === 'WHATSAPP_CLICK') $column = 'clicks_count';
-                // Só executa se você tiver essas colunas, senão pule esta parte
-                $sqlIncr = "UPDATE freights SET {$column} = {$column} + 1 WHERE id = :id";
-                $this->db->prepare($sqlIncr)->execute(['id' => $targetId]);
+            // 2. Incremento no contador rápido (Tabelas de Carga ou Anúncios)
+            // Definimos qual coluna atualizar de forma limpa
+            $column = null;
+            if ($eventType === 'VIEW') {
+                $column = 'views_count';
+            } elseif (in_array($eventType, ['WHATSAPP_CLICK', 'SHARE', 'CONTACT_INIT'])) {
+                $column = 'clicks_count';
+            }
+
+            if ($column) {
+                // Mapeia qual tabela deve ser atualizada baseado no target_type
+                $tableMap = [
+                    'FREIGHT' => 'freights',
+                    'AD'      => 'ads',
+                    'LISTING' => 'listings'
+                ];
+
+                if (isset($tableMap[$targetType])) {
+                    $tableName = $tableMap[$targetType];
+                    $sqlIncr = "UPDATE {$tableName} SET {$column} = {$column} + 1 WHERE id = :id";
+                    $this->db->prepare($sqlIncr)->execute([':id' => $targetId]);
+                }
             }
 
             // 3. Registro no Log Real (Sincronizado com sua tabela click_logs)
@@ -275,14 +287,16 @@ class FreightRepository {
                         )";
             
             $stmtLog = $this->db->prepare($sqlLog);
+            // Garante que se o userId for 0 ou vazio, salve como NULL no banco
+            $finalUserId = (!empty($userId) && $userId > 0) ? $userId : null;
             return $stmtLog->execute([
-                ':u_id'   => $userId, // Pode ser null
+                ':u_id'   => $finalUserId, 
                 ':t_id'   => $targetId,
                 ':t_type' => $targetType,
                 ':e_type' => $eventType,
                 ':ip'     => $meta['ip'] ?? $_SERVER['REMOTE_ADDR'] ?? null,
-                ':ua'     => $meta['user_agent'] ?? $_SERVER['HTTP_USER_AGENT'] ?? null,
-                ':ref'    => $meta['referer'] ?? $_SERVER['HTTP_REFERER'] ?? null
+                ':ua'     => substr($meta['user_agent'] ?? $_SERVER['HTTP_USER_AGENT'] ?? null, 0, 255),
+                ':ref'    => substr($meta['referer'] ?? $_SERVER['HTTP_REFERER'] ?? null, 0, 255)
             ]);
 
         } catch (\Exception $e) {

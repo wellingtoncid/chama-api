@@ -86,58 +86,47 @@ class Router {
             return ["success" => false, "error" => "Controller $controllerClass não encontrado"];
         }
 
-        // --- Injeção de Dependências ---
-        $notificationService = new NotificationService($db);
-        $chatRepo    = new ChatRepository($db);
-        $metricsRepo = new MetricsRepository($db);
-        $freightRepo = new FreightRepository($db);
-        $adRepo      = new AdRepository($db);
-        $groupRepo   = new GroupRepository($db);
-        $listingRepo = new ListingRepository($db);
-
-        switch ($controllerName) {
+        // --- Injeção de Dependências Otimizada ---
+        // Só instanciamos o que o Controller específico precisa
+       switch ($controllerName) {
             case 'FreightController':
-                $freightRepo = new FreightRepository($db);
-                $controller = new $controllerClass($freightRepo, $notificationService, $chatRepo);
+                $controller = new $controllerClass(
+                    new FreightRepository($db), 
+                    new NotificationService($db), 
+                    new ChatRepository($db)
+                );
                 break;
 
             case 'MetricsController':
                 $controller = new $controllerClass(
-                    $metricsRepo, 
-                    $freightRepo, 
-                    $adRepo, 
-                    $groupRepo, 
-                    $listingRepo
+                    new MetricsRepository($db), 
+                    new FreightRepository($db), 
+                    new AdRepository($db), 
+                    new GroupRepository($db), 
+                    new ListingRepository($db)
                 );
-                break;    
+                break;
 
-            case 'ChatController':
-                $controller = new $controllerClass($db); 
+            case 'AdminController':
+                // CORREÇÃO: AdminController precisa do loggedUser no construtor
+                $controller = new $controllerClass($db, $loggedUser);
                 break;
 
             case 'NotificationController':
-                $controller = new $controllerClass($notificationService);
-                break;
-
-            case 'ReviewController':
-                $controller = new $controllerClass($db);
-                break;
-
-            case 'AdController':
-                $controller = new $controllerClass($db);
+                $controller = new $controllerClass(new NotificationService($db));
                 break;
 
             default:
+                // Para a maioria dos controllers (Auth, User, etc)
                 $controller = new $controllerClass($db);
                 break;
         }
         
         if (!method_exists($controller, $method)) {
             http_response_code(405);
-            return ["success" => false, "error" => "Método $method não encontrado no controller"];
+            return ["success" => false, "error" => "Método $method não encontrado"];
         }
 
-        // O $data agora contém tanto o que veio via JSON/POST quanto o :slug da URL
         return $controller->$method($data, $loggedUser);
     }
 }

@@ -84,27 +84,26 @@ class UserController {
         try {
             $userId = $loggedUser['id'];
 
-            // Lógica de Upload de Imagem
+            // --- Lógica de Upload de AVATAR ---
             if (isset($_FILES['avatar_file']) && $_FILES['avatar_file']['error'] === UPLOAD_ERR_OK) {
-                $uploadDir = __DIR__ . '/../../public/uploads/avatars/';
-                if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
-
-                $fileExtension = pathinfo($_FILES['avatar_file']['name'], PATHINFO_EXTENSION);
-                $fileName = "avatar_" . $userId . "_" . time() . "." . $fileExtension;
-                $targetPath = $uploadDir . $fileName;
-
-                if (move_uploaded_file($_FILES['avatar_file']['tmp_name'], $targetPath)) {
-                    $data['avatar_url'] = "/uploads/avatars/" . $fileName;
-                }
+                $path = $this->handleFileUpload($_FILES['avatar_file'], 'avatars', $userId);
+                if ($path) $data['avatar_url'] = $path;
             }
 
-            // Validação de Documento usando o método existente no Controller
+            // --- Lógica de Upload de CAPA (BANNER) ---
+            if (isset($_FILES['cover_file']) && $_FILES['cover_file']['error'] === UPLOAD_ERR_OK) {
+                $path = $this->handleFileUpload($_FILES['cover_file'], 'covers', $userId);
+                if ($path) $data['cover_url'] = $path;
+            }
+
+            // Validação de Documento
             $document = preg_replace('/\D/', '', $data['cnpj'] ?? $data['document'] ?? '');
             if ($document && !$this->isValidDocument($document)) {
                 return Response::json(["success" => false, "message" => "Documento inválido"], 400);
             }
 
-            // Chamada única para o Repository
+            // Chamada única para o Repository (Passando o tipo de usuário)
+            $data['user_type'] = $loggedUser['user_type'] ?? 'DRIVER';
             $success = $this->userRepo->updateProfileFields($userId, $data);
 
             return Response::json([
@@ -114,11 +113,22 @@ class UserController {
             ]);
 
         } catch (\Exception $e) {
-            return Response::json([
-                "success" => false, 
-                "message" => "Erro ao salvar: " . $e->getMessage()
-            ], 500);
+            return Response::json(["success" => false, "message" => $e->getMessage()], 500);
         }
+    }
+
+    // Método auxiliar para evitar repetição de código
+    private function handleFileUpload($file, $folder, $userId) {
+        $uploadDir = __DIR__ . "/../../public/uploads/{$folder}/";
+        if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
+
+        $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $fileName = "{$folder}_{$userId}_" . time() . ".{$ext}";
+        
+        if (move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
+            return "/uploads/{$folder}/" . $fileName;
+        }
+        return null;
     }
 
     /**

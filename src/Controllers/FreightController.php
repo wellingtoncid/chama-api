@@ -140,27 +140,32 @@ class FreightController {
     }
 
     /**
-     * Registra interesse: Quando o motorista clica em "Ver Telefone"
+     * Registra interesse e métricas de um FRETE (Auditável)
+     * Chamado quando o motorista clica em "Ver Telefone", "WhatsApp" ou abre o frete.
      */
     public function logEvent($data, $user) {
-        // 1. Captura e higienização
-        $targetId  = (int)($data['id'] ?? $data['target_id'] ?? 0);
-        $targetType = strtoupper($data['target_type'] ?? 'FREIGHT'); // Ex: FREIGHT, COMPANY_PROFILE
-        $eventType  = strtoupper($data['event_type'] ?? 'VIEW');    // Ex: VIEW, WHATSAPP_CLICK, SHARE
+        // 1. Captura e higienização (Normalizando os campos que o seu Front pode enviar)
+        $targetId   = (int)($data['id'] ?? $data['target_id'] ?? 0);
+        $targetType = strtoupper($data['target_type'] ?? 'FREIGHT'); 
+        $eventType  = strtoupper($data['event_type'] ?? $data['type'] ?? 'VIEW'); 
 
         if ($targetId <= 0) {
-            return Response::json(["success" => false, "message" => "ID de alvo inválido"], 400);
+            return Response::json(["success" => false, "message" => "ID inválido"], 400);
         }
 
-        // 2. Coleta de dados de contexto para auditoria e evitar fraudes
+        // 2. Coleta de dados de contexto (Essencial para o Manager detectar abusos)
         $meta = [
             'ip' => $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0',
             'user_agent' => substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255)
         ];
 
         try {
-            // 3. Registro da Métrica
-            // Passamos o ID do usuário (se logado) e os metadados
+            /**
+             * 3. Registro Duplo no Repository:
+             * O método logMetric deve:
+             * a) Inserir um registro na tabela 'metrics' ou 'search_logs' (Histórico)
+             * b) Chamar o incrementCounter interno para somar +1 na tabela 'freights' (Contador rápido)
+             */
             $success = $this->repo->logMetric(
                 $targetId, 
                 $targetType, 
@@ -169,14 +174,12 @@ class FreightController {
                 $meta
             );
 
-            // Retornamos 200 sempre para o front-end não travar, 
-            // mesmo que o log falhe silenciosamente no banco.
             return Response::json(["success" => true]);
 
         } catch (Exception $e) {
-            // Logs de métricas não devem derrubar a experiência do usuário
-            error_log("Erro ao registrar métrica ({$eventType}): " . $e->getMessage());
-            return Response::json(["success" => false], 500);
+            error_log("Erro ao registrar métrica de frete ({$eventType}): " . $e->getMessage());
+            // Retornamos true para o front não dar erro visual ao motorista
+            return Response::json(["success" => true]); 
         }
     }
 

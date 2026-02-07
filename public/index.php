@@ -91,6 +91,7 @@ try {
     
     // --- ADS & BANNERS (MÉTRICAS ATIVAS) ---
     $router->get('/api/ads', 'AdController@list');
+    $router->get('/api/my-ads', 'AdController@listMyAds');
     $router->post('/api/upload-ad', 'AdController@create');
     $router->post('/api/log-ad-click', 'MetricsController@registerEvent');
     $router->post('/api/log-ad-view', 'MetricsController@registerEvent');
@@ -142,22 +143,68 @@ try {
     $router->get('/api/my-services', 'MembershipController@myServices');
     $router->get('/api/payment-history', 'MembershipController@history');
 
+    // --- CRÉDITOS E FINANCEIRO (NOVO) ---
+    $router->get('/api/ad-packages', 'AdController@getPackages');   // Listar pacotes de compra
+    $router->post('/api/buy-credits', 'CreditController@buyCredits'); // Iniciar compra (Checkout)
+    $router->get('/api/my-credits-history', 'CreditController@getHistory'); // Extrato de consumo
+
     // --- CHAT ---
     $router->post('/api/chat/send', 'ChatController@sendMessage');
     $router->get('/api/chat/messages', 'ChatController@getMessages');
     $router->get('/api/chat/rooms', 'ChatController@listRooms');
     $router->post('/api/chat/init', 'ChatController@initChat');
 
-    // --- BLOCO ADMINISTRATIVO (RESTRITO) ---
-    if ($loggedUser && strtoupper($loggedUser['role'] ?? '') === 'ADMIN') {
-        $router->get('/api/admin-stats', 'AdminController@getStats');
-        $router->get('/api/admin-dashboard-data', 'AdminController@getDashboardData');
-        $router->get('/api/admin-list-users', 'AdminController@listUsers');
-        $router->get('/api/admin-list-freights', 'AdminController@listFreights');
-        $router->get('/api/admin-audit-logs', 'AdminController@getAuditLogs');
-        $router->get('/api/admin-portal-requests', 'AdminController@getPortalRequests');
-        $router->post('/api/admin-update-settings', 'AdminController@updateSettings');
-        $router->get('/api/get-advertising-plans', 'AdminController@getAdvertisingPlans');
+    // --- BLOCO ADMINISTRATIVO / GESTÃO (RESTRITO) ---
+    $role = strtoupper($loggedUser['role'] ?? '');
+        if ($loggedUser && in_array($role, ['ADMIN', 'MANAGER', 'SUPPORT'])) {
+            // Rotas acessíveis por ADMIN, MANAGER e SUPPORT
+            $router->get('/api/support/tickets', 'SupportController@listAllTickets');
+            $router->post('/api/support/reply', 'SupportController@reply');
+            // --- CRM / NOTAS INTERNAS (No AdminController) ---
+            $router->post('/api/admin/user-notes', 'AdminController@addUserNote');
+            $router->get('/api/admin/user-notes', 'AdminController@getUserNotes');
+
+            // Rotas acessíveis APENAS por ADMIN e MANAGER
+            if ($role === 'ADMIN' || $role === 'MANAGER') {
+
+            // Dashboard e Logs
+            $router->get('/api/admin-dashboard-data', 'AdminController@getDashboardData');
+
+            // Usuários
+            $router->get('/api/admin-list-users', 'AdminController@listUsers');
+            $router->post('/api/admin-update-user', 'AdminController@manageUsers');
+            $router->post('/api/admin-verify-user', 'AdminController@verifyUser');
+            $router->post('/api/admin-delete-user', 'AdminController@deleteUser');
+
+            // Fretes
+            $router->get('/api/admin-list-freights', 'AdminController@listAllFreights');
+            $router->post('/api/admin-update-freight', 'AdminController@updateFreightStatus');
+            $router->post('/api/manage-freights', 'AdminController@manageFreights');
+
+            // Leads e ADS
+            $router->get('/api/admin-portal-requests', 'AdminController@getPortalRequests');
+            $router->post('/api/admin-update-lead', 'AdminController@updateLeadInternal');
+            $router->post('/api/admin-manage-ads', 'AdminController@manageAds');
+            
+            // Créditos e Planos
+            $router->post('/api/admin/add-credits', 'AdminController@manualAddCredits');
+            $router->post('/api/admin-manage-plans', 'AdminController@managePlans');
+
+            // Documentos e Verificações
+            $router->get('/api/admin-pending-docs', 'AdminController@listPendingDocuments');
+            $router->post('/api/admin-review-doc', 'AdminController@reviewDocument');
+            
+            // Configurações e Estatísticas (Outros)
+            $router->get('/api/admin-stats', 'AdminController@getStats');
+            $router->get('/api/get-advertising-plans', 'AdminController@getAdvertisingPlans');
+        }
+        
+        // Rotas exclusivas de ADMIN
+        if ($role === 'ADMIN') {
+            $router->get('/api/admin-revenue-report', 'AdminController@getRevenueReport');
+            $router->get('/api/admin-audit-logs', 'AdminController@listLogs');
+            $router->post('/api/admin-update-settings', 'AdminController@updateSettings');
+        }
     }
 
     // 7. Execução
@@ -178,6 +225,14 @@ try {
 
 } catch (Throwable $e) {
    // Log interno do erro (não mostrar tudo ao usuário em produção)
+
+   Response::json([
+        "success" => false, 
+        "message" => $e->getMessage(), 
+        "file" => $e->getFile(), 
+        "line" => $e->getLine()
+    ]);
+
     error_log("ERRO NO INDEX: " . $e->getMessage() . " em " . $e->getFile() . ":" . $e->getLine());
 
     if (!headers_sent()) {
