@@ -14,13 +14,16 @@ class AdminRepository {
 
    // --- AUDITORIA & LOGS ---
     public function saveLog($uId, $uName, $type, $desc, $targetId, $targetType) {
-        $sql = "INSERT INTO logsauditoria (user_id, user_name, action_type, description, target_id, target_type) 
-                VALUES (?, ?, ?, ?, ?, ?)";
-        return $this->db->prepare($sql)->execute([$uId, $uName, $type, $desc, $targetId, $targetType]);
+        $ip = $_SERVER['REMOTE_ADDR'] ?? null;
+        $agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
+
+        $sql = "INSERT INTO logs_auditoria (user_id, user_name, action_type, description, target_id, target_type, ip_address, user_agent) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        return $this->db->prepare($sql)->execute([$uId, $uName, $type, $desc, $targetId, $targetType, $ip, $agent]);
     }
 
      /**
-     * Busca os logs mais recentes de auditoria para o feed do dashboard
+     * Busca os logs mais recentes de auditoria para o feed do dashboard    
      */
     public function getRecentActivities() {
         $sql = "SELECT 
@@ -28,7 +31,7 @@ class AdminRepository {
                     description as action, 
                     created_at as time, 
                     target_type as type
-                FROM logsauditoria 
+                FROM logs_auditoria 
                 ORDER BY created_at DESC 
                 LIMIT 10";
                 

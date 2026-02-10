@@ -16,17 +16,7 @@ class GroupController {
         $this->loggedUser = $loggedUser;
     }
 
-    public function handle($endpoint, $data = []) {
-        return match ($endpoint) {
-            'list-groups'      => $this->list(),
-            'manage-group'     => $this->store($data),
-            'log-group-click'  => $this->trackClick($data),
-            'delete-group'     => $this->delete($data['id'] ?? null),
-            default            => Response::json(["success" => false, "message" => "Endpoint inválido"], 404)
-        };
-    }
-
-    private function list() {
+    public function listGroups() {
         $role = $this->loggedUser['role'] ?? 'all';
         $groups = $this->groupRepo->listActive($role);
 
@@ -39,7 +29,41 @@ class GroupController {
         return Response::json(["success" => true, "data" => $groups]);
     }
 
-    private function store($data) {
+    /**
+     * Cria ou atualiza um grupo (Apenas Admin/Manager)
+     */
+    public function manageGroups($data, $loggedUser) {
+        $this->authorize($loggedUser);
+        
+        $result = $this->groupRepo->save($data);
+        if ($result) {
+            $action = isset($data['id']) ? 'UPDATE_GROUP' : 'CREATE_GROUP';
+            $this->adminRepo->saveLog(
+                $loggedUser['id'], 
+                $loggedUser['name'], 
+                $action, 
+                "Gerenciou grupo: " . ($data['region_name'] ?? 'ID '.$result), 
+                $result, 
+                'WA_GROUP'
+            );
+            return Response::json(["success" => true, "id" => $result]);
+        }
+
+        return Response::json(["success" => false, "message" => "Erro ao salvar grupo"]);
+    }
+
+    /**
+     * Rastreia cliques no link do WhatsApp
+     */
+    public function logGroupClick($data, $loggedUser) {
+        $id = $data['id'] ?? null;
+        if ($id && $this->groupRepo->incrementClick($id)) {
+            return Response::json(["success" => true]);
+        }
+        return Response::json(["success" => false, "message" => "ID inválido"], 400);
+    }
+
+    public function store($data) {
         $this->checkAuth();
         
         $result = $this->groupRepo->save($data);
@@ -58,24 +82,28 @@ class GroupController {
         return Response::json(["success" => (bool)$result, "id" => $result]);
     }
 
-    private function trackClick($data) {
+    /**
+     * Deleta um grupo (Apenas Admin/Manager)
+     */
+    public function deleteGroup($data, $loggedUser) {
+        $this->authorize($loggedUser);
         $id = $data['id'] ?? null;
-        if ($id && $this->groupRepo->incrementClick($id)) {
-            return Response::json(["success" => true]);
-        }
-        return Response::json(["success" => false], 400);
-    }
 
-    private function delete($id) {
-        $this->checkAuth();
         if ($id && $this->groupRepo->softDelete($id)) {
-            $this->adminRepo->saveLog($this->loggedUser['id'], $this->loggedUser['name'], 'DELETE_GROUP', "Removeu grupo ID: $id", $id, 'WA_GROUP');
+            $this->adminRepo->saveLog(
+                $loggedUser['id'], 
+                $loggedUser['name'], 
+                'DELETE_GROUP', 
+                "Removeu grupo ID: $id", 
+                $id, 
+                'WA_GROUP'
+            );
             return Response::json(["success" => true]);
         }
-        return Response::json(["success" => false, "message" => "ID inválido"], 400);
+        return Response::json(["success" => false, "message" => "Erro ao remover ou ID inválido"], 400);
     }
 
-    private function checkAuth() {
+    public function checkAuth() {
         $role = strtolower($this->loggedUser['role'] ?? '');
         if (!in_array($role, ['admin', 'manager'])) {
             Response::json(["success" => false, "message" => "Não autorizado"], 403);

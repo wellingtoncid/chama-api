@@ -57,7 +57,8 @@ try {
     $router->post('/api/update-quick-profile', 'UserController@updateProfile');
     $router->post('/api/update-user-basic', 'UserController@updateProfile');
 
-    $router->get('/api/get-public-profile', 'UserController@getPublicProfile'); //User
+    $router->get('/api/get-public-profile', 'UserController@getUserSummary'); //User
+    $router->get('/api/user/details/:id', 'UserController@getUserSummary'); //trocar acima
     $router->get('/api/get-by-slug', 'UserController@getBySlug');
     $router->get('/api/check-slug', 'UserController@checkSlug');
     $router->post('/api/upload-image', 'UserController@uploadImage');
@@ -65,7 +66,8 @@ try {
     $router->post('/api/delete-account', 'UserController@deleteAccount');
     
     $router->get('/api/public-freight/:slug', 'PublicController@getFreightDetails');
-    $router->get('/api/public-profile', 'PublicController@getPublicProfile'); //Public profile
+    $router->get('/api/public-profile', 'PublicController@getProfilePage'); //Public profile
+    $router->get('/api/profile/page/:slug', 'PublicController@getProfilePage'); //trocar acima
     $router->get('/api/get-user-posts', 'PublicController@getPublicPosts');
     $router->get('/api/get-user-ads', 'PublicController@getPublicAds'); //Criar
 
@@ -132,9 +134,10 @@ try {
 
     // --- GRUPOS & COMUNIDADES ---
     $router->get('/api/list-groups', 'GroupController@listGroups');
-    $router->post('/api/manage-groups', 'GroupController@manage');
-    //$router->post('/api/log-group-click', 'GroupController@logClick');
-    $router->post('/api/portal-request', 'AdminController@storePortalRequest');
+    $router->post('/api/manage-groups', 'GroupController@manageGroups');
+    $router->post('/api/log-group-click', 'GroupController@logGroupClick');
+    $router->post('/api/portal-request', 'AdminController@storePortalRequest'); //verificar
+
 
     // --- PAGAMENTOS & MEMBRESIA ---
     $router->post('/api/checkout', 'PaymentController@checkout');
@@ -181,11 +184,16 @@ try {
             $router->post('/api/admin-update-freight', 'AdminController@updateFreightStatus');
             $router->post('/api/manage-freights', 'AdminController@manageFreights');
 
-            // Leads e ADS
-            $router->get('/api/admin-portal-requests', 'AdminController@getPortalRequests');
-            $router->post('/api/admin-update-lead', 'AdminController@updateLeadInternal');
+            // Gestão de Leads (Novo Sistema CRM)
+            $router->post('/api/admin-portal-requests', 'LeadController@createRequest');
+            $router->get('/api/admin-portal-requests', 'LeadController@listLeads');
+            $router->post('/api/admin-update-lead', 'LeadController@handleAction');
+            $router->get('/api/admin-lead-history', 'LeadController@getHistory');
+
             $router->post('/api/admin-manage-ads', 'AdminController@manageAds');
-            
+            //$router->get('/api/admin-portal-requests', 'AdminController@getPortalRequests');
+            //$router->post('/api/admin-update-lead', 'AdminController@updateLeadInternal');    
+
             // Créditos e Planos
             $router->post('/api/admin/add-credits', 'AdminController@manualAddCredits');
             $router->post('/api/admin-manage-plans', 'AdminController@managePlans');
@@ -204,6 +212,7 @@ try {
             $router->get('/api/admin-revenue-report', 'AdminController@getRevenueReport');
             $router->get('/api/admin-audit-logs', 'AdminController@listLogs');
             $router->post('/api/admin-update-settings', 'AdminController@updateSettings');
+            $router->post('/api/delete-group', 'GroupController@delete');
         }
     }
 

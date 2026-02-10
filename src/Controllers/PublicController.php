@@ -103,7 +103,7 @@ class PublicController {
         }
     }
 
-    public function getPublicProfile($data) {
+    public function getProfilePage($data) {
         $slug = isset($data['slug']) ? trim($data['slug']) : '';
         if (empty($slug)) {
             return Response::json(["success" => false, "message" => "Identificador obrigatório."], 400);

@@ -56,7 +56,7 @@ class UserController {
     /**
      * Rota: GET /api/get-public-profile
      */
-    public function getPublicProfile($data, $loggedUser) {
+    public function getUserSummary($data, $loggedUser) {
         $id = $data['id'] ?? $data['user_id'] ?? 0;
         if (!$id) return Response::json(["success" => false, "message" => "ID inválido"], 400);
 

@@ -4,6 +4,7 @@ namespace App\Controllers;
 
 use App\Core\Response;
 use App\Repositories\AdminRepository;
+use App\Repositories\GroupRepository;
 use Exception;
 
 class AdminController {
@@ -11,10 +12,12 @@ class AdminController {
     private $db;
     private $notif;
     private $loggedUser;
+    private $groupRepo;
 
     public function __construct($db, $loggedUser = null) {
         $this->db = $db;
         $this->repo = new AdminRepository($db);
+        $this->groupRepo = new GroupRepository($db);
         $this->loggedUser = $loggedUser; 
 
         // Definição do caminho antes do uso
@@ -193,6 +196,12 @@ class AdminController {
         return Response::json(["success" => false]);
     }
 
+    public function softDeleteLead($id) {
+        // Em vez de apagar, apenas marca o tempo da exclusão
+        $sql = "UPDATE portal_requests SET deleted_at = NOW() WHERE id = ?";
+        return $this->db->prepare($sql)->execute([$id]);
+    }
+
     public function manageAds($data, $loggedUser) {
         $this->authorize($loggedUser);
         $id = $data['id'] ?? null;
@@ -227,6 +236,14 @@ class AdminController {
 
         try {
             $this->db->beginTransaction();
+
+            // Valida se usuário existe
+            $stmtCheck = $this->db->prepare("SELECT id FROM users WHERE id = ?");
+            $stmtCheck->execute([$userId]);
+            if (!$stmtCheck->fetch()) {
+                throw new Exception("Usuário não encontrado");
+            }
+            
             $this->db->prepare("UPDATE users SET ad_credits = ad_credits + :amount WHERE id = :id")->execute([':amount' => $amount, ':id' => $userId]);
             
             $this->db->prepare("INSERT INTO credit_transactions (user_id, amount, type, description, created_at) VALUES (?, ?, 'recharge', ?, NOW())")
@@ -356,5 +373,14 @@ class AdminController {
         }
         
         return Response::json(["success" => false]);
+    }
+
+    // --- NOVO: GESTÃO DE GRUPOS (WHATSAPP) ---
+    
+    public function listAllGroups($data, $loggedUser) {
+        $this->authorize($loggedUser);
+        // Passamos 'admin' para ignorar o filtro de status 'active' no Repository
+        $groups = $this->groupRepo->listActive('admin'); 
+        return Response::json(["success" => true, "data" => $groups]);
     }
 }
