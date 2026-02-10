@@ -13,9 +13,11 @@ class AdminController {
     private $notif;
     private $loggedUser;
     private $groupRepo;
+    private $adminRepo;
 
-    public function __construct($db, $loggedUser = null) {
+    public function __construct($db, $adminRepo = null, $loggedUser = null) {
         $this->db = $db;
+        $this->adminRepo = $adminRepo;
         $this->repo = new AdminRepository($db);
         $this->groupRepo = new GroupRepository($db);
         $this->loggedUser = $loggedUser; 
@@ -92,17 +94,39 @@ class AdminController {
     }
 
     public function listLogs($data, $loggedUser) {
-        $this->authorize($loggedUser, 'ADMIN');
-        $limit = $data['limit'] ?? 50;
-        return Response::json(["success" => true, "data" => $this->repo->getAuditLogs((int)$limit)]);
+        if (!$this->adminRepo) {
+             $this->adminRepo = $this->repo; 
+        }
+
+        if (!$loggedUser || $loggedUser['role'] !== 'ADMIN') {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 403);
+        }
+
+        $limit = isset($data['limit']) ? (int)$data['limit'] : 50;
+        $logs = $this->adminRepo->getAuditLogs($limit); 
+
+        return Response::json([
+            "success" => true, 
+            "data" => $logs
+        ]);
     }
 
     // --- GESTÃO DE USUÁRIOS ---
 
     public function listUsers($data, $loggedUser) {
-        $this->authorize($loggedUser);
-        $users = $this->repo->listUsersByRole($data['role'] ?? '%', $data['search'] ?? '%');
-        return Response::json(["success" => true, "data" => $users]);
+        try {
+            $this->authorize($loggedUser); // Verifica se é Admin/Manager
+            
+            // Se o front não manda filtros, buscamos todas as empresas (%)
+            $users = $this->repo->listUsersByRole('company', '%'); 
+            
+            return Response::json([
+                "success" => true, 
+                "data" => $users
+            ]);
+        } catch (Exception $e) {
+            return Response::json(["success" => false, "error" => $e->getMessage()], 403);
+        }
     }
 
     public function manageUsers($data, $loggedUser) {

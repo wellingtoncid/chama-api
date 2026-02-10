@@ -27,10 +27,13 @@ class AdminRepository {
      */
     public function getRecentActivities() {
         $sql = "SELECT 
+                    id,
                     user_name as user, 
                     description as action, 
                     created_at as time, 
-                    target_type as type
+                    target_type as type,
+                    ip_address,
+                    user_agent
                 FROM logs_auditoria 
                 ORDER BY created_at DESC 
                 LIMIT 10";
@@ -53,7 +56,6 @@ class AdminRepository {
                 (SELECT COUNT(*) FROM users WHERE role = 'company' AND deleted_at IS NULL) as companies,
                 (SELECT COUNT(*) FROM freights WHERE status = 'PENDING') as pending_freights,
                 (SELECT COUNT(*) FROM freights WHERE status = 'OPEN') as active_freights,
-                (SELECT COUNT(*) FROM users) as total_users,
                 (SELECT COUNT(*) FROM portal_requests WHERE status = 'pending') as pending_leads,
                 IFNULL(SUM(views_count), 0) as total_views,
                 IFNULL(SUM(clicks_count), 0) as total_clicks
@@ -100,13 +102,19 @@ class AdminRepository {
         $sql = "UPDATE freights SET is_featured = ?, requested_featured = '0' WHERE id = ?";
         return $this->db->prepare($sql)->execute([$featured, $id]);
     }
-
+    
     public function getAuditLogs($limit = 50) {
-        $sql = "SELECT * FROM logsauditoria ORDER BY created_at DESC LIMIT ?";
-        $stmt = $this->db->prepare($sql);
-        $stmt->bindValue(1, (int)$limit, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "SELECT * FROM logs_auditoria ORDER BY created_at DESC LIMIT :limit";
+        
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            error_log("Erro ao buscar logs: " . $e->getMessage());
+            return [];
+        }
     }
 
     // DASHBOARD & ESTATÍSTICAS AVANÇADAS

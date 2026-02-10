@@ -37,6 +37,7 @@ try {
     // 5. Autenticação JWT 
     // Certifique-se que a classe App\Core\Auth usa o seu AuthMiddleware internamente
     $loggedUser = Auth::getAuthenticatedUser() ?: null;
+    $role = $loggedUser ? strtoupper($loggedUser['role'] ?? '') : '';
 
     // 6. Inicialização do Router
     $router = new Router($_SERVER['REQUEST_URI'], $_SERVER['REQUEST_METHOD']);
@@ -57,7 +58,7 @@ try {
     $router->post('/api/update-quick-profile', 'UserController@updateProfile');
     $router->post('/api/update-user-basic', 'UserController@updateProfile');
 
-    $router->get('/api/get-public-profile', 'UserController@getUserSummary'); //User
+    $router->get('/api/get-public-profile', 'UserController@getUserSummary'); //User @deprecated
     $router->get('/api/user/details/:id', 'UserController@getUserSummary'); //trocar acima
     $router->get('/api/get-by-slug', 'UserController@getBySlug');
     $router->get('/api/check-slug', 'UserController@checkSlug');
@@ -66,7 +67,7 @@ try {
     $router->post('/api/delete-account', 'UserController@deleteAccount');
     
     $router->get('/api/public-freight/:slug', 'PublicController@getFreightDetails');
-    $router->get('/api/public-profile', 'PublicController@getProfilePage'); //Public profile
+    $router->get('/api/public-profile', 'PublicController@getProfilePage'); //Public profile @deprecated
     $router->get('/api/profile/page/:slug', 'PublicController@getProfilePage'); //trocar acima
     $router->get('/api/get-user-posts', 'PublicController@getPublicPosts');
     $router->get('/api/get-user-ads', 'PublicController@getPublicAds'); //Criar
@@ -104,6 +105,7 @@ try {
     $router->get('/api/ads/report/:id', 'AdController@getReport');
     $router->post('/api/ads/save', 'AdController@store');
     $router->delete('/api/ads/:id', 'AdController@store');
+    
 
     // --- MARKETPLACE & LISTINGS ---
     $router->get('/api/listings', 'ListingController@getAll');
@@ -174,7 +176,8 @@ try {
             $router->get('/api/admin-dashboard-data', 'AdminController@getDashboardData');
 
             // Usuários
-            $router->get('/api/admin-list-users', 'AdminController@listUsers');
+            $router->get('/api/admin-list-users', 'AdminController@listUsers'); //@deprecated - verificar
+            $router->get('/api/list-all-users', 'AdminController@listUsers'); //new
             $router->post('/api/admin-update-user', 'AdminController@manageUsers');
             $router->post('/api/admin-verify-user', 'AdminController@verifyUser');
             $router->post('/api/admin-delete-user', 'AdminController@deleteUser');
@@ -183,6 +186,7 @@ try {
             $router->get('/api/admin-list-freights', 'AdminController@listAllFreights');
             $router->post('/api/admin-update-freight', 'AdminController@updateFreightStatus');
             $router->post('/api/manage-freights', 'AdminController@manageFreights');
+            
 
             // Gestão de Leads (Novo Sistema CRM)
             $router->post('/api/admin-portal-requests', 'LeadController@createRequest');

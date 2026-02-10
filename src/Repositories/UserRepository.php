@@ -975,4 +975,30 @@ class UserRepository {
         $stmt->execute([':id' => (int)$id]);
         return $stmt->fetch(\PDO::FETCH_ASSOC);
     }
+
+    public function listAll() {
+        // Retorna apenas o essencial para não pesar a requisição
+        return $this->db->query("
+            SELECT id, name, email, role, company_name, status 
+            FROM users 
+            WHERE role = 'company' 
+            ORDER BY company_name ASC
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // Caso seu Controller use o método listUsersByRole:
+    public function listUsersByRole($role = '%', $search = '%') {
+        $stmt = $this->db->prepare("
+            SELECT id, name, email, role, company_name, status 
+            FROM users 
+            WHERE role LIKE :role 
+            AND (name LIKE :search OR email LIKE :search OR company_name LIKE :search)
+            ORDER BY created_at DESC
+        ");
+        $stmt->execute([
+            'role' => $role,
+            'search' => "%$search%"
+        ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
 }
