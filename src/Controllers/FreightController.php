@@ -674,19 +674,21 @@ class FreightController {
         }
     }
 
-    public function update($data, $loggedUser) {
+    public function updateFreight($data, $loggedUser) {
         if (!$loggedUser) return Response::json(["success" => false], 401);
 
         $id = (int)($data['id'] ?? 0);
         
-        // 1. Busca o frete original para validar posse
+        // 1. Busca o frete original para validar posse e para o LOG (old_values)
         $currentFreight = $this->repo->getById($id);
         if (!$currentFreight) {
             return Response::json(["success" => false, "message" => "Frete não encontrado"], 404);
         }
 
+        $is_admin = in_array(strtoupper($loggedUser['role']), ['ADMIN', 'MANAGER']);
+
         // 2. Trava de Segurança
-        if ((int)$currentFreight['user_id'] !== (int)$loggedUser['id'] && strtoupper($loggedUser['role']) !== 'ADMIN') {
+        if ((int)$currentFreight['user_id'] !== (int)$loggedUser['id'] && !$is_admin) {
             return Response::json(["success" => false, "message" => "Acesso negado"], 403);
         }
 
@@ -705,11 +707,14 @@ class FreightController {
                 'body_type'    => $data['body_type'] ?? $currentFreight['body_type'],
                 'description'  => strip_tags($data['description'] ?? $currentFreight['description']),
                 'price'        => (float)($data['price'] ?? $currentFreight['price']),
-                'whatsapp'     => preg_replace('/\D/', '', $data['whatsapp'] ?? $currentFreight['whatsapp'])
             ];
 
+            // 3.1 Se for ADMIN, permite trocar a empresa dona da carga (user_id)
+            if ($is_admin && isset($data['user_id'])) {
+                $payload['user_id'] = (int)$data['user_id'];
+            }
+
             // 4. Lógica de Atualização do Slug
-            // Se mudou o produto ou as cidades, o slug antigo fica "mentiroso". Vamos gerar um novo.
             if ($payload['product'] !== $currentFreight['product'] || 
                 $payload['origin_city'] !== $currentFreight['origin_city'] ||
                 $payload['dest_city'] !== $currentFreight['dest_city']) {
@@ -718,8 +723,33 @@ class FreightController {
                 $payload['slug'] = $this->generateSlug($slugBase, $id);
             }
 
-            // 5. Salva as alterações
-            $this->repo->update($id, $payload);
+            // 5. Salva as alterações no banco
+            $updateSuccess = $this->repo->update($id, $payload);
+
+            if ($updateSuccess) {
+                // 6. NOVO: GRAVAÇÃO DA AUDITORIA
+                // Identificamos o que mudou para não gravar um log gigante à toa
+                $changes = [];
+                foreach ($payload as $key => $value) {
+                    if ($value != $currentFreight[$key]) {
+                        $changes['old'][$key] = $currentFreight[$key];
+                        $changes['new'][$key] = $value;
+                    }
+                }
+
+                if (!empty($changes)) {
+                    $this->auditRepo->saveLog(
+                        $loggedUser['id'],
+                        $loggedUser['name'],
+                        'UPDATE_FREIGHT',
+                        "Editou o frete #{$id} - " . $payload['product'],
+                        $id,
+                        'freights',
+                        $changes['old'], // Valores anteriores
+                        $changes['new']  // Valores novos
+                    );
+                }
+            }
 
             $this->db->commit();
 
@@ -730,7 +760,7 @@ class FreightController {
             ]);
 
         } catch (Exception $e) {
-            if ($this->db->inTransaction()) $this->db->rollBack();
+            if ($this->db && $this->db->inTransaction()) $this->db->rollBack();
             error_log("Erro no Update Freight {$id}: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro ao salvar alterações"], 500);
         }

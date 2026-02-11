@@ -159,6 +159,10 @@ try {
     $router->get('/api/chat/rooms', 'ChatController@listRooms');
     $router->post('/api/chat/init', 'ChatController@initChat');
 
+    // --- LOGS DE AUDITORIA ---
+    $router->post('/admin/logs', 'AuditController@index');
+    $router->post('/admin/logs/detail', 'AuditController@show');
+
     // --- BLOCO ADMINISTRATIVO / GESTÃO (RESTRITO) ---
     $role = strtoupper($loggedUser['role'] ?? '');
         if ($loggedUser && in_array($role, ['ADMIN', 'MANAGER', 'SUPPORT'])) {

@@ -998,7 +998,7 @@ class FreightRepository {
 
     public function getPublicPostsByUser($userId) {
         $sql = "SELECT 
-                    id, title, product, origin_city, destination_city, 
+                    id, title, product, origin_city, dest_city, 
                     created_at, slug, status, body_type, vehicle_type 
                 FROM freights 
                 WHERE user_id = :uid 
