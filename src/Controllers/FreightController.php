@@ -14,14 +14,21 @@ class FreightController {
     private $chatRepo;
     private $auditRepo;
 
-    public function __construct($freightRepo, $notificationService, $chatRepo = null, $userRepo = null, $db = null, $auditRepo = null) { 
-        $this->repo = $freightRepo;
-        $this->notificationService = $notificationService;
-        $this->chatRepo = $chatRepo;
-        $this->userRepo = $userRepo; 
-        $this->auditRepo = $auditRepo;
-        $this->db = $db; 
-    }
+    public function __construct(
+    $freightRepo, 
+    $notificationService, 
+    $userRepo = null,
+    $db = null,
+    $chatRepo = null,
+    $auditRepo = null
+) { 
+    $this->repo = $freightRepo;
+    $this->notificationService = $notificationService;
+    $this->userRepo = $userRepo;
+    $this->db = $db;
+    $this->chatRepo = $chatRepo;
+    $this->auditRepo = $auditRepo;
+}
 
    public function listAll($data, $loggedUser) {
         // 1. Limpeza de inputs
@@ -52,7 +59,7 @@ class FreightController {
         }
     }
 
-    public function create($data, $user) {
+    public function createFreight($data, $user) {
         $lastFreight = $this->repo->getLastFreightTime((int)$user['id']);
             if ($lastFreight && (time() - strtotime($lastFreight)) < 60) {
                 return Response::json(["success" => false, "message" => "Aguarde um minuto para postar novamente."], 429);
@@ -69,8 +76,8 @@ class FreightController {
         }
 
         // --- NOVA VALIDAÇÃO DE DOCUMENTOS ---
-        $profile = $this->userRepo->getProfile($user['id']); 
-        if ($role !== 'ADMIN' && ($profile['document_status'] ?? '') !== 'approved') {
+        $profile = $this->userRepo->getProfileData($user['id']); 
+        if ($role !== 'ADMIN' && ($profile['verification_status'] ?? '') !== 'verified') {
             return Response::json([
                 "success" => false, 
                 "message" => "Seus documentos ainda não foram aprovados. Você não pode publicar fretes."
@@ -93,7 +100,7 @@ class FreightController {
             $finalSlug = $this->generateSlug($slugBase, $uniqueSuffix);
 
             $payload = [
-                'user_id'      => (int)$user['id'],
+                'user_id' => ($role === 'ADMIN' && !empty($data['user_id'])) ? (int)$data['user_id'] : (int)$user['id'],
                 'origin_city'  => trim($data['origin_city']),
                 'origin_state' => strtoupper(trim($data['origin_state'] ?? '')),
                 'dest_city'    => trim($data['dest_city']),
@@ -107,8 +114,7 @@ class FreightController {
                 'status'       => $status,
                 'slug'         => $finalSlug, // Slug já vai no INSERT
                 'expires_at'   => date('Y-m-d H:i:s', strtotime("+$days days")),
-                'is_featured'  => $isFeatured ? 1 : 0,
-                'whatsapp'     => $whatsapp
+                'is_featured'  => $isFeatured ? 1 : 0
             ];
 
             $contentToVerify = ($data['product'] ?? '') . ' ' . ($data['description'] ?? '');
@@ -122,9 +128,9 @@ class FreightController {
             }
 
             // 4. Persistência Única
-            $this->db->beginTransaction();
+            //$this->db->beginTransaction();
             $id = $this->repo->save($payload);
-            $this->db->commit();
+            //$this->db->commit();
 
             return Response::json([
                 "success" => true, 
@@ -681,23 +687,30 @@ class FreightController {
 
         $id = (int)($data['id'] ?? 0);
         
-        // 1. Busca o frete original para validar posse e para o LOG (old_values)
+        // 1. Busca o frete original
         $currentFreight = $this->repo->getRawById($id);
         if (!$currentFreight) {
             return Response::json(["success" => false, "message" => "Frete não encontrado"], 404);
         }
 
-        $is_admin = in_array(strtoupper($loggedUser['role']), ['ADMIN', 'MANAGER']);
-
-        // 2. Trava de Segurança
-        if ((int)$currentFreight['user_id'] !== (int)$loggedUser['id'] && !$is_admin) {
+        $is_admin = in_array(strtolower($loggedUser['role'] ?? ''), ['admin', 'manager']);
+        if (!$is_admin && (int)$currentFreight['user_id'] !== (int)$loggedUser['id']) {
             return Response::json(["success" => false, "message" => "Acesso negado"], 403);
         }
 
         try {
-            $this->db->beginTransaction();
+             // --- NOVO: VALIDAÇÃO DE TERMOS PROIBIDOS --- Validamos o produto e a descrição ---
+            $contentToValidate = ($data['product'] ?? '') . ' ' . ($data['description'] ?? '');
+            if (!$this->isContentClean($contentToValidate)) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => "Conteúdo impróprio: Remova termos proibidos ou excesso de links."
+                ], 400);
+            }
 
-            // 3. Preparação dos dados (Apenas o que é permitido editar)
+            if (!$this->db->inTransaction()) $this->db->beginTransaction();
+
+            // 2. Preparação dos dados
             $payload = [
                 'origin_city'  => trim($data['origin_city'] ?? $currentFreight['origin_city']),
                 'origin_state' => strtoupper(trim($data['origin_state'] ?? $currentFreight['origin_state'])),
@@ -711,44 +724,42 @@ class FreightController {
                 'price'        => (float)($data['price'] ?? $currentFreight['price']),
             ];
 
-            // 3.1 Se for ADMIN, permite trocar a empresa dona da carga (user_id)
             if ($is_admin && isset($data['user_id'])) {
                 $payload['user_id'] = (int)$data['user_id'];
             }
 
-            // 4. Lógica de Atualização do Slug
-            if ($payload['product'] !== $currentFreight['product'] || 
-                $payload['origin_city'] !== $currentFreight['origin_city'] ||
-                $payload['dest_city'] !== $currentFreight['dest_city']) {
-                
+            // --- CORREÇÃO DO SLUG ---
+            $hasLocationChanged = ($payload['origin_city'] !== $currentFreight['origin_city'] || $payload['dest_city'] !== $currentFreight['dest_city']);
+            $hasProductChanged = ($payload['product'] !== $currentFreight['product']);
+
+            if ($hasLocationChanged || $hasProductChanged || empty($currentFreight['slug'])) {
+                // Se mudou algo importante OU se o frete original estava sem slug, gera um novo
                 $slugBase = $payload['product'] . " de " . $payload['origin_city'] . " para " . $payload['dest_city'];
                 $payload['slug'] = $this->generateSlug($slugBase, $id);
+            } else {
+                // Se não mudou nada que afete o slug, mantemos o slug que já existia no banco
+                $payload['slug'] = $currentFreight['slug'];
             }
 
-            // 5. Salva as alterações no banco
+            // 3. Salva no banco
             $updateSuccess = $this->repo->update($id, $payload);
 
             if ($updateSuccess) {
-                // 6. NOVO: GRAVAÇÃO DA AUDITORIA
-                // Identificamos o que mudou para não gravar um log gigante à toa
+                // Auditoria de logs
                 $changes = [];
                 foreach ($payload as $key => $value) {
-                    if ($value != $currentFreight[$key]) {
+                    if (isset($currentFreight[$key]) && $value != $currentFreight[$key]) {
                         $changes['old'][$key] = $currentFreight[$key];
                         $changes['new'][$key] = $value;
                     }
                 }
 
-                if (!empty($changes)) {
+                if ($this->auditRepo && !empty($changes)) {
+                    $userName = $loggedUser['name'] ?? $loggedUser['company_name'] ?? 'Usuário '.$loggedUser['id'];
                     $this->auditRepo->saveLog(
-                        $loggedUser['id'],
-                        $loggedUser['name'],
-                        'UPDATE_FREIGHT',
-                        "Editou o frete #{$id} - " . $payload['product'],
-                        $id,
-                        'freights',
-                        $changes['old'], // Valores anteriores
-                        $changes['new']  // Valores novos
+                        $loggedUser['id'], $userName, 'UPDATE_FREIGHT',
+                        "Editou o frete #{$id}", $id, 'freights',
+                        $changes['old'], $changes['new']
                     );
                 }
             }
@@ -758,13 +769,12 @@ class FreightController {
             return Response::json([
                 "success" => true, 
                 "message" => "Frete atualizado com sucesso!",
-                "slug"    => $payload['slug'] ?? $currentFreight['slug']
+                "slug"    => $payload['slug'] // Retorna o slug (novo ou mantido)
             ]);
 
         } catch (Exception $e) {
             if ($this->db && $this->db->inTransaction()) $this->db->rollBack();
-            error_log("Erro no Update Freight {$id}: " . $e->getMessage());
-            return Response::json(["success" => false, "message" => "Erro ao salvar alterações"], 500);
+            return Response::json(["success" => false, "message" => "Erro: " . $e->getMessage()], 500);
         }
     }
     
@@ -772,9 +782,23 @@ class FreightController {
      * Helper para gerar URLs amigáveis
      */
     private function generateSlug($text, $id) {
-        // Exemplo: "Carga de Café" -> "carga-de-cafe-123"
-        $text = iconv('UTF-8', 'ASCII//TRANSLIT', $text); 
-        $slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $text)));
+        // 1. Converter para minúsculo e remover espaços extras
+        $text = mb_strtolower(trim($text), 'UTF-8');
+        // 2. Substituição manual de acentos (Garante funcionamento em qualquer servidor)
+        $chars = [
+            'a' => '/[áàâãäå]/u', 'e' => '/[éèêë]/u', 'i' => '/[íìîï]/u',
+            'o' => '/[óòôõö]/u', 'u' => '/[úùûü]/u', 'c' => '/[ç]/u',
+            'n' => '/[ñ]/u'
+        ];
+        foreach ($chars as $replacement => $pattern) {
+            $text = preg_replace($pattern, $replacement, $text);
+        }
+        // 3. Remove tudo que não for letra, número ou espaço
+        $text = preg_replace('/[^a-z0-9\s-]/', '', $text);
+        // 4. Transforma espaços e múltiplos hifens em um único hífen
+        $text = preg_replace('/[\s-]+/', '-', $text);
+        // 5. Remove hifens das extremidades e concatena o ID
+        $slug = trim($text, '-');
         return $slug . '-' . $id;
     }
 

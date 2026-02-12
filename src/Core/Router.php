@@ -8,6 +8,8 @@ use App\Repositories\MetricsRepository;
 use App\Repositories\AdRepository;
 use App\Repositories\GroupRepository;
 use App\Repositories\ListingRepository;
+use App\Repositories\UserRepository;
+use App\Repositories\AuditRepository;
 
 class Router {
     private $uri;
@@ -93,7 +95,10 @@ class Router {
                 $controller = new $controllerClass(
                     new FreightRepository($db), 
                     new NotificationService($db), 
-                    new ChatRepository($db)
+                    new UserRepository($db),
+                    $db,
+                    new ChatRepository($db),
+                    new AuditRepository($db)
                 );
                 break;
 
@@ -103,7 +108,8 @@ class Router {
                     new FreightRepository($db), 
                     new AdRepository($db), 
                     new GroupRepository($db), 
-                    new ListingRepository($db)
+                    new ListingRepository($db),
+                    $db
                 );
                 break;
 

@@ -325,7 +325,7 @@ class UserRepository {
                 u.rating_avg, u.rating_count, u.balance,
                 u.city as user_city, u.state as user_state, 
                 p.avatar_url, p.cover_url, 
-                p.bio, p.slug, p.vehicle_type, p.body_type, p.extended_attributes,
+                p.bio, p.slug, p.vehicle_type, p.body_type, p.verification_status, p.extended_attributes,
                 -- CAMPOS DA EMPRESA (Acréscimos necessários)
                 c.name_fantasy as company_name, 
                 c.cnpj as company_cnpj,

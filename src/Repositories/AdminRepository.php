@@ -13,13 +13,20 @@ class AdminRepository {
     }
 
    // --- AUDITORIA & LOGS ---
-    public function saveLog($uId, $uName, $type, $desc, $targetId, $targetType) {
+    public function saveLog($uId, $uName, $type, $desc, $targetId, $targetType, $old = null, $new = null) {
         $ip = $_SERVER['REMOTE_ADDR'] ?? null;
         $agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
 
-        $sql = "INSERT INTO logs_auditoria (user_id, user_name, action_type, description, target_id, target_type, ip_address, user_agent) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-        return $this->db->prepare($sql)->execute([$uId, $uName, $type, $desc, $targetId, $targetType, $ip, $agent]);
+        // Converta arrays para string JSON se necessário
+        $oldStr = $old ? json_encode($old) : null;
+        $newStr = $new ? json_encode($new) : null;
+
+        $sql = "INSERT INTO logs_auditoria 
+            (user_id, user_name, action_type, description, target_id, target_type, ip_address, user_agent, old_values, new_values) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        return $this->db->prepare($sql)->execute([
+            $uId, $uName, $type, $desc, $targetId, $targetType, $ip, $agent, $oldStr, $newStr
+        ]);
     }
 
      /**
@@ -82,26 +89,33 @@ class AdminRepository {
                     f.origin_city, 
                     f.origin_state,
                     f.dest_city,      
-                    f.dest_state,     
+                    f.dest_state,
                     f.product, 
                     f.weight,         
                     f.price,         
                     f.vehicle_type, 
                     f.body_type,     
-                    f.description,    
-                    f.whatsapp,       
-                    f.is_featured as isFeatured, 
+                    f.description,        
+                    f.is_featured, 
                     f.requested_featured,
                     f.user_id,
                     f.status,
-                    u.name as company_name
+                    f.payment_status,
+                    COALESCE(c.name_fantasy, u.name) as company_name
                 FROM freights f
                 LEFT JOIN users u ON f.user_id = u.id
-                WHERE f.is_deleted = 0
+                LEFT JOIN companies c ON f.user_id = c.owner_id
+                WHERE f.deleted_at IS NULL
                 AND f.status != 'DELETED'
                 ORDER BY f.created_at DESC";
-        $stmt = $this->db->query($sql);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute();
+            return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            error_log("Erro AdminRepository: " . $e->getMessage());
+            return [];
+        }
     }
 
     public function toggleFeatured($id, $featured) {
@@ -141,12 +155,30 @@ class AdminRepository {
     // USUÁRIOS (Incluso Soft Delete e Filtros)
 
     public function listUsersByRole($role = '%', $search = '%') {
-        $sql = "SELECT id, name, email, whatsapp, role, is_verified, status, created_at 
-                FROM users 
-                WHERE role LIKE ? AND (name LIKE ? OR email LIKE ?) AND deleted_at IS NULL 
-                ORDER BY id DESC";
+        $sql = "SELECT 
+                    u.id, 
+                    u.email, 
+                    u.whatsapp, 
+                    u.role, 
+                    u.is_verified, 
+                    u.status, 
+                    u.created_at,
+                    -- Se houver empresa vinculada, usa o Nome Fantasia, senão usa o nome do usuário
+                    COALESCE(c.name_fantasy, u.name) as name,
+                    c.name_fantasy as company_name
+                FROM users u
+                LEFT JOIN companies c ON u.company_id = c.id
+                WHERE u.role LIKE ? 
+                AND (u.name LIKE ? OR u.email LIKE ? OR c.name_fantasy LIKE ?) 
+                AND u.deleted_at IS NULL 
+                ORDER BY u.id DESC";
+
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$role, "%$search%", "%$search%"]);
+        
+        // Adicionamos o termo de busca também para o nome da empresa
+        $searchTerm = "%$search%";
+        $stmt->execute([$role, $searchTerm, $searchTerm, $searchTerm]);
+        
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
@@ -374,7 +406,7 @@ class AdminRepository {
                 FROM freights f
                 JOIN users u ON f.user_id = u.id
                 WHERE f.status = 'PENDING'
-                AND f.is_deleted = 0 
+                WHERE f.deleted_at IS NULL
                 ORDER BY f.created_at DESC
                 LIMIT 10";
                 

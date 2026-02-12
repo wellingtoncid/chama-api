@@ -171,11 +171,11 @@ class FreightRepository {
         $sql = "INSERT INTO freights (
                     user_id, origin_city, origin_state, dest_city, dest_state, 
                     product, weight, vehicle_type, body_type, description, 
-                    status, price, expires_at, is_featured, whatsapp, created_at
+                    status, price, expires_at, is_featured, slug, created_at
                 ) VALUES (
                     :user_id, :origin_city, :origin_state, :dest_city, :dest_state, 
                     :product, :weight, :vehicle_type, :body_type, :description, 
-                    :status, :price, :expires_at, :is_featured, :whatsapp, NOW()
+                    :status, :price, :expires_at, :is_featured, :slug, NOW()
                 )";
         
         try {
@@ -196,44 +196,59 @@ class FreightRepository {
             $stmt->bindValue(':price',        $data['price']);
             $stmt->bindValue(':expires_at',   $data['expires_at']);
             $stmt->bindValue(':is_featured',  (int)$data['is_featured'], PDO::PARAM_INT);
-            $stmt->bindValue(':whatsapp',     $data['whatsapp'] ?? null);
+            $stmt->bindValue(':slug',         $data['slug']);
 
             if ($stmt->execute()) {
-                $newId = $this->db->lastInsertId();
-                
-                // Gerar e atualizar o slug automaticamente para não deixar o campo nulo
-                $slug = $this->generateSlug($data['product'], $newId);
-                $this->db->prepare("UPDATE freights SET slug = ? WHERE id = ?")
-                        ->execute([$slug, $newId]);
-                        
-                return $newId;
+                return $this->db->lastInsertId();
             }
             return false;
-
         } catch (\PDOException $e) {
-            // Log específico para erro de banco
             error_log("Erro SQL ao salvar frete: " . $e->getMessage());
-            return false;
+            return false; 
         }
     }
     
     public function update($id, $data) {
-        // 1. Removemos o slug do array de dados se ele existir
-        // Isso impede que o slug seja alterado mesmo que o nome do produto mude
-        if (isset($data['slug'])) {
-            unset($data['slug']);
-        }
+        // Definimos exatamente o que o banco aceita. 
+        // Se o React mandar 'whatsapp', o código vai ignorar e não vai quebrar.
+        $sql = "UPDATE freights SET 
+                    user_id = :user_id,
+                    origin_city = :origin_city, 
+                    origin_state = :origin_state, 
+                    dest_city = :dest_city, 
+                    dest_state = :dest_state, 
+                    product = :product, 
+                    weight = :weight, 
+                    vehicle_type = :vehicle_type, 
+                    body_type = :body_type, 
+                    description = :description, 
+                    price = :price,
+                    slug = :slug
+                WHERE id = :id";
 
-        $fields = "";
-        foreach ($data as $key => $value) {
-            $fields .= "{$key} = :{$key}, ";
-        }
-        $fields = rtrim($fields, ", ");
+        try {
+            $stmt = $this->db->prepare($sql);
+            
+            // Binds manuais para garantir que o tipo do dado está correto
+            $stmt->bindValue(':id',           (int)$id, \PDO::PARAM_INT);
+            $stmt->bindValue(':user_id',      (int)$data['user_id'], \PDO::PARAM_INT);
+            $stmt->bindValue(':origin_city',  $data['origin_city']);
+            $stmt->bindValue(':origin_state', $data['origin_state']);
+            $stmt->bindValue(':dest_city',    $data['dest_city']);
+            $stmt->bindValue(':dest_state',   $data['dest_state']);
+            $stmt->bindValue(':product',      $data['product']);
+            $stmt->bindValue(':weight',       $data['weight']);
+            $stmt->bindValue(':vehicle_type', $data['vehicle_type']);
+            $stmt->bindValue(':body_type',    $data['body_type']);
+            $stmt->bindValue(':description',  $data['description']);
+            $stmt->bindValue(':price',        $data['price']);
+            $stmt->bindValue(':slug',         $data['slug'] ?? ''); 
 
-        $sql = "UPDATE freights SET {$fields}, updated_at = NOW() WHERE id = :id";
-        
-        $data['id'] = (int)$id;
-        return $this->db->prepare($sql)->execute($data);
+            return $stmt->execute();
+        } catch (\Exception $e) {
+            error_log("Erro Crítico no Repository Update: " . $e->getMessage());
+            return false;
+        }
     }
  
     public function getRawById($id) {
@@ -253,7 +268,8 @@ class FreightRepository {
                     body_type, 
                     price, 
                     description, 
-                    whatsapp 
+                    status, 
+                    slug
                 FROM freights 
                 WHERE id = :id AND deleted_at IS NULL 
                 LIMIT 1";
@@ -266,6 +282,14 @@ class FreightRepository {
             error_log("Erro no getRawById: " . $e->getMessage());
             return null;
         }
+    }
+
+    public function getLastFreightTime($userId) {
+        $sql = "SELECT created_at FROM freights WHERE user_id = :uid ORDER BY created_at DESC LIMIT 1";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':uid' => (int)$userId]);
+        $res = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $res ? $res['created_at'] : null;
     }
 
     /**

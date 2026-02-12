@@ -77,10 +77,10 @@ try {
 
     // --- FRETES (SISTEMA CORE) ---
     $router->get('/api/freights', 'FreightController@listAll');
-    $router->post('/api/freights', 'FreightController@create');
+    $router->post('/api/create-freight', 'FreightController@createFreight');
+    $router->post('/api/update-freight', 'FreightController@updateFreight');
     $router->get('/api/list-freights', 'FreightController@listAll');
     $router->get('/api/list-my-freights', 'FreightController@listMyFreights');
-    $router->post('/api/update-freight', 'FreightController@updateFreight');
     $router->post('/api/delete-freight', 'FreightController@deleteFreight');
     $router->post('/api/toggle-favorite', 'FreightController@toggleFavorite');
     $router->get('/api/my-favorites', 'FreightController@listFavorites');
