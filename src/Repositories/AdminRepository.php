@@ -79,11 +79,17 @@ class AdminRepository {
     public function getAllFreightsForAdmin() {
         $sql = "SELECT 
                     f.id, 
-                    f.origin_city as origin_city, 
-                    f.dest_city as destination_city,
-                    f.origin_state as origin_state,
-                    f.dest_state as destination_state, 
+                    f.origin_city, 
+                    f.origin_state,
+                    f.dest_city,      
+                    f.dest_state,     
                     f.product, 
+                    f.weight,         
+                    f.price,         
+                    f.vehicle_type, 
+                    f.body_type,     
+                    f.description,    
+                    f.whatsapp,       
                     f.is_featured as isFeatured, 
                     f.requested_featured,
                     f.user_id,
@@ -172,11 +178,13 @@ class AdminRepository {
 
     public function listAllFreights() {
         return $this->db->query("
-            SELECT f.*, u.name as company_name 
+            SELECT f.*, c.name_fantasy as company_name 
             FROM freights f 
             LEFT JOIN users u ON f.user_id = u.id 
+            LEFT JOIN companies c ON u.company_id = c.id
             ORDER BY f.created_at DESC
         ")->fetchAll(PDO::FETCH_ASSOC);
+        //return Response::json(["success" => true, "data" => $freights]);
     }
 
     public function getFreightById($id) {
@@ -351,16 +359,22 @@ class AdminRepository {
     * Busca fretes com status 'PENDING' para aprovação no dashboard
     */
     public function getPendingFreights() {
-        $sql = "SELECT 
+       $sql = "SELECT 
                     f.id, 
-                    f.origin_city as origin, 
-                    f.destination_city as destination, 
+                    f.origin_city, 
+                    f.origin_state,
+                    f.dest_city,      
+                    f.dest_state,     
                     f.product,
+                    f.weight,         
+                    f.price,          
                     f.created_at,
+                    f.user_id,        
                     u.name as company_name
                 FROM freights f
                 JOIN users u ON f.user_id = u.id
                 WHERE f.status = 'PENDING'
+                AND f.is_deleted = 0 
                 ORDER BY f.created_at DESC
                 LIMIT 10";
                 

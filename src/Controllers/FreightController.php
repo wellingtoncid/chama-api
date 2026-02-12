@@ -12,12 +12,14 @@ class FreightController {
     private $repo;
     private $notificationService;
     private $chatRepo;
+    private $auditRepo;
 
-    public function __construct($freightRepo, $notificationService, $chatRepo = null, $userRepo = null, $db = null) { 
+    public function __construct($freightRepo, $notificationService, $chatRepo = null, $userRepo = null, $db = null, $auditRepo = null) { 
         $this->repo = $freightRepo;
         $this->notificationService = $notificationService;
         $this->chatRepo = $chatRepo;
         $this->userRepo = $userRepo; 
+        $this->auditRepo = $auditRepo;
         $this->db = $db; 
     }
 
@@ -680,7 +682,7 @@ class FreightController {
         $id = (int)($data['id'] ?? 0);
         
         // 1. Busca o frete original para validar posse e para o LOG (old_values)
-        $currentFreight = $this->repo->getById($id);
+        $currentFreight = $this->repo->getRawById($id);
         if (!$currentFreight) {
             return Response::json(["success" => false, "message" => "Frete não encontrado"], 404);
         }

@@ -236,6 +236,38 @@ class FreightRepository {
         return $this->db->prepare($sql)->execute($data);
     }
  
+    public function getRawById($id) {
+        if (!$id) return null;
+
+        // Selecionamos explicitamente todos os campos que o seu formulário React usa
+        $sql = "SELECT 
+                    id, 
+                    user_id, 
+                    origin_city, 
+                    origin_state, 
+                    dest_city, 
+                    dest_state, 
+                    product, 
+                    weight, 
+                    vehicle_type, 
+                    body_type, 
+                    price, 
+                    description, 
+                    whatsapp 
+                FROM freights 
+                WHERE id = :id AND deleted_at IS NULL 
+                LIMIT 1";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute(['id' => (int)$id]);
+            return $stmt->fetch(\PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            error_log("Erro no getRawById: " . $e->getMessage());
+            return null;
+        }
+    }
+
     /**
      * Registra métricas de visualização e cliques de forma otimizada.
      */
@@ -998,17 +1030,30 @@ class FreightRepository {
 
     public function getPublicPostsByUser($userId) {
         $sql = "SELECT 
-                    id, title, product, origin_city, dest_city, 
-                    created_at, slug, status, body_type, vehicle_type 
+                    id, 
+                    product, 
+                    origin_city, 
+                    origin_state, 
+                    dest_city,      -- Mantenha o nome igual ao banco
+                    dest_state, 
+                    weight, 
+                    price, 
+                    vehicle_type, 
+                    body_type, 
+                    description, 
+                    whatsapp, 
+                    status,
+                    user_id,
+                    created_at, 
+                    slug
                 FROM freights 
                 WHERE user_id = :uid 
-                AND status = 'active' 
+                AND status = 'OPEN' 
                 AND (deleted_at IS NULL)
-                ORDER BY created_at DESC 
-                LIMIT 50";
-                
+                ORDER BY created_at DESC";
+        
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([':uid' => $userId]);
+        $stmt->execute([':uid' => (int)$userId]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 }
