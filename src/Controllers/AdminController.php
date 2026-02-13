@@ -113,15 +113,114 @@ class AdminController {
 
     // --- GESTÃO DE USUÁRIOS ---
 
+    public function storeUser($loggedUser) {
+        try {
+            $this->authorize($loggedUser);
+            
+            // No POST, pegamos os dados do corpo da requisição
+            $data = json_decode(file_get_contents('php://input'), true);
+
+            // Validação básica
+            if (empty($data['email']) || empty($data['password'])) {
+                throw new Exception("Email e Senha são obrigatórios.");
+            }
+
+            // Verifica se o email já existe
+            if ($this->repo->emailExists($data['email'])) {
+                throw new Exception("Este email já está cadastrado.");
+            }
+
+            $result = $this->repo->createAdminUser($data);
+            return Response::json($result);
+
+        } catch (Exception $e) {
+            return Response::json(["success" => false, "message" => $e->getMessage()], 400);
+        }
+    }
+
+    public function createCompleteUser($data, $loggedAdminId) {
+        try {
+            $this->db->beginTransaction();
+
+            // 1. Tabela Principal: users (Usando suas colunas exatas)
+            $sqlUser = "INSERT INTO users (
+                name, email, password, role, user_type, plan_type, 
+                permissions, status, parent_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+            
+            $passwordHash = password_hash($data['password'], PASSWORD_DEFAULT);
+            
+            $this->db->prepare($sqlUser)->execute([
+                $data['name'],
+                $data['email'],
+                $passwordHash,
+                $data['role'],      // admin, company, driver, etc
+                $data['user_type'], // master, support, individual, etc
+                $data['plan_type'] ?? 'free',
+                $data['permissions'], // JSON das permissões
+                $data['status'] ?? 'pending',
+                $data['parent_id'] ?? null
+            ]);
+            
+            $userId = $this->db->lastInsertId();
+
+            // 2. Tabela de Perfil: user_profiles
+            $sqlProfile = "INSERT INTO user_profiles (
+                user_id, cpf_cnpj, phone, address, city, state, zip_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)";
+            
+            $this->db->prepare($sqlProfile)->execute([
+                $userId,
+                $this->sanitize($data['cpf_cnpj']),
+                $this->sanitize($data['phone']),
+                $data['address'] ?? null,
+                $data['city'] ?? null,
+                $data['state'] ?? null,
+                $data['zip_code'] ?? null
+            ]);
+
+            // 3. Tabela Financeira: user_wallets (Inicialização)
+            $this->db->prepare("INSERT INTO user_wallets (user_id, balance) VALUES (?, 0.00)")
+                    ->execute([$userId]);
+
+            // 4. Auditoria Interna: user_internal_notes
+            // Registra quem criou quem para segurança total
+            $this->db->prepare("INSERT INTO user_internal_notes (user_id, admin_id, note) VALUES (?, ?, ?)")
+                    ->execute([
+                        $userId, 
+                        $loggedAdminId, 
+                        "Usuário criado via Painel Admin em " . date('d/m/Y H:i')
+                    ]);
+
+            $this->db->commit();
+            return ["success" => true, "user_id" => $userId];
+
+        } catch (Exception $e) {
+            $this->db->rollBack();
+            return ["success" => false, "error" => $e->getMessage()];
+        }
+    }
+
+    private function sanitize($value) {
+        return preg_replace('/\D/', '', $value); // Remove tudo que não for número
+    }
+    /**
+     * Lista todos os usuários. 
+     * Corrigido para aceitar filtros e garantir que todos os perfis apareçam.
+     */
     public function listUsers($data, $loggedUser) {
         try {
-            $this->authorize($loggedUser); // Verifica se é Admin/Manager
-            
-            // Se o front não manda filtros, buscamos todas as empresas (%)
-            $users = $this->repo->listUsersByRole('company', '%'); 
+            $this->authorize($loggedUser);
+
+            // Agora aceita filtros vindos do front (role e busca por texto)
+            $role = $data['role'] ?? '%';   // Se não enviar, traz todos (driver, company, admin)
+            $search = $data['search'] ?? '%';
+
+            $users = $this->repo->listUsersByRole($role, $search); 
             
             return Response::json([
                 "success" => true, 
+                "count" => count($users),
                 "data" => $users
             ]);
         } catch (Exception $e) {
@@ -129,40 +228,113 @@ class AdminController {
         }
     }
 
+    /**
+     * Gerencia a edição de usuários com Log de Auditoria detalhado.
+     */
     public function manageUsers($data, $loggedUser) {
-        $this->authorize($loggedUser);
-        if ($this->repo->updateUserDetails($data)) {
-            $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'UPDATE_USER', "Editou usuário #{$data['id']}", $data['id'], 'USER');
-            return Response::json(["success" => true]);
-        }
-        return Response::json(["success" => false]);
-    }
+        try {
+            $this->authorize($loggedUser);
+            $id = $data['id'] ?? null;
 
-    public function verifyUser($data, $loggedUser) {
-        $this->authorize($loggedUser);
-        $id = $data['id'] ?? null;
-        $status = $data['status'] ?? 1;
-        
-        if ($this->repo->setUserVerification($id, $status)) {
-            $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'VERIFY_USER', "Verificação ID $id: $status", $id, 'USER');
-            if ($status == 1) {
-                $this->notif->notify($id, "Perfil Verificado!", "Sua conta recebeu o selo de confiança.");
+            if (!$id) throw new Exception("ID do usuário é obrigatório.");
+
+            // 1. Antes de atualizar, buscamos os dados atuais para o log
+            $oldData = $this->repo->getUserById($id); // Você precisa desse método simples no Repo
+
+            if ($this->repo->updateUserDetails($data)) {
+                // 2. Salvamos o log com o estado anterior e o novo
+                $this->repo->saveLog(
+                    $loggedUser['id'], 
+                    $loggedUser['name'], 
+                    'UPDATE_USER', 
+                    "Editou dados do usuário #{$id}", 
+                    $id, 
+                    'USER',
+                    $oldData, // Valores antigos
+                    $data     // Valores novos
+                );
+                return Response::json(["success" => true]);
             }
-            return Response::json(["success" => true]);
+            return Response::json(["success" => false, "error" => "Falha ao atualizar no banco."]);
+        } catch (Exception $e) {
+            return Response::json(["success" => false, "error" => $e->getMessage()]);
         }
-        return Response::json(["success" => false]);
     }
 
-    public function deleteUser($data, $loggedUser) {
-        $this->authorize($loggedUser, 'ADMIN');
-        $id = $data['id'] ?? null;
-        $permanent = $data['permanent'] ?? false;
+    /**
+     * Aprovação Manual e Verificação de Badge
+     */
+    public function verifyUser($data, $loggedUser) {
+        try {
+            $this->authorize($loggedUser);
+            $id = $data['id'] ?? null;
+            $status = isset($data['status']) ? (int)$data['status'] : 1;
+            
+            if ($this->repo->setUserVerification($id, $status)) {
+                $actionLabel = $status == 1 ? "Verificado/Aprovado" : "Removida Verificação";
+                
+                $this->repo->saveLog(
+                    $loggedUser['id'], 
+                    $loggedUser['name'], 
+                    'VERIFY_USER', 
+                    "$actionLabel usuário #$id", 
+                    $id, 
+                    'USER'
+                );
 
-        $success = $permanent ? $this->repo->deleteUserPermanently($id) : $this->repo->softDeleteUser($id);
-        if ($success) {
-            $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'DELETE_USER', "Excluiu usuário #$id", $id, 'USER');
+                if ($status == 1) {
+                    $this->notif->notify($id, "Perfil Verificado!", "Sua conta foi aprovada manualmente pelo administrador.");
+                }
+
+                return Response::json(["success" => true]);
+            }
+            return Response::json(["success" => false]);
+        } catch (Exception $e) {
+            return Response::json(["success" => false, "error" => $e->getMessage()]);
         }
-        return Response::json(["success" => $success]);
+    }
+
+    /**
+     * Exclusão de Usuário (Soft Delete por padrão)
+     */
+    public function deleteUser($data, $loggedUser) {
+        try {
+            // Apenas ADMIN (não Manager) pode excluir permanentemente
+            $this->authorize($loggedUser);
+            
+            $id = $data['id'] ?? null;
+            $permanent = isset($data['permanent']) && $data['permanent'] === true;
+
+            // Busca nome para o log
+            $targetUser = $this->repo->getUserById($id);
+            $userName = $targetUser['name'] ?? 'Desconhecido';
+
+            if ($permanent) {
+                $this->authorize($loggedUser, 'ADMIN');
+                $success = $this->repo->deleteUserPermanently($id);
+                $logMsg = "EXCLUSÃO PERMANENTE do usuário #$id ($userName)";
+            } else {
+                $success = $this->repo->softDeleteUser($id);
+                $logMsg = "Soft Delete (Desativação) do usuário #$id ($userName)";
+            }
+
+            if ($success) {
+                $this->repo->saveLog(
+                    $loggedUser['id'], 
+                    $loggedUser['name'], 
+                    'DELETE_USER', 
+                    $logMsg, 
+                    $id, 
+                    'USER',
+                    $targetUser, // Salva os dados deletados no log para recuperação se necessário
+                    ['status' => 'deleted/inactive']
+                );
+            }
+
+            return Response::json(["success" => $success]);
+        } catch (Exception $e) {
+            return Response::json(["success" => false, "error" => $e->getMessage()]);
+        }
     }
 
     // --- GESTÃO DE FRETES ---
@@ -406,5 +578,80 @@ class AdminController {
         // Passamos 'admin' para ignorar o filtro de status 'active' no Repository
         $groups = $this->groupRepo->listActive('admin'); 
         return Response::json(["success" => true, "data" => $groups]);
+    }
+
+    public function getUserDetails($data, $loggedUser) {
+        $this->authorize($loggedUser); // Garante que só admin/manager acessa
+        
+        $id = $data['id'] ?? null;
+        if (!$id) {
+            return Response::json(["success" => false, "message" => "ID não fornecido"], 400);
+        }
+
+        $user = $this->repo->getUserFullDetails($id);
+        
+        if (!$user) {
+            return Response::json(["success" => false, "message" => "Usuário não encontrado"], 404);
+        }
+
+        return Response::json([
+            "success" => true,
+            "data" => $user
+        ]);
+    }
+
+    public function updateUser($data, $loggedUser) {
+        $this->authorize($loggedUser); // Segurança em primeiro lugar
+
+        if (!isset($data['id'])) {
+            return Response::json(["success" => false, "message" => "ID do usuário é obrigatório"], 400);
+        }
+
+        $result = $this->repo->updateUserDetails($data);
+
+        if ($result['success']) {
+            // Opcional: Salvar log de auditoria que você já tem no Repo
+            $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'USER_UPDATE', "Editou dados do usuário ID: ".$data['id'], $data['id'], 'USER');
+            return Response::json(["success" => true, "message" => "Usuário atualizado com sucesso!"]);
+        }
+
+        return Response::json(["success" => false, "message" => "Erro ao atualizar: " . $result['error']], 500);
+    }
+
+    public function listCompanyMembers($loggedUser) {
+        try {
+            // 1. SEGURANÇA: Verifica se quem está logado é realmente um admin
+            $this->authorize($loggedUser);
+
+            // 2. CAPTURA: Como o Axios enviou um GET, pegamos da URL (query string)
+            // Se você usa um roteador que injeta params, mantenha o $data, 
+            // caso contrário, use $_GET:
+            $companyId = $_GET['company_id'] ?? null;
+
+            // 3. VALIDAÇÃO: Verifica se o ID é válido
+            if (!$companyId || !is_numeric($companyId)) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => "ID da empresa inválido ou não informado."
+                ], 400);
+            }
+
+            // 4. EXECUÇÃO: Busca no repository
+            $members = $this->repo->getCompanyMembers($companyId);
+
+            // 5. RESPOSTA: Retorna os dados
+            return Response::json([
+                "success" => true, 
+                "count" => count($members),
+                "data" => $members
+            ]);
+
+        } catch (Exception $e) {
+            // Trata erros de autorização ou do banco
+            return Response::json([
+                "success" => false, 
+                "message" => "Erro ao listar membros: " . $e->getMessage()
+            ], 403);
+        }
     }
 }

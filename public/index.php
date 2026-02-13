@@ -180,11 +180,17 @@ try {
             $router->get('/api/admin-dashboard-data', 'AdminController@getDashboardData');
 
             // Usuários
-            $router->get('/api/admin-list-users', 'AdminController@listUsers'); //@deprecated - verificar
             $router->get('/api/list-all-users', 'AdminController@listUsers'); //new
-            $router->post('/api/admin-update-user', 'AdminController@manageUsers');
+            $router->get('/api/admin-user-details', 'AdminController@getUserDetails');
+            $router->get('/api/admin-company-members', 'AdminController@listCompanyMembers');
+            //$router->post('/api/admin-create-user', 'AdminController@storeUser');
+            $router->post('/api/admin-create-user', 'AdminController@createCompleteUser');
+            $router->post('/api/admin-add-note', 'AdminController@addUserNote');
+            $router->post('/api/admin-update-user', 'AdminController@updateUser');
+            $router->post('/api/admin-manage-user', 'AdminController@manageUsers');
             $router->post('/api/admin-verify-user', 'AdminController@verifyUser');
             $router->post('/api/admin-delete-user', 'AdminController@deleteUser');
+            
 
             // Fretes
             $router->get('/api/admin-list-freights', 'AdminController@listAllFreights');

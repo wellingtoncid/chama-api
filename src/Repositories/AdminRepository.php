@@ -157,27 +157,54 @@ class AdminRepository {
     public function listUsersByRole($role = '%', $search = '%') {
         $sql = "SELECT 
                     u.id, 
+                    u.parent_id,
                     u.email, 
                     u.whatsapp, 
                     u.role, 
                     u.is_verified, 
                     u.status, 
                     u.created_at,
-                    -- Se houver empresa vinculada, usa o Nome Fantasia, senão usa o nome do usuário
-                    COALESCE(c.name_fantasy, u.name) as name,
-                    c.name_fantasy as company_name
+                    u.user_type,
+                    u.plan_type,
+                    u.plan_id,
+                    -- Puxando o tipo de negócio da empresa
+                    c.business_type, 
+                    -- Nome do usuário atual
+                    u.name as individual_name,
+                    -- Nome da empresa vinculada diretamente
+                    c.name_fantasy as company_name,
+                    -- Se o usuário tiver um pai (parent_id), buscamos o nome da empresa ou nome do pai
+                    p.name as parent_owner_name,
+                    pc.name_fantasy as parent_company_name,
+                    -- Lógica para o nome principal que aparece na lista
+                    COALESCE(c.name_fantasy, u.name) as display_name
                 FROM users u
                 LEFT JOIN companies c ON u.company_id = c.id
+                LEFT JOIN users p ON u.parent_id = p.id
+                LEFT JOIN companies pc ON p.company_id = pc.id
                 WHERE u.role LIKE ? 
-                AND (u.name LIKE ? OR u.email LIKE ? OR c.name_fantasy LIKE ?) 
+                AND (
+                    u.name LIKE ? 
+                    OR u.email LIKE ? 
+                    OR c.name_fantasy LIKE ? 
+                    OR pc.name_fantasy LIKE ?
+                    OR c.business_type LIKE ? -- Adicionado busca por tipo também
+                ) 
                 AND u.deleted_at IS NULL 
                 ORDER BY u.id DESC";
 
         $stmt = $this->db->prepare($sql);
         
-        // Adicionamos o termo de busca também para o nome da empresa
         $searchTerm = "%$search%";
-        $stmt->execute([$role, $searchTerm, $searchTerm, $searchTerm]);
+        // Agora passamos 6 parâmetros (role + 5 campos de busca)
+        $stmt->execute([
+            $role, 
+            $searchTerm, 
+            $searchTerm, 
+            $searchTerm, 
+            $searchTerm, 
+            $searchTerm
+        ]);
         
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -187,12 +214,63 @@ class AdminRepository {
     }
 
     public function updateUserDetails($data) {
-        $perms = json_encode($data['permissions'] ?? []);
-        $sql = "UPDATE users SET name = ?, whatsapp = ?, role = ?, status = ?, permissions = ?, company_name = ?, cnpj = ? WHERE id = ?";
-        return $this->db->prepare($sql)->execute([
-            $data['name'], $data['whatsapp'], $data['role'], 
-            $data['status'], $perms, $data['company_name'], $data['cnpj'], $data['id']
-        ]);
+        try {
+            $this->db->beginTransaction();
+
+            // 1. Atualiza USERS
+            $perms = is_array($data['permissions'] ?? null) ? json_encode($data['permissions']) : ($data['permissions'] ?? '[]');
+            
+            $sqlUser = "UPDATE users SET 
+                            name = ?, whatsapp = ?, role = ?, 
+                            status = ?, permissions = ?, plan_id = ? 
+                        WHERE id = ?";
+            
+            $this->db->prepare($sqlUser)->execute([
+                $data['name'] ?? '', 
+                $data['whatsapp'] ?? '', 
+                $data['role'] ?? 'company', 
+                $data['status'] ?? 'pending', 
+                $perms, 
+                $data['plan_id'] ?? 0, 
+                $data['id']
+            ]);
+
+            // 2. Atualiza COMPANIES (Apenas se houver dados de empresa e se o usuário tiver empresa vinculada)
+            // Usamos COALESCE ou verificamos se existe company_id para evitar erro de constraint
+            $checkCompany = $this->db->prepare("SELECT company_id FROM users WHERE id = ?");
+            $checkCompany->execute([$data['id']]);
+            $cId = $checkCompany->fetchColumn();
+
+            if ($cId) {
+                $sqlComp = "UPDATE companies SET 
+                                name_fantasy = ?, cnpj = ?, business_type = ?, 
+                                storage_capacity_m2 = ?, has_dock = ?, coverage_area = ? 
+                            WHERE id = ?";
+                $this->db->prepare($sqlComp)->execute([
+                    $data['company_name'] ?? $data['name'], 
+                    $data['cnpj'] ?? null, 
+                    $data['business_type'] ?? '',
+                    $data['storage_capacity_m2'] ?? 0, 
+                    $data['has_dock'] ?? 0, 
+                    $data['coverage_area'] ?? '',
+                    $cId // Usamos o ID direto que buscamos
+                ]);
+            }
+
+            $this->db->commit();
+            return ["success" => true];
+
+        } catch (Exception $e) {
+            $this->db->rollBack();
+            error_log("Erro no Repository: " . $e->getMessage());
+            return ["success" => false, "error" => $e->getMessage()];
+        }
+    }
+
+    public function getUserById($id) {
+        $stmt = $this->db->prepare("SELECT * FROM users WHERE id = ?");
+        $stmt->execute([$id]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC);
     }
 
     public function softDeleteUser($id) {
@@ -204,6 +282,59 @@ class AdminRepository {
         $this->db->prepare("DELETE FROM freights WHERE user_id = ?")->execute([$id]);
         $this->db->prepare("DELETE FROM user_profiles WHERE user_id = ?")->execute([$id]);
         return $this->db->prepare("DELETE FROM users WHERE id = ? AND role != 'admin'")->execute([$id]);
+    }
+
+    public function createAdminUser($data) {
+        try {
+            $this->db->beginTransaction();
+
+            // 1. Criptografia da senha
+            $password = password_hash($data['password'], PASSWORD_DEFAULT);
+
+            // 2. Se for um usuário 'company', precisamos garantir que ele tenha uma empresa
+            $companyId = $data['company_id'] ?? null;
+
+            if ($data['role'] === 'company' && !$companyId) {
+                // Se não enviamos ID de empresa, criamos uma nova (Usuário Mestre)
+                $sqlComp = "INSERT INTO companies (name_fantasy, cnpj, created_at) VALUES (?, ?, NOW())";
+                $stmtComp = $this->db->prepare($sqlComp);
+                $stmtComp->execute([
+                    $data['company_name'] ?? $data['name'],
+                    $data['cnpj'] ?? null
+                ]);
+                $companyId = $this->db->lastInsertId();
+            }
+
+            // 3. Insere o Usuário
+            $sqlUser = "INSERT INTO users (
+                            name, email, password, whatsapp, role, 
+                            status, company_id, parent_id, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+            
+            $this->db->prepare($sqlUser)->execute([
+                $data['name'],
+                $data['email'],
+                $password,
+                $data['whatsapp'] ?? null,
+                $data['role'] ?? 'company',
+                $data['status'] ?? 'pending',
+                $companyId,
+                $data['parent_id'] ?? null // ID do usuário mestre, se for um sub-usuario
+            ]);
+
+            $userId = $this->db->lastInsertId();
+
+            // 4. Cria a carteira (Wallet) vinculada ao usuário ou empresa
+            $this->db->prepare("INSERT INTO user_wallets (user_id, balance) VALUES (?, 0)")
+                    ->execute([$userId]);
+
+            $this->db->commit();
+            return ["success" => true, "user_id" => $userId];
+
+        } catch (Exception $e) {
+            $this->db->rollBack();
+            return ["success" => false, "error" => $e->getMessage()];
+        }
     }
 
     // FRETES & MATCHING
@@ -441,5 +572,100 @@ class AdminRepository {
     public function updateDocumentStatus($id, $status, $reason = '') {
         $sql = "UPDATE user_documents SET status = ?, rejection_reason = ?, reviewed_at = NOW() WHERE id = ?";
         return $this->db->prepare($sql)->execute([$status, $reason, $id]);
+    }
+
+    public function getUserFullDetails($id) {
+        // 1. Busca os dados principais (Usuário + Dados de Empresa + Saldo de Carteira)
+        $sql = "SELECT 
+                    u.*, 
+                    c.name_fantasy as company_name, c.cnpj, c.business_type, 
+                    c.storage_capacity_m2, c.has_dock, c.coverage_area,
+                    COALESCE(uw.balance_available, 0) as wallet_balance
+                FROM users u
+                LEFT JOIN companies c ON u.company_id = c.id
+                LEFT JOIN user_wallets uw ON u.id = uw.user_id
+                WHERE u.id = ?"; 
+                    
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$id]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user) return null;
+
+        // 2. Busca os documentos associados (Verificação de Identidade/Empresa)
+        $sqlDocs = "SELECT id, document_type, file_path, status, created_at, entity_type 
+                FROM user_documents 
+                WHERE (entity_id = ? AND entity_type = 'USER')
+                OR (entity_id = ? AND entity_type = 'COMPANY')
+                ORDER BY created_at DESC";
+        $stmtDocs = $this->db->prepare($sqlDocs);
+        // Passamos o ID do usuário e o company_id que pegamos na query 1
+        $stmtDocs->execute([$id, $user['company_id']]); 
+        $user['documents'] = $stmtDocs->fetchAll(PDO::FETCH_ASSOC);
+
+        // 3. Busca as Notas Internas (Comentários da equipe de administração)
+        // Fazemos um JOIN com a tabela users para saber o nome do admin que escreveu a nota
+        $companyId = $user['company_id'] ?? 0; // Pega o ID da empresa que veio no SELECT principal
+
+        $sqlNotes = "SELECT n.*, u.name as admin_name 
+                    FROM user_internal_notes n
+                    JOIN users u ON n.admin_id = u.id
+                    WHERE n.user_id = ? 
+                        OR (n.company_id = ? AND n.company_id IS NOT NULL AND n.context = 'COMPANY')
+                    ORDER BY n.created_at DESC";
+
+        $stmtNotes = $this->db->prepare($sqlNotes);
+        $stmtNotes->execute([$id, $companyId]);
+        $user['internal_notes'] = $stmtNotes->fetchAll(PDO::FETCH_ASSOC);
+
+        // 4. Busca os Logs de Auditoria (Histórico de ações realizadas neste usuário)
+        // Pegamos os últimos 15 logs para não sobrecarregar a tela
+        $sqlLogs = "SELECT id, action_type, description, user_name, ip_address, created_at 
+                    FROM logs_auditoria 
+                    WHERE target_id = ? AND target_type = 'USER'
+                    ORDER BY created_at DESC 
+                    LIMIT 15";
+        $stmtLogs = $this->db->prepare($sqlLogs);
+        $stmtLogs->execute([$id]);
+        $user['audit_logs'] = $stmtLogs->fetchAll(PDO::FETCH_ASSOC);
+
+        return $user;
+    }
+
+    public function addInternalNote($data) {
+        $sql = "INSERT INTO user_internal_notes (user_id, admin_id, note, context, company_id) 
+                VALUES (?, ?, ?, ?, ?)";
+        
+        // Se o context for COMPANY, buscamos o company_id do usuário alvo
+        $companyId = null;
+        if ($data['context'] === 'COMPANY') {
+            $stmt = $this->db->prepare("SELECT company_id FROM users WHERE id = ?");
+            $stmt->execute([$data['user_id']]);
+            $companyId = $stmt->fetchColumn();
+        }
+
+        return $this->db->prepare($sql)->execute([
+            $data['user_id'],
+            $data['admin_id'],
+            $data['note'],
+            $data['context'] ?? 'USER',
+            $companyId
+        ]);
+    }
+
+    public function getCompanyMembers($companyId) {
+        $sql = "SELECT id, name, email, role, status, whatsapp, created_at 
+                FROM users 
+                WHERE company_id = ? 
+                ORDER BY name ASC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$companyId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function emailExists($email) {
+        $stmt = $this->db->prepare("SELECT id FROM users WHERE email = ?");
+        $stmt->execute([$email]);
+        return $stmt->fetch() !== false;
     }
 }
