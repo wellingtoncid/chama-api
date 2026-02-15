@@ -115,22 +115,21 @@ class AdminController {
 
     public function storeUser($loggedUser) {
         try {
-            $this->authorize($loggedUser);
-            
-            // No POST, pegamos os dados do corpo da requisição
+            // 1. Autorização (Porteiro)
+            $this->authorize($loggedUser); 
+
+            // 2. Input
             $data = json_decode(file_get_contents('php://input'), true);
 
-            // Validação básica
-            if (empty($data['email']) || empty($data['password'])) {
-                throw new Exception("Email e Senha são obrigatórios.");
+            // 3. Validação básica de contrato
+            if (empty($data['email']) || empty($data['password']) || empty($data['name'])) {
+                throw new Exception("Dados obrigatórios ausentes.");
             }
 
-            // Verifica se o email já existe
-            if ($this->repo->emailExists($data['email'])) {
-                throw new Exception("Este email já está cadastrado.");
-            }
+            // 4. Delega TODO o trabalho para o especialista (Repository)
+            // Usamos o nome de função que você definiu: createCompleteUser
+            $result = $this->repo->createCompleteUser($data, $loggedUser['id']);
 
-            $result = $this->repo->createAdminUser($data);
             return Response::json($result);
 
         } catch (Exception $e) {
@@ -138,72 +137,6 @@ class AdminController {
         }
     }
 
-    public function createCompleteUser($data, $loggedAdminId) {
-        try {
-            $this->db->beginTransaction();
-
-            // 1. Tabela Principal: users (Usando suas colunas exatas)
-            $sqlUser = "INSERT INTO users (
-                name, email, password, role, user_type, plan_type, 
-                permissions, status, parent_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-            
-            $passwordHash = password_hash($data['password'], PASSWORD_DEFAULT);
-            
-            $this->db->prepare($sqlUser)->execute([
-                $data['name'],
-                $data['email'],
-                $passwordHash,
-                $data['role'],      // admin, company, driver, etc
-                $data['user_type'], // master, support, individual, etc
-                $data['plan_type'] ?? 'free',
-                $data['permissions'], // JSON das permissões
-                $data['status'] ?? 'pending',
-                $data['parent_id'] ?? null
-            ]);
-            
-            $userId = $this->db->lastInsertId();
-
-            // 2. Tabela de Perfil: user_profiles
-            $sqlProfile = "INSERT INTO user_profiles (
-                user_id, cpf_cnpj, phone, address, city, state, zip_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)";
-            
-            $this->db->prepare($sqlProfile)->execute([
-                $userId,
-                $this->sanitize($data['cpf_cnpj']),
-                $this->sanitize($data['phone']),
-                $data['address'] ?? null,
-                $data['city'] ?? null,
-                $data['state'] ?? null,
-                $data['zip_code'] ?? null
-            ]);
-
-            // 3. Tabela Financeira: user_wallets (Inicialização)
-            $this->db->prepare("INSERT INTO user_wallets (user_id, balance) VALUES (?, 0.00)")
-                    ->execute([$userId]);
-
-            // 4. Auditoria Interna: user_internal_notes
-            // Registra quem criou quem para segurança total
-            $this->db->prepare("INSERT INTO user_internal_notes (user_id, admin_id, note) VALUES (?, ?, ?)")
-                    ->execute([
-                        $userId, 
-                        $loggedAdminId, 
-                        "Usuário criado via Painel Admin em " . date('d/m/Y H:i')
-                    ]);
-
-            $this->db->commit();
-            return ["success" => true, "user_id" => $userId];
-
-        } catch (Exception $e) {
-            $this->db->rollBack();
-            return ["success" => false, "error" => $e->getMessage()];
-        }
-    }
-
-    private function sanitize($value) {
-        return preg_replace('/\D/', '', $value); // Remove tudo que não for número
-    }
     /**
      * Lista todos os usuários. 
      * Corrigido para aceitar filtros e garantir que todos os perfis apareçam.
