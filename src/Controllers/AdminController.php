@@ -113,28 +113,102 @@ class AdminController {
 
     // --- GESTÃO DE USUÁRIOS ---
 
-    public function storeUser($loggedUser) {
+    public function createUser($loggedUser) {
         try {
-            // 1. Autorização (Porteiro)
-            $this->authorize($loggedUser); 
+            // 1. SEGURANÇA: Apenas ADMIN ou MANAGER podem criar usuários
+            $this->authorize($loggedUser, 'MANAGER');
 
-            // 2. Input
-            $data = json_decode(file_get_contents('php://input'), true);
+            // 2. CAPTURA: Pega o input JSON do Frontend (Axios/Fetch)
+            $input = json_decode(file_get_contents('php://input'), true);
 
-            // 3. Validação básica de contrato
-            if (empty($data['email']) || empty($data['password']) || empty($data['name'])) {
-                throw new Exception("Dados obrigatórios ausentes.");
+            if (!$input) {
+                return Response::json(["success" => false, "message" => "Dados inválidos"], 400);
             }
 
-            // 4. Delega TODO o trabalho para o especialista (Repository)
-            // Usamos o nome de função que você definiu: createCompleteUser
-            $result = $this->repo->createCompleteUser($data, $loggedUser['id']);
+            // 3. VALIDAÇÃO MÍNIMA (Regras de Negócio)
+            $requiredFields = ['name', 'email', 'password', 'user_type'];
+            foreach ($requiredFields as $field) {
+                if (empty($input[$field])) {
+                    return Response::json(["success" => false, "message" => "O campo $field é obrigatório"], 400);
+                }
+            }
 
-            return Response::json($result);
+            if (!filter_var($input['email'], FILTER_VALIDATE_EMAIL)) {
+                return Response::json(["success" => false, "message" => "Email em formato inválido"], 400);
+            }
 
+            // 4. EXECUÇÃO: Chama o Repository para processar a transação
+            // Passamos o ID do admin logado para o log de auditoria
+            $result = $this->repo->createFullUser($input, $loggedUser['id']);
+
+            if ($result['success']) {
+                // 5. NOTIFICAÇÃO (Opcional): Se você tiver um sistema de envio de email
+                if ($this->notif) {
+                    // Exemplo: Enviar email de boas-vindas com a senha gerada
+                    // $this->notif->sendWelcomeEmail($input['email'], $input['name']);
+                }
+
+                return Response::json([
+                    "success" => true,
+                    "message" => "Usuário criado com sucesso!",
+                    "user_id" => $result['user_id']
+                ], 201);
+            } else {
+                // Tratamento de erros específicos (ex: email duplicado)
+                $msg = str_contains($result['error'], 'Duplicate entry') 
+                    ? "Este email ou documento já está cadastrado no sistema." 
+                    : $result['error'];
+
+                return Response::json(["success" => false, "message" => $msg], 500);
+            }
+
+        } catch (Exception $e) {
+            return Response::json([
+                "success" => false, 
+                "message" => "Erro interno no servidor: " . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function createInternalUser($loggedUser) {
+        try {
+            // Apenas ADMIN master pode criar outros administradores ou gerentes
+            $this->authorize($loggedUser, 'admin');
+
+            $input = json_decode(file_get_contents('php://input'), true);
+
+            // Validação específica para internos
+            $required = ['name', 'email', 'password', 'role'];
+            foreach ($required as $field) {
+                if (empty($input[$field])) throw new Exception("Campo $field obrigatório.");
+            }
+
+            // Definimos o user_type como 'OPERATOR' ou 'ADMIN' para diferenciar de motoristas/empresas
+            $input['user_type'] = ($input['role'] === 'admin') ? 'ADMIN' : 'OPERATOR';
+            
+            // No painel administrativo, podemos definir permissões granulares via JSON
+            // Ex: {"view_reports": true, "delete_users": false}
+            $input['permissions'] = $this->getDefaultPermissionsByRole($input['role']);
+
+            $result = $this->repo->createInternalUser($input, $loggedUser['id']);
+
+            return Response::json($result, $result['success'] ? 201 : 500);
         } catch (Exception $e) {
             return Response::json(["success" => false, "message" => $e->getMessage()], 400);
         }
+    }
+
+    /**
+     * Define o que cada cargo interno pode fazer por padrão
+     */
+    private function getDefaultPermissionsByRole($role) {
+        $roles = [
+            'admin'     => ['all' => true],
+            'manager'   => ['edit_freight' => true, 'view_finance' => true, 'support_chat' => true],
+            'analyst'   => ['view_freight' => true, 'verify_documents' => true],
+            'assistant' => ['support_chat' => true, 'view_users' => true]
+        ];
+        return json_encode($roles[$role] ?? []);
     }
 
     /**

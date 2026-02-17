@@ -183,7 +183,8 @@ try {
             $router->get('/api/list-all-users', 'AdminController@listUsers'); //new
             $router->get('/api/admin-user-details', 'AdminController@getUserDetails');
             $router->get('/api/admin-company-members', 'AdminController@listCompanyMembers');
-            $router->post('/api/admin-create-user', 'AdminController@storeUser');
+            $router->post('/api/admin-create-user', 'AdminController@createUser');
+            $router->post('/api/admin-create-internal-user', 'AdminController@createInternalUser');
             //$router->post('/api/admin-create-user', 'AdminController@createCompleteUser'); deprecated, usar storeUser
             $router->post('/api/admin-add-note', 'AdminController@addUserNote');
             $router->post('/api/admin-update-user', 'AdminController@updateUser');

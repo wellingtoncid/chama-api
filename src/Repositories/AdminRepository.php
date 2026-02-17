@@ -284,116 +284,126 @@ class AdminRepository {
         return $this->db->prepare("DELETE FROM users WHERE id = ? AND role != 'admin'")->execute([$id]);
     }
 
-    public function createCompleteUser(array $data, int $loggedAdminId) {
+    public function createFullUser(array $data, $currentAdminId) {
         try {
             $this->db->beginTransaction();
 
-            // 1. SANITIZAÇÃO BRUTA (Garante integridade antes do INSERT)
-            $cleanDoc = preg_replace('/\D/', '', $data['cpf_cnpj'] ?? '');
-            $cleanTel = preg_replace('/\D/', '', $data['whatsapp'] ?? $data['phone'] ?? '');
-            $cleanZip = preg_replace('/\D/', '', $data['zip_code'] ?? '');
-
-            // 2. LÓGICA DE ENTIDADE (Empresa vs Individual)
-            $companyId = $data['company_id'] ?? null;
-            
-            // Se for papel 'company' e não enviaram ID de empresa pronta, criamos a empresa com o NOME fornecido
-            if (($data['role'] ?? '') === 'company' && !$companyId) {
-                $sqlComp = "INSERT INTO companies (name_fantasy, cnpj, created_at) VALUES (?, ?, NOW())";
-                // Usamos o nome vindo do form como nome da empresa no provisionamento
-                $this->db->prepare($sqlComp)->execute([$data['name'], $cleanDoc]);
-                $companyId = $this->db->lastInsertId();
-            }
-
-            // 3. TABELA MASTER: users (CUIDADO AQUI: Nenhuma coluna ficou pra trás)
+            // 1. Inserção na tabela principal: users
             $sqlUser = "INSERT INTO users (
-                name, 
-                email, 
-                password, 
-                role, 
-                user_type, 
-                plan_type, 
-                permissions, 
-                status, 
-                whatsapp, 
-                company_id, 
-                parent_id,
-                is_shipper, 
-                is_advertiser, 
-                is_seller, 
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+                name, email, whatsapp, password, role, user_type, 
+                city, state, document, status, plan_id, plan_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
             
-            $this->db->prepare($sqlUser)->execute([
-                $data['name'],                             // Nome do usuário/responsável
+            $stmt = $this->db->prepare($sqlUser);
+            $stmt->execute([
+                $data['name'],
                 $data['email'],
-                password_hash($data['password'], PASSWORD_DEFAULT),
-                $data['role'] ?? 'driver',                 // admin, company, driver, shipper
-                $data['user_type'] ?? 'DRIVER',            // MASTER, SUPPORT, INDIVIDUAL...
-                $data['plan_type'] ?? 'free',
-                is_array($data['permissions']) ? json_encode($data['permissions']) : ($data['permissions'] ?? '[]'),
+                $data['whatsapp'] ?? null,
+                password_hash($data['password'], PASSWORD_BCRYPT),
+                $data['role'] ?? 'driver', // Default conforme seu SQL
+                $data['user_type'], // DRIVER, COMPANY, ADVERTISER, etc.
+                $data['city'] ?? null,
+                $data['state'] ?? null,
+                $data['document'] ?? null,
                 $data['status'] ?? 'active',
-                $cleanTel,
-                $companyId,                                // Vinculado se for empresa
-                $data['parent_id'] ?? null,
-                $data['is_shipper'] ?? 0,                  // Flag de Embarcador
-                $data['is_advertiser'] ?? 0,               // Flag de Anunciante
-                $data['is_seller'] ?? 0                    // Flag de Vendedor
+                $data['plan_id'] ?? 1,
+                $data['plan_type'] ?? 'free'
             ]);
             
             $userId = $this->db->lastInsertId();
 
-            // 4. TABELA DE LOGÍSTICA: user_profiles
-            // Aqui entram as coordenadas que o seu React buscou sozinho
+            // 2. Inserção no perfil: user_profiles
+            // Geramos um slug único baseado no nome e ID para evitar conflitos (importante para SEO)
+            $slug = $this->generateSlug($data['name']) . '-' . $userId;
+            
             $sqlProfile = "INSERT INTO user_profiles (
-                user_id, 
-                cpf_cnpj, 
-                zip_code, 
-                address, 
-                city, 
-                state, 
-                latitude, 
-                longitude
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                user_id, slug, profile_template, experience_years, 
+                vehicle_type, body_type, availability_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)";
             
             $this->db->prepare($sqlProfile)->execute([
                 $userId,
-                $cleanDoc,
-                $cleanZip,
-                $data['address'] ?? null,
-                $data['city'] ?? null,
-                $data['state'] ?? null,
-                $data['latitude'] ?? null, // Coordenada vinda da automação do front
-                $data['longitude'] ?? null  // Coordenada vinda da automação do front
+                $slug,
+                strtolower($data['user_type']), // 'driver', 'company', etc.
+                $data['experience_years'] ?? 0,
+                $data['vehicle_type'] ?? null,
+                $data['body_type'] ?? null,
+                'available'
             ]);
 
-            // 5. INFRA FINANCEIRA: user_wallets
-            $this->db->prepare("INSERT INTO user_wallets (user_id, balance, updated_at) VALUES (?, 0.00, NOW())")
+            // 3. Se for do tipo COMPANY, criar a empresa vinculada
+            if ($data['user_type'] === 'COMPANY' || isset($data['cnpj'])) {
+                $sqlCompany = "INSERT INTO companies (
+                    owner_id, name_fantasy, corporate_name, cnpj, 
+                    business_type, city, state, is_verified
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                
+                $this->db->prepare($sqlCompany)->execute([
+                    $userId,
+                    $data['company_name_fantasy'] ?? $data['name'],
+                    $data['corporate_name'] ?? null,
+                    $data['cnpj'] ?? null,
+                    $data['business_type'] ?? 'transportadora',
+                    $data['city'] ?? null,
+                    $data['state'] ?? null,
+                    0 // is_verified default
+                ]);
+                
+                // Atualiza o company_id no usuário recém criado
+                $companyId = $this->db->lastInsertId();
+                $this->db->prepare("UPDATE users SET company_id = ? WHERE id = ?")->execute([$companyId, $userId]);
+            }
+
+            // 4. Inicializa a Carteira: user_wallets
+            $this->db->prepare("INSERT INTO user_wallets (user_id, balance_available) VALUES (?, 0)")
                     ->execute([$userId]);
 
-            // 6. AUDITORIA: user_internal_notes
-            // Registra o rastro de quem criou esse player
-            $this->db->prepare("INSERT INTO user_internal_notes (user_id, admin_id, note) VALUES (?, ?, ?)")
-                    ->execute([
-                        $userId, 
-                        $loggedAdminId, 
-                        "PLAYER PROVISIONADO: Criado por Admin ID {$loggedAdminId} em " . date('d/m/Y H:i')
-                    ]);
+            // 5. Auditoria
+            $this->saveLog($currentAdminId, 'Admin', 'CREATE_USER', "Criou usuário {$data['email']} do tipo {$data['user_type']}", $userId, 'USER');
 
             $this->db->commit();
-            
-            return [
-                "success" => true, 
-                "user_id" => $userId, 
-                "company_id" => $companyId,
-                "message" => "Provisionamento completo realizado com sucesso."
-            ];
+            return ['success' => true, 'user_id' => $userId];
 
+        } catch (\Exception $e) {
+            $this->db->rollBack();
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    private function generateSlug($string) {
+        return strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $string), '-'));
+    }
+
+    public function createInternalUser(array $data, $adminId) {
+        try {
+            $this->db->beginTransaction();
+
+            // 1. Inserção na 'users' com o cargo (role) e permissões
+            $sql = "INSERT INTO users (name, email, password, role, user_type, permissions, status) 
+                    VALUES (?, ?, ?, ?, ?, ?, 'active')";
+            $this->db->prepare($sql)->execute([
+                $data['name'],
+                $data['email'],
+                password_hash($data['password'], PASSWORD_BCRYPT),
+                $data['role'],
+                $data['user_type'],
+                $data['permissions']
+            ]);
+
+            $userId = $this->db->lastInsertId();
+
+            // 2. Perfil básico (user_profiles) - importante para o avatar do admin no chat
+            $this->db->prepare("INSERT INTO user_profiles (user_id, slug, profile_template) VALUES (?, ?, ?)")
+                    ->execute([$userId, 'staff-' . $userId, 'default']);
+
+            // 3. Log de auditoria (Crucial para usuários internos)
+            $this->saveLog($adminId, 'SYSTEM', 'CREATE_INTERNAL_USER', "Novo colaborador criado: {$data['role']}", $userId, 'USER');
+
+            $this->db->commit();
+            return ['success' => true, 'id' => $userId];
         } catch (Exception $e) {
-            if ($this->db->inTransaction()) {
-                $this->db->rollBack();
-            }
-            // Retorna o erro real para você saber onde a bucha estourou
-            throw new Exception("Falha Crítica no Repository: " . $e->getMessage());
+            $this->db->rollBack();
+            return ['success' => false, 'error' => $e->getMessage()];
         }
     }
 
