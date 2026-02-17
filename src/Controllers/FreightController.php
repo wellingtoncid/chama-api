@@ -101,6 +101,7 @@ class FreightController {
 
             $payload = [
                 'user_id' => ($role === 'ADMIN' && !empty($data['user_id'])) ? (int)$data['user_id'] : (int)$user['id'],
+                'account_id'   => $user['account_id'],
                 'origin_city'  => trim($data['origin_city']),
                 'origin_state' => strtoupper(trim($data['origin_state'] ?? '')),
                 'dest_city'    => trim($data['dest_city']),

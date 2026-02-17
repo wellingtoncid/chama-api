@@ -79,6 +79,7 @@ class UserController {
      * Rota: POST /api/update-profile
      */
     public function updateProfile($data, $loggedUser) {
+        error_log("Rota update-profile acessada pelo ID: " . ($loggedUser['id'] ?? 'N/A'));
         if (!$loggedUser) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
 
         try {
@@ -129,38 +130,6 @@ class UserController {
             return "/uploads/{$folder}/" . $fileName;
         }
         return null;
-    }
-
-    /**
-     * Lógica de Verificação (Selo de Confiança) - PUBLIC para o Router acessar
-     */
-    public function runVerificationProcess($userId) {
-        $user = $this->userRepo->getProfileData($userId);
-        
-        $points = 0;
-        $fieldsToTrack = ['name', 'whatsapp', 'avatar_url', 'city', 'bio'];
-        foreach ($fieldsToTrack as $f) {
-            if (!empty($user[$f])) $points += 20;
-        }
-
-        $avg = (float)($user['rating_avg'] ?? 0);
-        $count = (int)($user['rating_count'] ?? 0);
-
-        $deservesBadge = ($points >= 80) || ($count >= 5 && $avg >= 4.5);
-
-        $currentStatus = (int)($user['is_verified'] ?? 0);
-        
-        if ($deservesBadge && (int)$user['is_verified'] === 0) {
-            $this->userRepo->updateProfileField($userId, 'is_verified', 1);
-            try {
-                $notif = new NotificationController($this->db);
-                $notif->notify($userId, "🎉 Perfil Verificado!", "Selo de confiança ativado.");
-            } catch (\Throwable $e) {}
-        } elseif (!$deservesBadge && $currentStatus === 1) {
-            $this->userRepo->updateProfileField($userId, 'is_verified', 0);
-        }
-
-        return (object)['is_verified' => $deservesBadge, 'score' => $points];
     }
 
     public function getBySlug($db, $loggedUser, $data) {
@@ -246,7 +215,7 @@ class UserController {
 
         // 3. Persistência via Repository
         try {
-            $success = $this->userRepo->updateProfileField($userId, $targetColumn, $imageUrl);
+            $success = $this->userRepo->updateProfileFields($userId, $targetColumn, $imageUrl);
             
             return Response::json([
                 "success" => $success,
@@ -321,7 +290,7 @@ class UserController {
         if (move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
             $url = "/uploads/avatars/" . $fileName;
             $this->userRepo->updateProfileFields($loggedUser['id'], ['avatar_url' => $url]);
-            $this->runVerificationProcess($loggedUser['id']);
+            $this->userRepo->runVerificationProcess($userId);;
             
             return Response::json(["success" => true, "url" => $url]);
         }

@@ -17,48 +17,83 @@ class UserRepository {
                 $this->db->beginTransaction();
             }
 
-            // REMOVEMOS created_at e updated_at daqui, 
-            // pois o banco já tem DEFAULT current_timestamp()
+            // 1. Identificadores
+            $tempDoc = 'TEMP_' . time() . '_' . rand(100, 999); 
+            $accountUuid = bin2hex(random_bytes(16)); 
+
+            // 2. Inserção na tabela ACCOUNTS
+            $sqlAccount = "INSERT INTO accounts (uuid, document_type, document_number, corporate_name, status) 
+                            VALUES (:uuid, :doc_type, :doc_num, :name, 'active')";
+            
+            $stmtAcc = $this->db->prepare($sqlAccount);
+            $stmtAcc->execute([
+                ':uuid'     => $accountUuid,
+                ':doc_type' => $data['document_type'] ?? 'CPF',
+                ':doc_num'  => $data['document'] ?? $tempDoc,
+                ':name'     => $data['name']
+            ]);
+            
+            $accountId = $this->db->lastInsertId();
+
+            // 3. Buscar Role ID
+            $roleSlug = strtolower($data['role'] ?? 'driver');
+            $stmtRole = $this->db->prepare("SELECT id FROM roles WHERE slug = :slug LIMIT 1");
+            $stmtRole->execute([':slug' => $roleSlug]);
+            $roleId = $stmtRole->fetchColumn() ?: 2;
+
+            // 4. Criar o Usuário vinculado à Account
             $sqlUser = "INSERT INTO users (
-                            name, email, password, whatsapp, role, 
-                            user_type, status, plan_id
+                            name, email, password, whatsapp, 
+                            account_id, role_id, role, user_type, status, plan_id
                         ) VALUES (
-                            :name, :email, :password, :whatsapp, :role, 
-                            :user_type, 'active', 1
+                            :name, :email, :password, :whatsapp, 
+                            :account_id, :role_id, :role, :user_type, 'active', 1
                         )";
             
             $stmtUser = $this->db->prepare($sqlUser);
             $stmtUser->execute([
-                ':name'      => $data['name'],
-                ':email'     => $data['email'],
-                ':password'  => $data['password'],
-                ':whatsapp'  => $data['whatsapp'],
-                ':role'      => $data['role'],
-                ':user_type' => $data['user_type']
+                ':name'       => $data['name'],
+                ':email'      => $data['email'],
+                ':password'   => $data['password'],
+                ':whatsapp'   => $data['whatsapp'],
+                ':account_id' => $accountId,
+                ':role_id'    => $roleId,
+                ':role'       => $data['role'],
+                ':user_type'  => $data['user_type'] ?? ($roleSlug === 'driver' ? 'motorista' : 'empresa')
             ]);
 
-            $userId = $this->db->lastInsertId();
+            $userId = $this->db->lastInsertId(); // AGORA SIM o $userId existe!
 
-            // Criar Perfil
+            // 5. CRIAR O PERFIL DA EMPRESA (Agora que temos o $userId)
+            if ($roleSlug === 'company') {
+                $sqlCompany = "INSERT INTO companies (
+                    owner_id, name_fantasy, corporate_name, cnpj, business_type, coverage_area
+                ) VALUES (
+                    :owner_id, :name, :name, :cnpj, 'pendente', 'a definir'
+                )";
+
+                $stmtComp = $this->db->prepare($sqlCompany);
+                $stmtComp->execute([
+                    ':owner_id' => $userId,
+                    ':name'     => $data['name'],
+                    ':cnpj'     => $data['document'] ?? null
+                ]);
+            }    
+
+            // 6. Criar Perfil Público (user_profiles)
             $slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $data['name']))) . '-' . $userId;
             $sqlProfile = "INSERT INTO user_profiles (user_id, slug) VALUES (:user_id, :slug)";
-            
-            $this->db->prepare($sqlProfile)->execute([
-                ':user_id' => $userId,
-                ':slug'    => $slug
-            ]);
+            $this->db->prepare($sqlProfile)->execute([':user_id' => $userId, ':slug' => $slug]);
 
             $this->db->commit();
             return $userId;
 
         } catch (Exception $e) {
-            if ($this->db->inTransaction()) {
-                $this->db->rollBack();
-            }
-            // Isso vai mostrar se o erro mudou para outra coluna
-            throw new Exception("Erro ao registrar: " . $e->getMessage());
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            throw $e; 
         }
     }
+
     /**
      * Gera um slug amigável para a URL do perfil
      */
@@ -76,27 +111,27 @@ class UserRepository {
     }
 
     public function findById($id) {
-        // 1. Usamos um LEFT JOIN para trazer dados do perfil e da empresa no mesmo tiro (Single Query)
-        // Isso evita o problema de N+1 consultas no seu banco de dados.
         $sql = "SELECT 
-                    u.*, 
+                    u.id, u.name, u.email, u.whatsapp, u.role, u.user_type, u.company_id, u.account_id,
+                    a.document_number as document, -- Busca o documento da conta vinculada
                     p.bio, p.avatar_url, p.cover_url, p.slug, p.vehicle_type, p.body_type,
-                    c.name as company_name, c.document as company_cnpj
+                    c.name_fantasy as company_name, 
+                    c.cnpj as company_cnpj
                 FROM users u
+                LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 LEFT JOIN companies c ON u.id = c.owner_id
                 WHERE u.id = :id AND u.deleted_at IS NULL
                 LIMIT 1";
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([':id' => $id]);
+        $stmt->execute([':id' => (int)$id]);
         
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$user) return null;
 
-        // 2. Tratamento de tipos (O PDO retorna tudo como string)
-        // Garantimos que números e booleano cheguem tipados para o Controller
+        // 2. Garante que os campos JSON ou booleanos sejam formatados
         return $this->formatUserTypes($user);
     }
 
@@ -120,18 +155,22 @@ class UserRepository {
         $onlyNumbers = preg_replace('/\D/', '', $identifier);
 
         /**
-         * 2. SQL Otimizado
-         * - u.id AS id: Garante que o ID principal não seja sobrescrito por IDs de joins (como c.id)
-         * - LEFT JOIN: Essencial pois no momento do cadastro o perfil/empresa pode ainda não existir
+         * 2. SQL Otimizado para o Novo Modelo (Alto Padrão)
+         * - Buscamos o slug da role para o Auth::hasRole funcionar
+         * - Buscamos o account_id para o multi-tenancy (SaaS)
+         * - Mantemos o avatar do perfil
          */
         $sql = "SELECT 
                     u.*, 
+                    r.slug as role_slug, 
+                    a.id as account_id, 
+                    a.corporate_name as company_name,
                     p.avatar_url, 
-                    p.slug,
-                    c.name_fantasy as company_name
+                    p.slug as profile_slug
                 FROM users u
+                LEFT JOIN roles r ON u.role_id = r.id
+                LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
-                LEFT JOIN companies c ON u.id = c.owner_id
                 WHERE (u.email = :email OR u.whatsapp = :whatsapp) 
                 AND (u.deleted_at IS NULL OR u.deleted_at = '0000-00-00 00:00:00')
                 LIMIT 1";
@@ -139,11 +178,6 @@ class UserRepository {
         try {
             $stmt = $this->db->prepare($sql);
             
-            /**
-             * 3. Mapeamento Inteligente
-             * Passamos o identifier bruto para o e-mail e a versão limpa para o whatsapp.
-             * Isso permite que o usuário logue com "11999999999" ou "(11) 99999-9999"
-             */
             $stmt->execute([
                 ':email'    => $identifier,
                 ':whatsapp' => !empty($onlyNumbers) ? $onlyNumbers : $identifier
@@ -152,73 +186,80 @@ class UserRepository {
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($user) {
-                // 4. Tipagem Garantida (Evita comportamentos estranhos no PHP/React)
+                // 3. Tipagem Garantida (Essencial para o Frontend/React não bugar)
                 $user['id'] = (int)$user['id'];
-                $user['is_verified'] = isset($user['is_verified']) ? (int)$user['is_verified'] : 0;
+                $user['account_id'] = $user['account_id'] ? (int)$user['account_id'] : null;
+                $user['role_id'] = $user['role_id'] ? (int)$user['role_id'] : null;
+                $user['plan_id'] = isset($user['plan_id']) ? (int)$user['plan_id'] : 1;
                 
-                // Caso existam campos de plano ou empresa que devam ser inteiros
-                if (isset($user['plan_id'])) $user['plan_id'] = (int)$user['plan_id'];
-                if (isset($user['company_id'])) $user['company_id'] = (int)$user['company_id'];
+                // Manter compatibilidade com seu Auth.php antigo se necessário
+                $user['role'] = $user['role_slug']; 
             }
 
             return $user ?: null;
 
         } catch (\PDOException $e) {
             error_log("Erro Crítico em findByEmailOrWhatsapp: " . $e->getMessage());
-            // Em ambiente de desenvolvimento, você pode querer lançar a exceção
-            // throw $e; 
             return null;
         }
     }
+    
     /**
      * Atualiza dados da tabela principal 'users'
      * Adicionado: suporte a documento e is_verified
      */
     public function updateBasicInfo($userId, $data) {
-        // 1. Sanitização e Normalização de campos do Payload
-        // Note que verificamos 'cnpj' ou 'document' para preencher o campo de documento
+        // 1. Sanitização
         $name     = !empty($data['name'])     ? trim($data['name']) : null;
         $whatsapp = !empty($data['whatsapp']) ? preg_replace('/\D/', '', $data['whatsapp']) : null;
+        $city     = !empty($data['city'])     ? trim($data['city']) : null;
+        $state    = !empty($data['state'])    ? strtoupper(trim($data['state'])) : null;
         
-        // Prioriza 'cnpj' se vier preenchido, senão tenta 'document'
+        // Pegamos o documento para atualizar na tabela ACCOUNTS depois
         $rawDoc   = !empty($data['cnpj']) ? $data['cnpj'] : ($data['document'] ?? null);
         $document = $rawDoc ? preg_replace('/\D/', '', $rawDoc) : null;
 
-        // Localização (essencial para aparecer no perfil e filtros)
-        $city     = !empty($data['city'])  ? trim($data['city']) : null;
-        $state    = !empty($data['state']) ? strtoupper(trim($data['state'])) : null;
-        
-        // 2. Query atualizada com os campos que faltavam
-        $sql = "UPDATE users SET 
-                    name = COALESCE(:name, name), 
-                    whatsapp = COALESCE(:whatsapp, whatsapp),
-                    document = COALESCE(:document, document),
-                    city = COALESCE(:city, city),
-                    state = COALESCE(:state, state),
-                    is_verified = COALESCE(:is_verified, is_verified)
-                WHERE id = :id AND deleted_at IS NULL";
-        
-        $params = [
-            ':name'        => $name,
-            ':whatsapp'    => $whatsapp,
-            ':document'    => $document,
-            ':city'        => $city,
-            ':state'       => $state,
-            ':is_verified' => isset($data['is_verified']) ? (int)$data['is_verified'] : null,
-            ':id'          => $userId
-        ];
-
         try {
-            $stmt = $this->db->prepare($sql);
-            $success = $stmt->execute($params);
+            if (!$this->db->inTransaction()) $this->db->beginTransaction();
 
-            // Debug opcional caso continue não salvando (remover em produção)
-            if ($stmt->rowCount() === 0) {
-                error_log("Aviso: updateBasicInfo executado mas nenhuma linha foi alterada para o ID $userId. Os dados podem ser idênticos aos já existentes.");
+            // 2. ATUALIZAÇÃO DA TABELA USERS (Removido o campo 'document')
+            $sql = "UPDATE users SET 
+                        name = COALESCE(:name, name), 
+                        whatsapp = COALESCE(:whatsapp, whatsapp),
+                        city = COALESCE(:city, city),
+                        state = COALESCE(:state, state),
+                        is_verified = COALESCE(:is_verified, is_verified)
+                    WHERE id = :id AND deleted_at IS NULL";
+            
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([
+                ':name'         => $name,
+                ':whatsapp'     => $whatsapp,
+                ':city'         => $city,
+                ':state'        => $state,
+                ':is_verified'  => isset($data['is_verified']) ? (int)$data['is_verified'] : null,
+                ':id'           => $userId
+            ]);
+
+            // 3. ATUALIZAÇÃO DA TABELA ACCOUNTS (Onde o documento realmente vive agora)
+            if ($document || $name) {
+                $sqlAcc = "UPDATE accounts a 
+                        JOIN users u ON u.account_id = a.id 
+                        SET a.document_number = COALESCE(:doc, a.document_number),
+                            a.corporate_name = COALESCE(:name, a.corporate_name)
+                        WHERE u.id = :userId";
+                
+                $this->db->prepare($sqlAcc)->execute([
+                    ':doc'    => $document,
+                    ':name'   => $name,
+                    ':userId' => $userId
+                ]);
             }
 
-            return $success;
-        } catch (\PDOException $e) {
+            $this->db->commit();
+            return true;
+        } catch (\Exception $e) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
             error_log("Erro crítico updateBasicInfo (ID $userId): " . $e->getMessage());
             return false;
         }
@@ -234,49 +275,28 @@ class UserRepository {
 
             $nullIfEmpty = fn($val) => (isset($val) && trim((string)$val) !== '') ? trim((string)$val) : null;
 
-            // 1. Atualiza Tabela 'users'
+            // 1. Atualiza Usuário (Dados básicos)
             $sqlUser = "UPDATE users SET 
                             name = COALESCE(:name, name), 
                             whatsapp = :whatsapp,
-                            document = COALESCE(:doc, document),
                             city = :city,
-                            state = :state
-                        WHERE id = :id LIMIT 1";
+                            state = :state,
+                            updated_at = NOW()
+                        WHERE id = :id";
             
             $this->db->prepare($sqlUser)->execute([
-                ':name'     => $nullIfEmpty($data['name'] ?? null),
+                ':name'     => $nullIfEmpty($data['name'] ?? $data['name_fantasy'] ?? null),
                 ':whatsapp' => preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
-                ':doc'      => preg_replace('/\D/', '', $data['cnpj'] ?? $data['document'] ?? ''),
                 ':city'     => $nullIfEmpty($data['city'] ?? null),
                 ':state'    => $nullIfEmpty($data['state'] ?? null),
                 ':id'       => $userId
             ]);
 
-            // 2. Atualiza Tabela 'user_profiles'
-            $sqlProfile = "UPDATE user_profiles SET 
-                            bio = :bio, 
-                            slug = :slug,
-                            avatar_url = COALESCE(:avatar, avatar_url),
-                            cover_url = COALESCE(:cover, cover_url),
-                            vehicle_type = :v_type, 
-                            body_type = :b_type
-                        WHERE user_id = :id";
+            // 2. Atualiza Perfil (Bio, Slug, Imagens e Atributos Dinâmicos)
+            $safeSlug = isset($data['slug']) ? preg_replace('/[^a-z0-9\-]/', '', strtolower($data['slug'])) : null;
             
-            $this->db->prepare($sqlProfile)->execute([
-                ':bio'    => $nullIfEmpty($data['bio'] ?? null),
-                ':slug'   => $data['slug'],
-                ':avatar' => $nullIfEmpty($data['avatar_url'] ?? null),
-                ':cover'  => $nullIfEmpty($data['cover_url'] ?? null),
-                ':v_type' => $data['vehicle_type'] ?? null,
-                ':b_type' => $data['body_type'] ?? null,
-                ':id'     => $userId
-            ]);
-
-            // 3. Atributos Dinâmicos no JSON (Campos extras do Front)
-            $extrasMapping = [
-                'plate', 'antt', 'anos_experiencia', 'company_name', 
-                'instagram', 'website', 'cidades_atendidas', 'phone'
-            ];
+            // OPCIONAL: Se quiser manter o JSON extended_attributes para histórico, inclua aqui
+            $extrasMapping = ['plate', 'antt', 'anos_experiencia', 'instagram', 'website'];
             $newExtras = [];
             foreach ($extrasMapping as $field) {
                 if (isset($data[$field])) {
@@ -285,30 +305,38 @@ class UserRepository {
                 }
             }
 
-            if (!empty($newExtras)) {
-                $sqlJson = "UPDATE user_profiles SET 
-                                extended_attributes = JSON_MERGE_PATCH(COALESCE(extended_attributes, '{}'), :json) 
-                            WHERE user_id = :id";
-                $this->db->prepare($sqlJson)->execute([
-                    ':json' => json_encode($newExtras, JSON_UNESCAPED_UNICODE),
-                    ':id'   => $userId
-                ]);
-            }
+            $sqlProfile = "UPDATE user_profiles SET 
+                            bio = :bio, 
+                            slug = COALESCE(:slug, slug),
+                            avatar_url = COALESCE(:avatar, avatar_url),
+                            cover_url = COALESCE(:cover, cover_url),
+                            extended_attributes = JSON_MERGE_PATCH(COALESCE(extended_attributes, '{}'), :json),
+                            updated_at = NOW()
+                        WHERE user_id = :id";
+            
+            $this->db->prepare($sqlProfile)->execute([
+                ':bio'    => $nullIfEmpty($data['bio'] ?? $data['description'] ?? null),
+                ':slug'   => $safeSlug,
+                ':avatar' => $nullIfEmpty($data['avatar_url'] ?? null),
+                ':cover'  => $nullIfEmpty($data['cover_url'] ?? null),
+                ':json'   => json_encode($newExtras, JSON_UNESCAPED_UNICODE),
+                ':id'     => $userId
+            ]);
 
-            if (isset($data['user_type']) && $data['user_type'] === 'COMPANY') {
-                $companyName = $data['company_name'] ?? $data['name'] ?? null;
-                $cnpj = $data['cnpj'] ?? $data['document'] ?? null;
+            // 3. Lógica de Empresa (Tabela 'companies')
+            if (isset($data['role']) && in_array(strtoupper($data['role']), ['COMPANY', 'TRANSPORTADORA', 'LOGISTICS'])) {
+                // Garante o vínculo (users.company_id) e retorna o ID da empresa
+                $companyId = $this->linkOrCreateCompany($userId, $data);
                 
-                if ($companyName) {
-                    $this->linkOrCreateCompany($userId, $companyName, $cnpj);
-                }
+                // Salva TODOS os campos que você listou (CNPJ, Endereço, Certificações, frotas, etc)
+                $this->updateCompanyDetails($companyId, $data);
             }
 
             $this->db->commit();
             return true;
         } catch (\Exception $e) {
             if ($this->db->inTransaction()) $this->db->rollBack();
-            error_log("Erro Repository: " . $e->getMessage());
+            error_log("Erro no UserRepository: " . $e->getMessage());
             throw $e;
         }
     }
@@ -318,12 +346,12 @@ class UserRepository {
      */
     public function getProfileData($userId) {
         $sql = "SELECT 
-                u.id, u.name, u.email, u.whatsapp, u.role, u.status, u.document,
+                u.id, u.name, u.email, u.whatsapp, u.role, u.status,
                 u.plan_id, u.is_verified, u.company_id, u.created_at,
                 u.is_subscriber, u.plan_expires_at, u.user_type, u.plan_type,
-                u.is_advertiser, u.is_shipper, u.is_seller,
                 u.rating_avg, u.rating_count, u.balance,
-                u.city as user_city, u.state as user_state, 
+                u.city as user_city, u.state as user_state,
+                a.document_number as document, 
                 p.avatar_url, p.cover_url, 
                 p.bio, p.slug, p.vehicle_type, p.body_type, p.verification_status, p.extended_attributes,
                 -- CAMPOS DA EMPRESA (Acréscimos necessários)
@@ -344,6 +372,7 @@ class UserRepository {
                 c.coverage_area,
                 c.website_url
             FROM users u
+            LEFT JOIN accounts a ON u.account_id = a.id
             LEFT JOIN user_profiles p ON u.id = p.user_id
             LEFT JOIN companies c ON u.id = c.owner_id
             WHERE u.id = :id AND u.deleted_at IS NULL
@@ -369,11 +398,9 @@ class UserRepository {
         $row['transport_services'] = !empty($row['transport_services']) ? json_decode($row['transport_services'], true) : [];
         $row['logistics_services'] = !empty($row['logistics_services']) ? json_decode($row['logistics_services'], true) : [];
 
-        // 3. Normalização de tipos
-        $booleanFields = ['is_verified', 'is_subscriber', 'is_advertiser', 'is_shipper', 'is_seller'];
-        foreach ($booleanFields as $field) {
-            $row[$field] = (isset($row[$field]) && (int)$row[$field] === 1);
-        }
+        /// 3. Normalização de tipos (FORMA SEGURA)
+        $row['is_verified'] = (isset($row['is_verified']) && (int)$row['is_verified'] === 1);
+        $row['is_subscriber'] = (isset($row['is_subscriber']) && (int)$row['is_subscriber'] === 1);
 
         $row['rating_avg'] = round((float)($row['rating_avg'] ?? 0), 1);
         $row['balance'] = (float)($row['balance'] ?? 0);
@@ -395,56 +422,113 @@ class UserRepository {
         return $row;
     }
 
-    public function linkOrCreateCompany($ownerId, $companyName, $cnpj = null) {
-        try {
-            // 1. Iniciamos uma transação para garantir consistência entre tabelas
-            if (!$this->db->inTransaction()) $this->db->beginTransaction();
+    public function linkOrCreateCompany($ownerId, $data) {
+        // 1. Busca empresa existente pelo owner_id
+        $stmt = $this->db->prepare("SELECT id FROM companies WHERE owner_id = :owner_id LIMIT 1");
+        $stmt->execute([':owner_id' => $ownerId]);
+        $company = $stmt->fetch();
 
-            $companyName = trim($companyName);
-            $cnpj = $cnpj ? preg_replace('/\D/', '', $cnpj) : null;
-
-            // 2. Verifica se o usuário já é dono de alguma empresa
-            $stmt = $this->db->prepare("SELECT id FROM companies WHERE owner_id = :owner_id LIMIT 1");
-            $stmt->execute([':owner_id' => $ownerId]);
-            $company = $stmt->fetch();
-
-            if ($company) {
-                // Atualiza empresa existente
-                $companyId = $company['id'];
-                $sqlUp = "UPDATE companies SET name_fantasy = :name, cnpj = :cnpj, updated_at = NOW() WHERE id = :id";
-                $this->db->prepare($sqlUp)->execute([
-                    ':name' => $companyName,
-                    ':cnpj' => $cnpj,
-                    ':id'   => $companyId
-                ]);
-            } else {
-                // Cria nova empresa
-                $sqlIn = "INSERT INTO companies (owner_id, name_fantasy, cnpj, status, created_at) 
-                        VALUES (:owner_id, :name, :cnpj, 'active', NOW())";
-                $this->db->prepare($sqlIn)->execute([
-                    ':owner_id' => $ownerId,
-                    ':name'     => $companyName,
-                    ':cnpj'     => $cnpj
-                ]);
-                $companyId = $this->db->lastInsertId();
-            }
-
-            // 3. Sincroniza o company_id na tabela users
-            // Isso é vital para o JOIN do getProfileData funcionar perfeitamente
-            $this->db->prepare("UPDATE users SET company_id = :company_id WHERE id = :user_id")
-                    ->execute([
-                        ':company_id' => $companyId,
-                        ':user_id'    => $ownerId
-                    ]);
-
-            $this->db->commit();
-            return $companyId;
-
-        } catch (\Exception $e) {
-            if ($this->db->inTransaction()) $this->db->rollBack();
-            error_log("Erro em linkOrCreateCompany: " . $e->getMessage());
-            return false;
+        if ($company) {
+            $companyId = $company['id'];
+        } else {
+            // 2. Cria se não existir
+            $sqlIn = "INSERT INTO companies (owner_id, name_fantasy, status, created_at) 
+                    VALUES (:owner_id, :name, 'active', NOW())";
+            $this->db->prepare($sqlIn)->execute([
+                ':owner_id' => $ownerId,
+                ':name'     => $data['name_fantasy'] ?? $data['name']
+            ]);
+            $companyId = $this->db->lastInsertId();
         }
+
+        // 3. VÍNCULO: Garante que o users.company_id está preenchido
+        $this->db->prepare("UPDATE users SET company_id = :cid WHERE id = :uid")
+                ->execute([':cid' => $companyId, ':uid' => $ownerId]);
+
+        return $companyId;
+    }
+
+    private function updateCompanyDetails($companyId, $data) {
+        $nullIfEmpty = fn($val) => (isset($val) && trim((string)$val) !== '') ? trim((string)$val) : null;
+        
+        // Tratamento de campos JSON para o Banco
+        $certifications = isset($data['certifications']) ? json_encode($data['certifications'], JSON_UNESCAPED_UNICODE) : null;
+        $fleet_types = isset($data['fleet_types']) ? json_encode($data['fleet_types'], JSON_UNESCAPED_UNICODE) : null;
+        $infra = isset($data['storage_infrastructure']) ? json_encode($data['storage_infrastructure'], JSON_UNESCAPED_UNICODE) : null;
+
+        $sql = "UPDATE companies SET 
+                    name_fantasy = :nf,
+                    description = :desc,
+                    cnpj = :cnpj,
+                    postal_code = :zip,
+                    address = :addr,
+                    address_number = :num,
+                    neighborhood = :neigh,
+                    city = :city,
+                    state = :state,
+                    business_type = :bt,
+                    coverage_area = :ca,
+                    website_url = :url,
+                    certifications = :certs,
+                    fleet_types = :fleets,
+                    storage_infrastructure = :infra,
+                    updated_at = NOW()
+                WHERE id = :id";
+
+        $this->db->prepare($sql)->execute([
+            ':nf'    => $data['name_fantasy'] ?? $data['name'] ?? null,
+            ':desc'  => $data['description'] ?? $data['bio'] ?? null,
+            ':cnpj'  => preg_replace('/\D/', '', $data['cnpj'] ?? ''),
+            ':zip'   => preg_replace('/\D/', '', $data['postal_code'] ?? ''),
+            ':addr'  => $nullIfEmpty($data['address'] ?? null),
+            ':num'   => $nullIfEmpty($data['address_number'] ?? null),
+            ':neigh' => $nullIfEmpty($data['neighborhood'] ?? null),
+            ':city'  => $nullIfEmpty($data['city'] ?? null),
+            ':state' => $nullIfEmpty($data['state'] ?? null),
+            ':bt'    => $data['business_type'] ?? null,
+            ':ca'    => $data['coverage_area'] ?? null,
+            ':url'   => $data['website_url'] ?? $data['website'] ?? null,
+            ':certs' => $certifications,
+            ':fleets' => $fleet_types,
+            ':infra' => $infra,
+            ':id'    => $companyId
+        ]);
+    }
+
+    public function runVerificationProcess($userId) {
+        // 1. Busca os dados usando $this (o próprio repositório)
+        $user = $this->getProfileData($userId); 
+        
+        if (!$user) return null;
+
+        $points = 0;
+        $fieldsToTrack = ['name', 'whatsapp', 'avatar_url', 'city', 'bio'];
+        foreach ($fieldsToTrack as $f) {
+            if (!empty($user[$f])) $points += 20;
+        }
+
+        $avg = (float)($user['rating_avg'] ?? 0);
+        $count = (int)($user['rating_count'] ?? 0);
+        $deservesBadge = ($points >= 80) || ($count >= 5 && $avg >= 4.5);
+        $currentStatus = (int)($user['is_verified'] ?? 0);
+        
+        if ($deservesBadge && $currentStatus === 0) {
+            // 2. Atualiza o banco diretamente aqui
+            $stmt = $this->db->prepare("UPDATE user_profiles SET is_verified = 1 WHERE user_id = :id");
+            $stmt->execute([':id' => $userId]);
+
+            // 3. Notificação (Opcional deixar aqui ou no Controller)
+            try {
+                $notif = new \App\Controllers\NotificationController($this->db);
+                $notif->notify($userId, "🎉 Perfil Verificado!", "Selo de confiança ativado.");
+            } catch (\Throwable $e) {}
+
+        } elseif (!$deservesBadge && $currentStatus === 1) {
+            $stmt = $this->db->prepare("UPDATE user_profiles SET is_verified = 0 WHERE user_id = :id");
+            $stmt->execute([':id' => $userId]);
+        }
+
+        return (object)['is_verified' => $deservesBadge, 'score' => $points];
     }
 
     public function getReviewStats($userId) {
@@ -881,6 +965,7 @@ class UserRepository {
         }
     }
 
+    // @deprecated - verificar e remover 
     public function createCompanyRecord($userId, $name) {
         try {
             // 1. Cria a empresa

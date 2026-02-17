@@ -77,9 +77,13 @@ class Auth {
      */
     public static function hasRole($role) {
         $user = self::getAuthenticatedUser();
-        if (!$user || !isset($user['role'])) return false;
         
-        // Comparação robusta (ignora espaços e case)
+        // Verificamos se o usuário existe e se o campo role está preenchido
+        if (!$user || empty($user['role'])) {
+            return false;
+        }
+
+        // Comparamos o slug guardado no token com o solicitado (ex: 'admin')
         return strtolower(trim($user['role'])) === strtolower(trim($role));
     }
 

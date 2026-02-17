@@ -55,7 +55,7 @@ class AuthController {
             ], 403);
         }
 
-        // 3. Preparação do Token JWT
+        // 3. Preparação do Token JWT (Com a nova estrutura)
         $issuedAt = time();
         $expire = $issuedAt + (int)($_ENV['JWT_EXPIRE'] ?? 86400); 
 
@@ -64,23 +64,19 @@ class AuthController {
             "exp" => $expire,
             "sub" => $user['id'],
             "data" => [
-                "id"    => $user['id'],
-                "email" => $user['email'],
-                "role"  => strtoupper($user['role'] ?? 'DRIVER'),
-                "type"  => $user['user_type'] ?? 'motorista'
+                "id"         => $user['id'],
+                "email"      => $user['email'],
+                "account_id" => $user['account_id'], // IMPORTANTE: Para o multi-tenancy
+                "role"       => strtoupper($user['role_slug'] ?? 'driver'), // Vem do JOIN que fizemos
+                "type"       => $user['user_type'] ?? 'motorista'
             ]
         ];
 
         try {
-            // Geração do token
             $jwt = JWT::encode($payload, $this->secret, 'HS256');
             
-            // Atualiza último login sem travar o processo se falhar
-            try {
-                $this->userRepo->updateLastLogin($user['id']);
-            } catch (Exception $e) {
-                error_log("Erro ao atualizar last_login: " . $e->getMessage());
-            }
+            // Atualiza último login
+            $this->userRepo->updateLastLogin($user['id']);
 
             return Response::json([
                 "success" => true,
@@ -88,64 +84,48 @@ class AuthController {
                 "user"    => [
                     "id"          => (int)$user['id'],
                     "name"        => $user['name'],
-                    "role"        => strtoupper($user['role']),
-                    "type" => $user['user_type'],
-                    "is_verified" => filter_var($user['is_verified'] ?? false),
+                    "account_id"  => $user['account_id'], // Retorna para o Front saber a empresa
+                    "role"        => strtoupper($user['role_slug'] ?? 'driver'),
+                    "company"     => $user['company_name'] ?? null, // Nome da Account vindo do JOIN
                     "avatar"      => $user['avatar_url'] ?? null
                 ]
             ]);
 
         } catch (Exception $e) {
             error_log("Erro JWT: " . $e->getMessage());
-            return Response::json(["success" => false, "message" => "Erro ao processar acesso seguro"], 500);
+            return Response::json(["success" => false, "message" => "Erro ao processar acesso"], 500);
         }
-    }
+    }    
 
     /**
-     * Registro de Usuário (Motorista ou Empresa)
+     * Registro de Usuário (Motorista ou Empresa) - Versão SaaS
      */
     public function register($data) {
         try {
-            // 1. Captura e Sanitização
-            $name     = strip_tags(trim($data['name'] ?? ''));
-            $email    = strtolower(trim($data['email'] ?? ''));
+            // Validação básica
+            if (empty($data['email']) || empty($data['password']) || empty($data['name'])) {
+                return Response::json(["success" => false, "message" => "Campos obrigatórios ausentes."], 400);
+            }
+
+            // Sanitização dos dados vindos do Front
+            $email = filter_var($data['email'], FILTER_SANITIZE_EMAIL);
             $whatsapp = preg_replace('/\D/', '', $data['whatsapp'] ?? '');
-            $password = $data['password'] ?? '';
-            $role     = strtolower($data['role'] ?? 'driver'); 
+            $document = preg_replace('/\D/', '', $data['document'] ?? ''); // CAPTURA O DOCUMENTO
 
-            // 2. Validações
-            if (empty($name) || empty($email) || empty($password)) {
-                return Response::json(["success" => false, "message" => "Dados obrigatórios faltando"], 400);
-            }
-
-            // 3. O PULO DO GATO: Criação do user_type para o Banco
-            // React manda 'driver' -> PHP traduz para 'motorista'
-            // React manda 'company' -> PHP traduz para 'empresa'
-            $userTypeMap = [
-                'driver'  => 'motorista',
-                'company' => 'empresa'
-            ];
-            $userType = $userTypeMap[$role] ?? 'motorista';
-
-            // 4. Preparação do Array para o Repository
+            // Prepara os dados para o UserRepository
             $preparedData = [
-                'name'      => $name,
-                'email'     => $email,
-                'whatsapp'  => $whatsapp,
-                'role'      => $role,      // Salva 'driver'
-                'user_type' => $userType,  // Salva 'motorista' ou 'empresa'
-                'password'  => password_hash($password, PASSWORD_BCRYPT),
-                'rating_avg'=> 5.00
+                'name'          => trim($data['name']),
+                'email'         => $email,
+                'whatsapp'      => $whatsapp,
+                'password'      => password_hash($data['password'], PASSWORD_BCRYPT),
+                'role'          => $data['role'] ?? 'driver',
+                'user_type'     => ($data['role'] === 'company' ? 'empresa' : 'motorista'),
+                'document'      => $document, // PASSA O DOCUMENTO REAL
+                'document_type' => (strlen($document) > 11) ? 'CNPJ' : 'CPF'
             ];
 
-            // 5. Chamada do Repository
+            // Chama o create do repositório (aquele que ajustamos com rand e UUID)
             $userId = $this->userRepo->create($preparedData);
-
-            // Criação da Empresa (Silenciosa e Segura)
-            if ($userId && $userType === 'empresa') {
-                // Passamos a responsabilidade para o repository que já tem a conexão
-                $this->userRepo->createCompanyRecord($userId, $name);
-            }
 
             return Response::json([
                 "success" => true, 
@@ -154,13 +134,24 @@ class AuthController {
             ], 201);
 
         } catch (Exception $e) {
-            error_log("Erro no registro: " . $e->getMessage());
+            // Log para você ver o erro real no log do PHP (C:\xampp\php\logs\php_error.log)
+            error_log("Erro no Registro: " . $e->getMessage());
+
+            // Se o erro for duplicidade (E-mail ou Documento)
+            if (strpos($e->getMessage(), '1062') !== false) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => "Este E-mail, WhatsApp ou CPF/CNPJ já está cadastrado."
+                ], 409);
+            }
+
             return Response::json([
                 "success" => false, 
-                "message" => "Erro no servidor: " . $e->getMessage()
+                "message" => "Erro interno: " . $e->getMessage()
             ], 500);
         }
     }
+
     /**
      * Método auxiliar para não poluir o fluxo principal de registro
      */

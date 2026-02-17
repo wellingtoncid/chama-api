@@ -24,9 +24,16 @@ class FreightRepository {
             $offset = (max(1, (int)$page) - 1) * (int)$perPage; 
             // Parâmetros base
             $params = [];
+            $accountId = $filters['account_id'] ?? null;
             $where = " WHERE f.deleted_at IS NULL AND f.status = 'OPEN'";
 
-            if ($userId !== null && (int)$userId > 0) {
+           // Se passar account_id, filtramos pela empresa toda
+            if ($accountId) {
+                $where .= " AND f.account_id = :account_id";
+                $params[':account_id'] = $accountId;
+            } 
+            // Se não passar account_id, mas passar userId (comportamento antigo/motorista vendo seus proprios fretes)
+            elseif ($userId !== null && (int)$userId > 0) {
                 $where .= " AND f.user_id = :u_id";
                 $params[':u_id'] = (int)$userId;
             }
@@ -169,11 +176,11 @@ class FreightRepository {
     public function save($data) {
         // Usamos Named Parameters (:user_id) para evitar erros de ordem dos campos
         $sql = "INSERT INTO freights (
-                    user_id, origin_city, origin_state, dest_city, dest_state, 
-                    product, weight, vehicle_type, body_type, description, 
+                    user_id, account_id, origin_city, origin_state, dest_city, 
+                    dest_state, product, weight, vehicle_type, body_type, description, 
                     status, price, expires_at, is_featured, slug, created_at
                 ) VALUES (
-                    :user_id, :origin_city, :origin_state, :dest_city, :dest_state, 
+                    :user_id, :account_id, :origin_city, :origin_state, :dest_city, :dest_state, 
                     :product, :weight, :vehicle_type, :body_type, :description, 
                     :status, :price, :expires_at, :is_featured, :slug, NOW()
                 )";
@@ -183,6 +190,7 @@ class FreightRepository {
             
             // Fazemos o bind explícito para garantir os tipos de dados
             $stmt->bindValue(':user_id',      (int)$data['user_id'], PDO::PARAM_INT);
+            $stmt->bindValue(':account_id',   (int)$data['account_id'], \PDO::PARAM_INT);
             $stmt->bindValue(':origin_city',  $data['origin_city']);
             $stmt->bindValue(':origin_state', $data['origin_state']);
             $stmt->bindValue(':dest_city',    $data['dest_city']);
