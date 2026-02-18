@@ -307,18 +307,20 @@ class UserRepository {
 
             $sqlProfile = "UPDATE user_profiles SET 
                             bio = :bio, 
-                            slug = COALESCE(:slug, slug),
                             avatar_url = COALESCE(:avatar, avatar_url),
                             cover_url = COALESCE(:cover, cover_url),
+                            vehicle_type = :v_type,
+                            body_type = :b_type,
                             extended_attributes = JSON_MERGE_PATCH(COALESCE(extended_attributes, '{}'), :json),
                             updated_at = NOW()
                         WHERE user_id = :id";
-            
+
             $this->db->prepare($sqlProfile)->execute([
                 ':bio'    => $nullIfEmpty($data['bio'] ?? $data['description'] ?? null),
-                ':slug'   => $safeSlug,
                 ':avatar' => $nullIfEmpty($data['avatar_url'] ?? null),
                 ':cover'  => $nullIfEmpty($data['cover_url'] ?? null),
+                ':v_type' => $data['vehicle_type'] ?? null, // Importante para o ícone padrão
+                ':b_type' => $data['body_type'] ?? null,    // Importante para motoristas
                 ':json'   => json_encode($newExtras, JSON_UNESCAPED_UNICODE),
                 ':id'     => $userId
             ]);
@@ -346,37 +348,21 @@ class UserRepository {
      */
     public function getProfileData($userId) {
         $sql = "SELECT 
-                u.id, u.name, u.email, u.whatsapp, u.role, u.status,
-                u.plan_id, u.is_verified, u.company_id, u.created_at,
-                u.is_subscriber, u.plan_expires_at, u.user_type, u.plan_type,
-                u.rating_avg, u.rating_count, u.balance,
-                u.city as user_city, u.state as user_state,
-                a.document_number as document, 
-                p.avatar_url, p.cover_url, 
-                p.bio, p.slug, p.vehicle_type, p.body_type, p.verification_status, p.extended_attributes,
-                -- CAMPOS DA EMPRESA (Acréscimos necessários)
-                c.name_fantasy as company_name, 
-                c.cnpj as company_cnpj,
-                c.corporate_name,
-                c.main_contact_name,
-                c.business_type, 
-                c.operation_type,
-                c.postal_code,
-                c.address,
-                c.address_number,
-                c.neighborhood,
-                c.city as company_city,
-                c.state as company_state,
-                c.transport_services,
-                c.logistics_services,
-                c.coverage_area,
-                c.website_url
-            FROM users u
-            LEFT JOIN accounts a ON u.account_id = a.id
-            LEFT JOIN user_profiles p ON u.id = p.user_id
-            LEFT JOIN companies c ON u.id = c.owner_id
-            WHERE u.id = :id AND u.deleted_at IS NULL
-            LIMIT 1";
+                    u.id, u.name, u.email, u.whatsapp, u.role, u.status,
+                    u.user_type, u.city as user_city, u.state as user_state,
+                    u.company_id, a.document_number as document, 
+                    p.avatar_url, p.cover_url, p.bio, p.slug, p.vehicle_type, 
+                    p.extended_attributes,
+                    c.name_fantasy as company_name, c.cnpj as company_cnpj,
+                    c.business_type, c.postal_code, c.address, c.address_number,
+                    c.neighborhood, c.city as company_city, c.state as company_state,
+                    c.transport_services, c.fleet_types, c.certifications, c.website_url
+                FROM users u
+                LEFT JOIN accounts a ON u.account_id = a.id
+                LEFT JOIN user_profiles p ON u.id = p.user_id
+                LEFT JOIN companies c ON u.id = c.owner_id
+                WHERE u.id = :id AND u.deleted_at IS NULL
+                LIMIT 1";
         
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':id' => $userId]);
@@ -384,40 +370,26 @@ class UserRepository {
 
         if (!$row) return null;
 
-        // 1. Processa Atributos Dinâmicos (JSON do Perfil)
-        if (!empty($row['extended_attributes'])) {
-            $extras = json_decode($row['extended_attributes'], true);
-            if (is_array($extras)) {
-                foreach ($extras as $key => $value) {
-                    if (!isset($row[$key])) $row[$key] = $value;
-                }
+        // --- TRATAMENTO DE JSONs (Crucial para o Front-end) ---
+        $jsonFields = ['transport_services', 'fleet_types', 'certifications', 'extended_attributes'];
+        foreach ($jsonFields as $f) {
+            $row[$f] = !empty($row[$f]) ? json_decode($row[$f], true) : [];
+        }
+
+        // Se houver extended_attributes, mescla no primeiro nível para facilitar o acesso
+        if (is_array($row['extended_attributes'])) {
+            foreach ($row['extended_attributes'] as $key => $value) {
+                if (!isset($row[$key])) $row[$key] = $value;
             }
         }
 
-        // 2. Processa Campos de Serviços da Empresa (Convertendo string JSON para Array do React)
-        $row['transport_services'] = !empty($row['transport_services']) ? json_decode($row['transport_services'], true) : [];
-        $row['logistics_services'] = !empty($row['logistics_services']) ? json_decode($row['logistics_services'], true) : [];
+        // --- NORMALIZAÇÃO DE LOCALIZAÇÃO ---
+        // Isso garante que city e state sempre existam para o Front
+        $row['city'] = $row['company_city'] ?: ($row['user_city'] ?: '');
+        $row['state'] = $row['company_state'] ?: ($row['user_state'] ?: '');
 
-        /// 3. Normalização de tipos (FORMA SEGURA)
-        $row['is_verified'] = (isset($row['is_verified']) && (int)$row['is_verified'] === 1);
-        $row['is_subscriber'] = (isset($row['is_subscriber']) && (int)$row['is_subscriber'] === 1);
-
-        $row['rating_avg'] = round((float)($row['rating_avg'] ?? 0), 1);
-        $row['balance'] = (float)($row['balance'] ?? 0);
-
-        // 4. Fallbacks inteligentes para Localização
-        // Se for empresa, prioriza a cidade da empresa, senão a do usuário
-        $row['display_city'] = $row['company_city'] ?: ($row['user_city'] ?: 'Brasil');
-        $row['display_state'] = $row['company_state'] ?: ($row['user_state'] ?: '--');
-
-        // 5. Aliases para o Front-end
-        $row['avatar_url'] = $row['avatar_url'] ?: null;
-        $row['cover_url'] = $row['cover_url'] ?: null;
-        $row['banner_url'] = $row['cover_url']; 
-        
-        $row['display_name'] = ($row['user_type'] === 'COMPANY' && !empty($row['company_name'])) 
-            ? $row['company_name'] 
-            : $row['name'];
+        // --- FALLBACKS DE NOME ---
+        $row['display_name'] = (!empty($row['company_name'])) ? $row['company_name'] : $row['name'];
 
         return $row;
     }
