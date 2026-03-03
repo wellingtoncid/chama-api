@@ -34,7 +34,7 @@ class AdRepository {
                 END) as final_priority
                 FROM ads a
                 INNER JOIN users u ON a.user_id = u.id
-                WHERE a.is_deleted = 0 
+                WHERE a.deleted_at = NULL 
                 AND a.status = 'active'
                 AND (a.expires_at IS NULL OR a.expires_at >= CURDATE())";
 
@@ -238,9 +238,6 @@ class AdRepository {
     }
 
     public function getAdsByUserId($userId) {
-        // 1. Buscamos o saldo atual do usuário para retornar junto com os anúncios
-        // 2. Incluímos os contadores de performance
-        // 3. Verificamos o status de 'boost' (se o usuário tem crédito, o anúncio está impulsionado)
         $sql = "SELECT 
                     a.id, 
                     a.title, 
@@ -253,12 +250,11 @@ class AdRepository {
                     a.views_count,
                     a.clicks_count,
                     u.ad_credits,
-                    -- Flag para o Frontend saber se o anúncio está recebendo prioridade
                     (CASE WHEN u.ad_credits > 0 THEN 1 ELSE 0 END) as is_boosted
                 FROM ads a
                 INNER JOIN users u ON a.user_id = u.id
                 WHERE a.user_id = :user_id 
-                AND a.is_deleted = 0
+                AND a.deleted_at IS NULL
                 ORDER BY a.created_at DESC";
                     
         try {
@@ -266,7 +262,7 @@ class AdRepository {
             $stmt->execute([':user_id' => $userId]);
             return $stmt->fetchAll(\PDO::FETCH_ASSOC);
         } catch (\Exception $e) {
-            error_log("Erro ao buscar anúncios do usuário: " . $e->getMessage());
+            error_log("Erro ao buscar anúncios do usuário (findAds): " . $e->getMessage());
             return [];
         }
     }

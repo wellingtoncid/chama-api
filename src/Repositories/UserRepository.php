@@ -17,26 +17,29 @@ class UserRepository {
                 $this->db->beginTransaction();
             }
 
-            // 1. Identificadores
+            // 1. Identificadores e Sanitização
             $tempDoc = 'TEMP_' . time() . '_' . rand(100, 999); 
             $accountUuid = bin2hex(random_bytes(16)); 
+            $roleSlug = strtolower($data['role'] ?? 'driver');
+            $cleanDoc = preg_replace('/\D/', '', $data['document'] ?? $tempDoc);
 
-            // 2. Inserção na tabela ACCOUNTS
-            $sqlAccount = "INSERT INTO accounts (uuid, document_type, document_number, corporate_name, status) 
-                            VALUES (:uuid, :doc_type, :doc_num, :name, 'active')";
+            // 2. Inserção na tabela ACCOUNTS (Entidade Fiscal)
+            // Guardamos o nome tanto em corporate_name quanto trade_name inicialmente
+            $sqlAccount = "INSERT INTO accounts (uuid, document_type, document_number, corporate_name, trade_name, status) 
+                            VALUES (:uuid, :doc_type, :doc_num, :name, :trade, 'active')";
             
             $stmtAcc = $this->db->prepare($sqlAccount);
             $stmtAcc->execute([
                 ':uuid'     => $accountUuid,
-                ':doc_type' => $data['document_type'] ?? 'CPF',
-                ':doc_num'  => $data['document'] ?? $tempDoc,
-                ':name'     => $data['name']
+                ':doc_type' => $data['document_type'] ?? (strlen($cleanDoc) === 14 ? 'CNPJ' : 'CPF'),
+                ':doc_num'  => $cleanDoc,
+                ':name'     => $data['name'],
+                ':trade'    => $data['name_fantasy'] ?? $data['name']
             ]);
             
             $accountId = $this->db->lastInsertId();
 
             // 3. Buscar Role ID
-            $roleSlug = strtolower($data['role'] ?? 'driver');
             $stmtRole = $this->db->prepare("SELECT id FROM roles WHERE slug = :slug LIMIT 1");
             $stmtRole->execute([':slug' => $roleSlug]);
             $roleId = $stmtRole->fetchColumn() ?: 2;
@@ -44,52 +47,52 @@ class UserRepository {
             // 4. Criar o Usuário vinculado à Account
             $sqlUser = "INSERT INTO users (
                             name, email, password, whatsapp, 
-                            account_id, role_id, role, user_type, status, plan_id
+                            account_id, role_id, role, user_type, status, plan_id, created_at
                         ) VALUES (
                             :name, :email, :password, :whatsapp, 
-                            :account_id, :role_id, :role, :user_type, 'active', 1
+                            :account_id, :role_id, :role, :user_type, 'active', 1, NOW()
                         )";
             
             $stmtUser = $this->db->prepare($sqlUser);
             $stmtUser->execute([
                 ':name'       => $data['name'],
                 ':email'      => $data['email'],
-                ':password'   => $data['password'],
-                ':whatsapp'   => $data['whatsapp'],
+                ':password'   => $data['password'], // Deve estar hasheado via password_hash()
+                ':whatsapp'   => preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
                 ':account_id' => $accountId,
                 ':role_id'    => $roleId,
-                ':role'       => $data['role'],
-                ':user_type'  => $data['user_type'] ?? ($roleSlug === 'driver' ? 'motorista' : 'empresa')
+                ':role'       => $data['role'], // Ex: 'company', 'driver'
+                ':user_type'  => strtoupper($data['user_type'] ?? ($roleSlug === 'driver' ? 'DRIVER' : 'COMPANY'))
             ]);
 
-            $userId = $this->db->lastInsertId(); // AGORA SIM o $userId existe!
+            $userId = $this->db->lastInsertId();
 
-            // 5. CRIAR O PERFIL DA EMPRESA (Agora que temos o $userId)
-            if ($roleSlug === 'company') {
-                $sqlCompany = "INSERT INTO companies (
-                    owner_id, name_fantasy, corporate_name, cnpj, business_type, coverage_area
-                ) VALUES (
-                    :owner_id, :name, :name, :cnpj, 'pendente', 'a definir'
-                )";
+            // 5. Criar Perfil Público (user_profiles)
+            // Geramos o slug e já inicializamos o JSON private_data
+            $baseSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $data['name'])));
+            $uniqueSlug = $baseSlug . '-' . $userId;
+            
+            $initialDetails = [
+                'business_segment' => ($roleSlug === 'driver' ? 'motorista' : 'geral'),
+                'created_via' => 'registration'
+            ];
 
-                $stmtComp = $this->db->prepare($sqlCompany);
-                $stmtComp->execute([
-                    ':owner_id' => $userId,
-                    ':name'     => $data['name'],
-                    ':cnpj'     => $data['document'] ?? null
-                ]);
-            }    
-
-            // 6. Criar Perfil Público (user_profiles)
-            $slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $data['name']))) . '-' . $userId;
-            $sqlProfile = "INSERT INTO user_profiles (user_id, slug) VALUES (:user_id, :slug)";
-            $this->db->prepare($sqlProfile)->execute([':user_id' => $userId, ':slug' => $slug]);
+            $sqlProfile = "INSERT INTO user_profiles (user_id, name, slug, private_data, created_at) 
+                        VALUES (:user_id, :display_name, :slug, :json, NOW())";
+            
+            $this->db->prepare($sqlProfile)->execute([
+                ':user_id'      => $userId,
+                ':display_name' => $data['name_fantasy'] ?? $data['name'],
+                ':slug'         => $uniqueSlug,
+                ':json'         => json_encode($initialDetails)
+            ]);
 
             $this->db->commit();
             return $userId;
 
         } catch (Exception $e) {
             if ($this->db->inTransaction()) $this->db->rollBack();
+            error_log("Erro ao criar usuário: " . $e->getMessage());
             throw $e; 
         }
     }
@@ -112,15 +115,15 @@ class UserRepository {
 
     public function findById($id) {
         $sql = "SELECT 
-                    u.id, u.name, u.email, u.whatsapp, u.role, u.user_type, u.company_id, u.account_id,
-                    a.document_number as document, -- Busca o documento da conta vinculada
+                    u.id, u.name, u.email, u.whatsapp, u.role, u.user_type, u.account_id,
+                    a.document_number as document, 
+                    a.trade_name as account_trade_name,
+                    a.corporate_name,
                     p.bio, p.avatar_url, p.cover_url, p.slug, p.vehicle_type, p.body_type,
-                    c.name_fantasy as company_name, 
-                    c.cnpj as company_cnpj
+                    p.private_data as extended_attributes
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
-                LEFT JOIN companies c ON u.id = c.owner_id
                 WHERE u.id = :id AND u.deleted_at IS NULL
                 LIMIT 1";
 
@@ -131,10 +134,22 @@ class UserRepository {
 
         if (!$user) return null;
 
-        // 2. Garante que os campos JSON ou booleanos sejam formatados
+        // --- NORMALIZAÇÃO PARA COMPATIBILIDADE ---
+        // Decodifica o JSON para pegar dados que antes estavam na tabela companies
+        $details = !empty($user['extended_attributes']) 
+            ? json_decode($user['extended_attributes'], true) 
+            : [];
+
+        // Mapeia os nomes para o que o seu sistema espera (retrocompatibilidade)
+        $user['company_name'] = $user['account_trade_name'] ?: ($details['trade_name'] ?? $user['corporate_name']);
+        $user['company_cnpj'] = $user['document']; // O documento da conta é o CNPJ para empresas
+
+        // Se houver campos específicos no JSON que você usa com frequência, pode extrair aqui:
+        $user['fleet_types'] = $details['fleet_types'] ?? [];
+
+        // Mantém a sua função de formatação original
         return $this->formatUserTypes($user);
     }
-
     /**
      * Método auxiliar para garantir tipos de dados consistentes
      */
@@ -269,76 +284,94 @@ class UserRepository {
      * Atualiza dados da tabela 'user_profiles'
      * Adicionado: extended_attributes (JSON) e avatar_url/banner_url
      */
-    public function updateProfileFields($userId, $data) {
+    public function updateFullProfile($userId, $data) {
         try {
             if (!$this->db->inTransaction()) $this->db->beginTransaction();
 
             $nullIfEmpty = fn($val) => (isset($val) && trim((string)$val) !== '') ? trim((string)$val) : null;
 
-            // 1. Atualiza Usuário (Dados básicos)
-            $sqlUser = "UPDATE users SET 
-                            name = COALESCE(:name, name), 
-                            whatsapp = :whatsapp,
-                            city = :city,
-                            state = :state,
-                            updated_at = NOW()
-                        WHERE id = :id";
-            
-            $this->db->prepare($sqlUser)->execute([
-                ':name'     => $nullIfEmpty($data['name'] ?? $data['name_fantasy'] ?? null),
-                ':whatsapp' => preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
-                ':city'     => $nullIfEmpty($data['city'] ?? null),
-                ':state'    => $nullIfEmpty($data['state'] ?? null),
-                ':id'       => $userId
-            ]);
+            // 1. Atualiza Identidade (users)
+            $this->db->prepare("UPDATE users SET name = ?, whatsapp = ?, city = ?, state = ?, updated_at = NOW() WHERE id = ?")
+                ->execute([
+                    $nullIfEmpty($data['name'] ?? null),
+                    preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
+                    $nullIfEmpty($data['city'] ?? null),
+                    $nullIfEmpty($data['state'] ?? null),
+                    $userId
+                ]);
 
-            // 2. Atualiza Perfil (Bio, Slug, Imagens e Atributos Dinâmicos)
-            $safeSlug = isset($data['slug']) ? preg_replace('/[^a-z0-9\-]/', '', strtolower($data['slug'])) : null;
+            // 2. Atualiza Conta Jurídica (accounts)
+            $stmt = $this->db->prepare("SELECT account_id FROM users WHERE id = ?");
+            $stmt->execute([$userId]);
+            $acc = $stmt->fetch();
             
-            // OPCIONAL: Se quiser manter o JSON extended_attributes para histórico, inclua aqui
-            $extrasMapping = ['plate', 'antt', 'anos_experiencia', 'instagram', 'website'];
-            $newExtras = [];
-            foreach ($extrasMapping as $field) {
-                if (isset($data[$field])) {
-                    $val = is_string($data[$field]) ? trim($data[$field]) : $data[$field];
-                    $newExtras[$field] = ($val === '') ? null : $val;
-                }
+            if ($acc['account_id']) {
+                $this->db->prepare("UPDATE accounts SET trade_name = ?, document_number = COALESCE(?, document_number) WHERE id = ?")
+                    ->execute([
+                        $nullIfEmpty($data['name_fantasy'] ?? $data['trade_name'] ?? null),
+                        $data['clean_document'] ?? null,
+                        $acc['account_id']
+                    ]);
             }
 
+            // 3. Organiza o JSON de Atributos Extras (O que não tem coluna própria)
+            $extraDetails = [
+                'address'            => $data['address'] ?? null,
+                'address_number'     => $data['address_number'] ?? null,
+                'neighborhood'       => $data['neighborhood'] ?? null,
+                'postal_code'        => preg_replace('/\D/', '', $data['postal_code'] ?? ''),
+                'business_segment'   => $data['business_segment'] ?? 'transport',
+                'fleet_types'        => $data['fleet_types'] ?? [],       // Array de tipos de frota
+                'transport_services' => $data['transport_services'] ?? [], // Ex: Mudanças, Refrigeração
+                'certifications'     => $data['certifications'] ?? [],     // Ex: SASSMAQ, ISO
+                'website'            => $data['website'] ?? null,
+                'social' => [
+                    'instagram' => $data['instagram'] ?? null,
+                    'linkedin'  => $data['linkedin'] ?? null
+                ],
+                // Disponibilidade do motorista (0/1) mantida também no JSON para possíveis usos futuros
+                'is_available'       => isset($data['is_available']) ? (int)$data['is_available'] : null
+            ];
+
+            // 3.1 Disponibilidade (coluna dedicada na tabela user_profiles)
+            $availabilityStatus = null;
+            if (array_key_exists('is_available', $data)) {
+                $availabilityStatus = ((int)$data['is_available'] === 1) ? 'available' : 'unavailable';
+            }
+
+            // 4. Atualiza Vitrine e Dados Técnicos (user_profiles)
             $sqlProfile = "UPDATE user_profiles SET 
                             bio = :bio, 
                             avatar_url = COALESCE(:avatar, avatar_url),
                             cover_url = COALESCE(:cover, cover_url),
                             vehicle_type = :v_type,
                             body_type = :b_type,
-                            extended_attributes = JSON_MERGE_PATCH(COALESCE(extended_attributes, '{}'), :json),
+                            experience_years = :exp,
+                            rntrc_number = :antt,
+                            slug = :slug,
+                            availability_status = COALESCE(:availability_status, availability_status),
+                            extended_attributes = :json,
                             updated_at = NOW()
                         WHERE user_id = :id";
 
             $this->db->prepare($sqlProfile)->execute([
-                ':bio'    => $nullIfEmpty($data['bio'] ?? $data['description'] ?? null),
-                ':avatar' => $nullIfEmpty($data['avatar_url'] ?? null),
-                ':cover'  => $nullIfEmpty($data['cover_url'] ?? null),
-                ':v_type' => $data['vehicle_type'] ?? null, // Importante para o ícone padrão
-                ':b_type' => $data['body_type'] ?? null,    // Importante para motoristas
-                ':json'   => json_encode($newExtras, JSON_UNESCAPED_UNICODE),
+                ':bio'    => $nullIfEmpty($data['bio'] ?? null),
+                ':avatar' => $data['avatar_url'] ?? null,
+                ':cover'  => $data['cover_url'] ?? null,
+                ':v_type' => $data['vehicle_type'] ?? null,
+                ':b_type' => $data['body_type'] ?? null,
+                ':exp'    => (int)($data['experience_years'] ?? 0),
+                ':antt'   => $data['antt'] ?? $data['rntrc_number'] ?? null,
+                ':slug'   => $data['slug'] ?? null,
+                ':availability_status' => $availabilityStatus,
+                ':json'   => json_encode($extraDetails, JSON_UNESCAPED_UNICODE),
                 ':id'     => $userId
             ]);
-
-            // 3. Lógica de Empresa (Tabela 'companies')
-            if (isset($data['role']) && in_array(strtoupper($data['role']), ['COMPANY', 'TRANSPORTADORA', 'LOGISTICS'])) {
-                // Garante o vínculo (users.company_id) e retorna o ID da empresa
-                $companyId = $this->linkOrCreateCompany($userId, $data);
-                
-                // Salva TODOS os campos que você listou (CNPJ, Endereço, Certificações, frotas, etc)
-                $this->updateCompanyDetails($companyId, $data);
-            }
 
             $this->db->commit();
             return true;
         } catch (\Exception $e) {
             if ($this->db->inTransaction()) $this->db->rollBack();
-            error_log("Erro no UserRepository: " . $e->getMessage());
             throw $e;
         }
     }
@@ -348,19 +381,17 @@ class UserRepository {
      */
     public function getProfileData($userId) {
         $sql = "SELECT 
-                    u.id, u.name, u.email, u.whatsapp, u.role, u.status,
-                    u.user_type, u.city as user_city, u.state as user_state,
-                    u.company_id, a.document_number as document, 
-                    p.avatar_url, p.cover_url, p.bio, p.slug, p.vehicle_type, 
-                    p.extended_attributes,
-                    c.name_fantasy as company_name, c.cnpj as company_cnpj,
-                    c.business_type, c.postal_code, c.address, c.address_number,
-                    c.neighborhood, c.city as company_city, c.state as company_state,
-                    c.transport_services, c.fleet_types, c.certifications, c.website_url
+                    u.id, u.name as user_name, u.email, u.whatsapp, u.role, u.status,
+                    u.user_type, u.account_id, u.parent_id,
+                    u.city as user_city, u.state as user_state, u.is_verified, 
+                    a.document_number as document, a.corporate_name, a.trade_name as account_trade_name,
+                    p.avatar_url, p.cover_url, p.bio, p.slug, 
+                    u.city as profile_city, u.state as profile_state,
+                    p.vehicle_type, p.body_type, p.verification_status, 
+                    p.extended_attributes 
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
-                LEFT JOIN companies c ON u.id = c.owner_id
                 WHERE u.id = :id AND u.deleted_at IS NULL
                 LIMIT 1";
         
@@ -370,101 +401,78 @@ class UserRepository {
 
         if (!$row) return null;
 
-        // --- TRATAMENTO DE JSONs (Crucial para o Front-end) ---
-        $jsonFields = ['transport_services', 'fleet_types', 'certifications', 'extended_attributes'];
-        foreach ($jsonFields as $f) {
-            $row[$f] = !empty($row[$f]) ? json_decode($row[$f], true) : [];
+        // --- TRATAMENTO DO JSON ---
+        $row['details'] = !empty($row['extended_attributes']) 
+            ? json_decode($row['extended_attributes'], true) 
+            : [];
+
+        // --- COMPATIBILIDADE COM O FRONT-END ---
+        // Mapeia o que era da tabela 'companies' para o primeiro nível do array
+        $legacyFields = [
+            'business_type', 'transport_services', 'fleet_types', 
+            'certifications', 'website_url', 'postal_code', 
+            'address', 'address_number', 'neighborhood'
+        ];
+
+        foreach ($legacyFields as $field) {
+            $row[$field] = $row['details'][$field] ?? ($field === 'fleet_types' || $field === 'transport_services' ? [] : '');
         }
 
-        // Se houver extended_attributes, mescla no primeiro nível para facilitar o acesso
-        if (is_array($row['extended_attributes'])) {
-            foreach ($row['extended_attributes'] as $key => $value) {
-                if (!isset($row[$key])) $row[$key] = $value;
+        // --- REDES SOCIAIS (compatibilidade com formato antigo e novo "social") ---
+        $social = is_array($row['details']['social'] ?? null) ? $row['details']['social'] : [];
+        $row['instagram'] = $social['instagram'] ?? ($row['details']['instagram'] ?? null);
+        $row['linkedin']  = $social['linkedin']  ?? ($row['details']['linkedin']  ?? null);
+
+        // --- NORMALIZAÇÃO DE LOCALIZAÇÃO ---
+        $row['city'] = $row['profile_city'] ?: ($row['user_city'] ?: '');
+        $row['state'] = $row['profile_state'] ?: ($row['user_state'] ?: '');
+
+        // --- LÓGICA DE NOMES (SENSÍVEL A HIERARQUIA) ---
+        // 1. Nome da Empresa (Vem da Conta compartilhada ou do JSON)
+        $row['company_name'] = $row['account_trade_name'] ?: ($row['details']['trade_name'] ?? $row['corporate_name']);
+        
+        // 2. Nome de Exibição Principal (Se for Empresa, mostra o nome da empresa. Se for motorista, o nome dele)
+        $row['display_name'] = ($row['user_type'] === 'COMPANY') 
+            ? $row['company_name'] 
+            : $row['user_name'];
+
+        // 3. Campos de compatibilidade com o Front (painel antigo)
+        //    - name: sempre algum nome de exibição
+        //    - trade_name: prioriza nome de empresa, depois nome do usuário
+        $row['name'] = $row['display_name'];
+        $row['trade_name'] = $row['company_name'] ?: $row['user_name'];
+
+        // 4. Normaliza URLs de avatar e capa para o front (absolutas quando começarem com "/")
+        if (!empty($row['avatar_url']) || !empty($row['cover_url'])) {
+            $scheme = $_SERVER['REQUEST_SCHEME'] ?? 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? ($_ENV['APP_URL'] ?? '');
+            $baseUrl = is_string($host) && str_starts_with($host, 'http')
+                ? rtrim($host, '/')
+                : rtrim(($scheme . '://' . $host), '/');
+
+            if (!empty($row['avatar_url']) && str_starts_with($row['avatar_url'], '/')) {
+                $row['avatar_url'] = $baseUrl . $row['avatar_url'];
+            }
+            if (!empty($row['cover_url']) && str_starts_with($row['cover_url'], '/')) {
+                $row['cover_url'] = $baseUrl . $row['cover_url'];
             }
         }
 
-        // --- NORMALIZAÇÃO DE LOCALIZAÇÃO ---
-        // Isso garante que city e state sempre existam para o Front
-        $row['city'] = $row['company_city'] ?: ($row['user_city'] ?: '');
-        $row['state'] = $row['company_state'] ?: ($row['user_state'] ?: '');
-
-        // --- FALLBACKS DE NOME ---
-        $row['display_name'] = (!empty($row['company_name'])) ? $row['company_name'] : $row['name'];
+        // Injeta as permissões
+        $row['permissions'] = $this->resolvePermissions($row['user_type'], $row['details']['business_segment'] ?? 'general');
 
         return $row;
     }
 
-    public function linkOrCreateCompany($ownerId, $data) {
-        // 1. Busca empresa existente pelo owner_id
-        $stmt = $this->db->prepare("SELECT id FROM companies WHERE owner_id = :owner_id LIMIT 1");
-        $stmt->execute([':owner_id' => $ownerId]);
-        $company = $stmt->fetch();
-
-        if ($company) {
-            $companyId = $company['id'];
-        } else {
-            // 2. Cria se não existir
-            $sqlIn = "INSERT INTO companies (owner_id, name_fantasy, status, created_at) 
-                    VALUES (:owner_id, :name, 'active', NOW())";
-            $this->db->prepare($sqlIn)->execute([
-                ':owner_id' => $ownerId,
-                ':name'     => $data['name_fantasy'] ?? $data['name']
-            ]);
-            $companyId = $this->db->lastInsertId();
+    private function resolvePermissions($type, $segment) {
+        if ($type === 'DRIVER') {
+            return ['label' => 'Motorista', 'features' => ['marketplace_seller']];
         }
-
-        // 3. VÍNCULO: Garante que o users.company_id está preenchido
-        $this->db->prepare("UPDATE users SET company_id = :cid WHERE id = :uid")
-                ->execute([':cid' => $companyId, ':uid' => $ownerId]);
-
-        return $companyId;
-    }
-
-    private function updateCompanyDetails($companyId, $data) {
-        $nullIfEmpty = fn($val) => (isset($val) && trim((string)$val) !== '') ? trim((string)$val) : null;
-        
-        // Tratamento de campos JSON para o Banco
-        $certifications = isset($data['certifications']) ? json_encode($data['certifications'], JSON_UNESCAPED_UNICODE) : null;
-        $fleet_types = isset($data['fleet_types']) ? json_encode($data['fleet_types'], JSON_UNESCAPED_UNICODE) : null;
-        $infra = isset($data['storage_infrastructure']) ? json_encode($data['storage_infrastructure'], JSON_UNESCAPED_UNICODE) : null;
-
-        $sql = "UPDATE companies SET 
-                    name_fantasy = :nf,
-                    description = :desc,
-                    cnpj = :cnpj,
-                    postal_code = :zip,
-                    address = :addr,
-                    address_number = :num,
-                    neighborhood = :neigh,
-                    city = :city,
-                    state = :state,
-                    business_type = :bt,
-                    coverage_area = :ca,
-                    website_url = :url,
-                    certifications = :certs,
-                    fleet_types = :fleets,
-                    storage_infrastructure = :infra,
-                    updated_at = NOW()
-                WHERE id = :id";
-
-        $this->db->prepare($sql)->execute([
-            ':nf'    => $data['name_fantasy'] ?? $data['name'] ?? null,
-            ':desc'  => $data['description'] ?? $data['bio'] ?? null,
-            ':cnpj'  => preg_replace('/\D/', '', $data['cnpj'] ?? ''),
-            ':zip'   => preg_replace('/\D/', '', $data['postal_code'] ?? ''),
-            ':addr'  => $nullIfEmpty($data['address'] ?? null),
-            ':num'   => $nullIfEmpty($data['address_number'] ?? null),
-            ':neigh' => $nullIfEmpty($data['neighborhood'] ?? null),
-            ':city'  => $nullIfEmpty($data['city'] ?? null),
-            ':state' => $nullIfEmpty($data['state'] ?? null),
-            ':bt'    => $data['business_type'] ?? null,
-            ':ca'    => $data['coverage_area'] ?? null,
-            ':url'   => $data['website_url'] ?? $data['website'] ?? null,
-            ':certs' => $certifications,
-            ':fleets' => $fleet_types,
-            ':infra' => $infra,
-            ':id'    => $companyId
-        ]);
+        return match($segment) {
+            'shipper'   => ['label' => 'Embarcador', 'features' => ['post_freight', 'request_quote']],
+            'logistics' => ['label' => 'Transportadora', 'features' => ['post_freight', 'respond_quote']],
+            default     => ['label' => 'Empresa Geral', 'features' => ['ads']],
+        };
     }
 
     public function runVerificationProcess($userId) {
@@ -489,11 +497,7 @@ class UserRepository {
             $stmt = $this->db->prepare("UPDATE user_profiles SET is_verified = 1 WHERE user_id = :id");
             $stmt->execute([':id' => $userId]);
 
-            // 3. Notificação (Opcional deixar aqui ou no Controller)
-            try {
-                $notif = new \App\Controllers\NotificationController($this->db);
-                $notif->notify($userId, "🎉 Perfil Verificado!", "Selo de confiança ativado.");
-            } catch (\Throwable $e) {}
+            $this->sendVerificationNotify($userId, true);
 
         } elseif (!$deservesBadge && $currentStatus === 1) {
             $stmt = $this->db->prepare("UPDATE user_profiles SET is_verified = 0 WHERE user_id = :id");
@@ -501,6 +505,15 @@ class UserRepository {
         }
 
         return (object)['is_verified' => $deservesBadge, 'score' => $points];
+    }
+
+    private function sendVerificationNotify($userId, $status) {
+        try {
+            $notif = new \App\Controllers\NotificationController($this->db);
+            if ($status) {
+                $notif->notify($userId, "🎉 Perfil Verificado!", "Seu selo de confiança foi ativado.");
+            }
+        } catch (\Throwable $e) {}
     }
 
     public function getReviewStats($userId) {
@@ -532,6 +545,22 @@ class UserRepository {
         } catch (\PDOException $e) {
             error_log("Erro ao buscar stats de review: " . $e->getMessage());
             return ['total' => 0, 'media' => 0];
+        }
+    }
+
+    public function incrementStats($userId, $type = 'VIEW') {
+        $column = ($type === 'CLICK') ? 'clicks_count' : 'views_count';
+        
+        if (!$userId) return false;
+
+        try {
+            $sql = "UPDATE user_profiles SET {$column} = {$column} + 1 WHERE user_id = :uid";
+            $stmt = $this->db->prepare($sql);
+            return $stmt->execute([':uid' => (int)$userId]);
+        } catch (\Exception $e) {
+            // Log o erro no arquivo do servidor para debug
+            error_log("Erro ao incrementar stats: " . $e->getMessage());
+            return false; 
         }
     }
 
@@ -610,14 +639,13 @@ class UserRepository {
         // 1. SQL Selecionando apenas o necessário para exibição pública
         // Evitamos p.* para não vazar IDs internos e timestamps desnecessários
         $sql = "SELECT 
-                    u.name, u.whatsapp, u.is_verified, u.role, u.user_type,
+                    u.id, u.name, u.whatsapp, u.is_verified, u.role, u.user_type,
                     u.rating_avg, u.rating_count,
                     u.city as user_city, u.state as user_state,
-                    p.bio, p.avatar_url, p.cover_url, p.vehicle_type, p.body_type, 
-                    p.city as profile_city, p.state as profile_state,
+                    p.bio, p.avatar_url, p.cover_url, p.vehicle_type, p.body_type,
                     p.extended_attributes
-                FROM user_profiles p 
-                JOIN users u ON p.user_id = u.id 
+                FROM user_profiles p
+                JOIN users u ON p.user_id = u.id
                 WHERE p.slug = :slug 
                 AND u.deleted_at IS NULL 
                 AND u.status = 'active'
@@ -636,8 +664,8 @@ class UserRepository {
             $profile['rating_count']= (int)($profile['rating_count'] ?? 0);
 
             // 3. Localização inteligente (Perfil Profissional > Cadastro Base)
-            $profile['city']  = $profile['profile_city'] ?: ($profile['user_city'] ?: 'Brasil');
-            $profile['state'] = $profile['profile_state'] ?: ($profile['user_state'] ?: '--');
+            $profile['city']  = $profile['user_city'] ?: 'Brasil';
+            $profile['state'] = $profile['user_state'] ?: '--';
 
             // 4. Tratamento de Atributos Extras (JSON)
             $profile['extras'] = [];
@@ -646,17 +674,10 @@ class UserRepository {
                 $profile['extras'] = is_array($decoded) ? $decoded : [];
             }
 
-            // Limpeza de campos de suporte
-            unset(
-                $profile['profile_city'], $profile['profile_state'], 
-                $profile['user_city'], $profile['user_state'],
-                $profile['extended_attributes']
-            );
-
             return $profile;
 
         } catch (\PDOException $e) {
-            error_log("Erro ao buscar perfil pelo slug ($slug): " . $e->getMessage());
+            error_log("Erro getProfileBySlug ao buscar perfil pelo slug ($slug): " . $e->getMessage());
             return null;
         }
     }
@@ -937,35 +958,6 @@ class UserRepository {
         }
     }
 
-    // @deprecated - verificar e remover 
-    public function createCompanyRecord($userId, $name) {
-        try {
-            // 1. Cria a empresa
-            $sql = "INSERT INTO companies (owner_id, name_fantasy, created_at) VALUES (:owner_id, :name, NOW())";
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
-                ':owner_id' => $userId,
-                ':name'     => $name
-            ]);
-
-            $companyId = $this->db->lastInsertId();
-
-            // 2. Vincula a empresa ao usuário
-            $updateSql = "UPDATE users SET company_id = :c_id WHERE id = :u_id";
-            $updateStmt = $this->db->prepare($updateSql);
-            $updateStmt->execute([
-                ':c_id' => $companyId,
-                ':u_id' => $userId
-            ]);
-
-            return $companyId;
-        } catch (\Exception $e) {
-            // Loga o erro mas não trava o registro do usuário
-            error_log("Erro ao criar registro de empresa: " . $e->getMessage());
-            return false;
-        }
-    }
-
     public function getDashboardStats($userId) {
         $sql = "SELECT 
                     COUNT(id) as total_fretes,
@@ -981,49 +973,76 @@ class UserRepository {
     }
 
     public function findBySlug($slug) {
+        if (empty($slug)) return null;
+
         $sql = "SELECT 
                     u.id, 
-                    u.name, 
+                    u.name as user_name, 
+                    u.role,
                     u.user_type, 
                     u.whatsapp, 
-                    u.city, 
-                    u.state, 
-                    u.created_at,
+                    u.city as user_city, 
+                    u.state as user_state, 
+                    u.created_at as member_since,
                     up.bio, 
                     up.avatar_url, 
                     up.cover_url, 
                     up.vehicle_type, 
-                    up.body_type, 
-                    up.instagram, 
-                    up.website,
-                    up.private_data,
-                    c.name_fantasy,
-                    c.razao_social,
-                    c.cnpj
-                FROM users u
-                INNER JOIN user_profiles up ON u.id = up.user_id
-                LEFT JOIN companies c ON u.id = c.owner_id
-                WHERE up.slug = :slug AND u.status = 'active'
+                    up.body_type,
+                    up.availability_status,
+                    up.instagram as profile_instagram,
+                    up.website as profile_website,
+                    up.extended_attributes,
+                    a.trade_name,
+                    a.corporate_name,
+                    a.document_number as cnpj
+                FROM user_profiles up
+                INNER JOIN users u ON up.user_id = u.id
+                LEFT JOIN accounts a ON u.account_id = a.id
+                WHERE up.slug = :slug 
+                AND u.status = 'active' 
+                AND u.deleted_at IS NULL
                 LIMIT 1";
 
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute([':slug' => $slug]);
-        
-        $profile = $stmt->fetch(\PDO::FETCH_ASSOC);
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([':slug' => $slug]);
+            $profile = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-        if ($profile) {
-            // Define um nome de exibição inteligente
-            $profile['display_name'] = !empty($profile['name_fantasy']) 
-                ? $profile['name_fantasy'] 
-                : $profile['name'];
-                
-            // Decodifica dados extras se existirem
-            if ($profile && !empty($profile['private_data'])) {
-                $profile['details'] = json_decode($profile['private_data'], true);
+            if (!$profile) return null;
+
+            // Decodifica o JSON de atributos
+            $details = [];
+            if (!empty($profile['extended_attributes'])) {
+                $details = json_decode($profile['extended_attributes'], true) ?: [];
             }
-        }
 
-        return $profile;
+            // Nome de exibição: Prioriza JSON -> Conta -> Usuário
+            $profile['display_name'] = $details['company_name'] 
+                ?? ($profile['trade_name'] 
+                ?? ($profile['corporate_name'] ?? $profile['user_name']));
+
+            // Normalização de campos para o Front-end
+            $profile['city'] = $profile['user_city'];
+            $profile['state'] = $profile['user_state'];
+
+            // Redes sociais (compatível com JSON antigo e novo)
+            $social = is_array($details['social'] ?? null) ? $details['social'] : [];
+            $profile['instagram'] = $profile['profile_instagram']
+                ?? ($social['instagram'] ?? ($details['instagram'] ?? null));
+            $profile['linkedin'] = $social['linkedin'] ?? ($details['linkedin'] ?? null);
+            $profile['website'] = $profile['profile_website'] ?? ($details['website'] ?? null);
+
+            // Disponibilidade pública
+            $profile['availability_status'] = $profile['availability_status'] ?: 'available';
+            $profile['is_available'] = $profile['availability_status'] === 'available' ? 1 : 0;
+
+            return $profile;
+
+        } catch (\Exception $e) {
+            error_log("❌ ERRO findBySlug: " . $e->getMessage());
+            return null;
+        }
     }
 
     public function getUserTypeAndName($id) {

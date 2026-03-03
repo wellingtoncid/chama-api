@@ -22,17 +22,16 @@ class FreightRepository {
             $page = (int)$page;
             $perPage = (int)$perPage;
             $offset = (max(1, (int)$page) - 1) * (int)$perPage; 
-            // Parâmetros base
+            
             $params = [];
             $accountId = $filters['account_id'] ?? null;
             $where = " WHERE f.deleted_at IS NULL AND f.status = 'OPEN'";
 
-           // Se passar account_id, filtramos pela empresa toda
+            // 1. Filtros de Escopo
             if ($accountId) {
                 $where .= " AND f.account_id = :account_id";
                 $params[':account_id'] = $accountId;
             } 
-            // Se não passar account_id, mas passar userId (comportamento antigo/motorista vendo seus proprios fretes)
             elseif ($userId !== null && (int)$userId > 0) {
                 $where .= " AND f.user_id = :u_id";
                 $params[':u_id'] = (int)$userId;
@@ -55,6 +54,7 @@ class FreightRepository {
                         OR f.product LIKE :term_like 
                         OR f.origin_city LIKE :term_like 
                         OR u.name LIKE :term_like
+                        OR a.trade_name LIKE :term_like
                     )";
                     $params[':term'] = $smartSearch;
                     $params[':term_like'] = "%$search%";
@@ -64,16 +64,17 @@ class FreightRepository {
                 }
             }
 
+            $viewerId = (int)($filters['viewer_id'] ?? 0);
             $params[':fav_id'] = $viewerId;
 
-            // 3. Contagem Total
+            // 3. Contagem Total (Trocado companies por accounts)
             $sqlCount = "SELECT COUNT(DISTINCT f.id) 
                         FROM freights f 
                         LEFT JOIN users u ON f.user_id = u.id 
-                        LEFT JOIN companies c ON c.owner_id = u.id
+                        LEFT JOIN accounts a ON f.account_id = a.id
                         $where";
+            
             $stmtCount = $this->db->prepare($sqlCount);
-            // BIND INTELIGENTE: Só vincula o que existe no $where
             foreach ($params as $key => $val) {
                 if (strpos($sqlCount, $key) !== false) {
                     $stmtCount->bindValue($key, $val);
@@ -82,48 +83,32 @@ class FreightRepository {
             $stmtCount->execute();
             $totalItems = (int)$stmtCount->fetchColumn();
 
+            // 4. Query Principal
             $sql = "SELECT 
-                    f.*, 
-                    COALESCE(c.name_fantasy, u.name) as company_name,
-                    p.avatar_url,
-                    -- 1. Cliques de WhatsApp (Leads Reais)
-                    (SELECT COUNT(*) FROM click_logs 
-                    WHERE target_id = f.id AND event_type = 'WHATSAPP_CLICK') as total_leads,
-                    
-                    -- 2. Visualizações Únicas (Abertura do detalhe)
-                    (SELECT COUNT(*) FROM click_logs 
-                    WHERE target_id = f.id AND (event_type = 'VIEW_DETAILS' OR event_type = 'VIEW')) as total_views,
-                    
-                    -- 3. Cliques em qualquer lugar do Card (Interesse Inicial)
-                    (SELECT COUNT(*) FROM click_logs 
-                    WHERE target_id = f.id AND event_type = 'CARD_CLICK') as total_clicks,
-                    
-                    -- 4. Timestamp da última interação (Métrica de Calor)
-                    (SELECT MAX(created_at) FROM click_logs 
-                    WHERE target_id = f.id) as last_interaction_at,
-
-                    -- 5. Status de Favorito (Para o motorista logado)
-                    (CASE WHEN fav.id IS NOT NULL THEN 1 ELSE 0 END) as is_favorite
-
-                FROM freights f 
-                LEFT JOIN users u ON f.user_id = u.id 
-                LEFT JOIN companies c ON c.owner_id = u.id 
-                LEFT JOIN user_profiles p ON u.id = p.user_id
-                LEFT JOIN favorites fav ON f.id = fav.target_id 
-                    AND fav.target_type = 'FREIGHT' 
-                    AND fav.user_id = :fav_id
-                $where 
-                GROUP BY f.id
-                ORDER BY f.is_featured DESC, f.id DESC
-                LIMIT :limit OFFSET :offset";
-            
-            $stmt = $this->db->prepare($sql);
+                        f.*, 
+                        COALESCE(a.trade_name, a.corporate_name, u.name) as company_name,
+                        p.avatar_url,
+                        (SELECT COUNT(*) FROM click_logs WHERE target_id = f.id AND event_type = 'WHATSAPP_CLICK') as total_leads,
+                        (SELECT COUNT(*) FROM click_logs WHERE target_id = f.id AND (event_type = 'VIEW_DETAILS' OR event_type = 'VIEW')) as total_views,
+                        (SELECT COUNT(*) FROM click_logs WHERE target_id = f.id AND event_type = 'CARD_CLICK') as total_clicks,
+                        (SELECT MAX(created_at) FROM click_logs WHERE target_id = f.id) as last_interaction_at,
+                        (CASE WHEN fav.id IS NOT NULL THEN 1 ELSE 0 END) as is_favorite
+                    FROM freights f 
+                    LEFT JOIN users u ON f.user_id = u.id 
+                    LEFT JOIN accounts a ON f.account_id = a.id 
+                    LEFT JOIN user_profiles p ON u.id = p.user_id
+                    LEFT JOIN favorites fav ON f.id = fav.target_id 
+                        AND fav.target_type = 'FREIGHT' 
+                        AND fav.user_id = :fav_id
+                    $where 
+                    GROUP BY f.id
+                    ORDER BY f.is_featured DESC, f.id DESC
+                    LIMIT :limit OFFSET :offset";
                 
-            // Binds obrigatórios de paginação
+            $stmt = $this->db->prepare($sql);
             $stmt->bindValue(':limit', (int)$perPage, \PDO::PARAM_INT);
             $stmt->bindValue(':offset', (int)$offset, \PDO::PARAM_INT);
-            
-            // BIND INTELIGENTE: Só vincula o que existe na Query Final
+                
             foreach ($params as $key => $val) {
                 if (strpos($sql, $key) !== false) {
                     $stmt->bindValue($key, $val);
@@ -144,7 +129,7 @@ class FreightRepository {
             ];
         } catch (\Exception $e) {
             error_log("FALHA REPOSITORY: " . $e->getMessage());
-            return ['success' => false, 'message' => "Erro ao listar fretes: " . $e->getMessage(), 'data' => []];
+            return ['success' => false, 'message' => $e->getMessage(), 'data' => []];
         }
     }
   
@@ -419,7 +404,7 @@ class FreightRepository {
     }
 
     /**
-     * Completa a função de toggleFavorite que estava parcial
+     * Completa a função de toggleFavorite 
      */
     public function toggleFavorite($userId, $freightId) {
         try {
@@ -510,6 +495,66 @@ class FreightRepository {
             // logamos mas não travamos a renderização da página.
             error_log("Erro ao verificar favorito: " . $e->getMessage());
             return false;
+        }
+    }
+
+    public function getDriverStats($userId) {
+        $sql = "SELECT 
+            (SELECT COUNT(*) FROM freights WHERE deleted_at IS NULL AND status = 'OPEN') as total_open,
+            (SELECT COUNT(*) FROM favorites WHERE user_id = ? AND target_type = 'FREIGHT') as total_favs,
+            (SELECT COUNT(*) FROM user_alerts WHERE user_id = ? AND type = 'INVITATION' AND status = 'unread') as total_invitations";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId, $userId, $userId]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC);
+    }
+
+    public function getSmartMatchFreights($userId) {
+        $profile = $this->db->query("SELECT vehicle_type, body_type FROM user_profiles WHERE user_id = $userId")->fetch();
+        
+        if (!$profile || empty($profile['vehicle_type'])) {
+            return []; // Retorna vazio se o motorista não preencheu o perfil
+        }
+
+        // Usamos LIKE para evitar problemas com espaços ou letras maiúsculas/minúsculas
+        $sql = "SELECT f.*, 1 as is_smart_match 
+                FROM freights f 
+                WHERE f.deleted_at IS NULL 
+                AND f.status = 'OPEN'
+                AND f.vehicle_type LIKE ? 
+                AND f.body_type LIKE ?
+                ORDER BY f.created_at DESC LIMIT 20";
+                
+        $stmt = $this->db->prepare($sql);
+        // O % ajuda a encontrar se o texto estiver ligeiramente diferente
+        $stmt->execute([
+            "%" . $profile['vehicle_type'] . "%", 
+            "%" . $profile['body_type'] . "%"
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+    
+    public function getFavoritesByUser($userId) {
+        try {
+            // Buscamos os fretes fazendo um JOIN com a tabela de favoritos
+            $sql = "SELECT f.*, 
+                    COALESCE(a.trade_name, u.name) as company_name,
+                    1 as is_favorite
+                    FROM favorites fav
+                    INNER JOIN freights f ON fav.target_id = f.id
+                    LEFT JOIN users u ON f.user_id = u.id
+                    LEFT JOIN accounts a ON f.account_id = a.id
+                    WHERE fav.user_id = ? 
+                    AND fav.target_type = 'FREIGHT'
+                    AND f.deleted_at IS NULL
+                    ORDER BY fav.created_at DESC";
+            
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([(int)$userId]);
+            return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            error_log("Erro no Repository ao buscar favoritos: " . $e->getMessage());
+            return [];
         }
     }
 
@@ -850,57 +895,47 @@ class FreightRepository {
      * Anexa os dados do proprietário (Usuário, Perfil e Empresa) ao objeto do Frete.
      */
     private function attachOwnerData($freight) {
-        if (empty($freight['user_id'])) {
-            return $this->formatFreightData($freight);
-        }
+        if (!$freight) return null;
 
-        try {
-            // SQL robusto com JOINs para pegar todas as informações de contato e identidade
-            $userSql = "SELECT 
-                            u.name as user_real_name, 
-                            u.whatsapp as user_whatsapp_raw,
-                            u.phone as user_phone_raw,
-                            u.email as user_email,
-                            u.user_type,
-                            u.rating_avg,
-                            p.avatar_url, 
-                            p.verification_status,
-                            c.name_fantasy as company_name_fantasy
-                        FROM users u 
-                        LEFT JOIN user_profiles p ON u.id = p.user_id 
-                        LEFT JOIN companies c ON c.owner_id = u.id
-                        WHERE u.id = :u_id LIMIT 1";
+        $sql = "SELECT 
+                    u.name as owner_user_name, 
+                    u.whatsapp as owner_whatsapp,
+                    p.avatar_url,
+                    p.slug as owner_slug,
+                    p.extended_attributes,
+                    a.trade_name,
+                    a.corporate_name
+                FROM users u
+                LEFT JOIN user_profiles p ON u.id = p.user_id
+                LEFT JOIN accounts a ON u.account_id = a.id
+                WHERE u.id = :uid LIMIT 1";
             
-            $uStmt = $this->db->prepare($userSql);
-            $uStmt->execute([':u_id' => $freight['user_id']]);
-            $user = $uStmt->fetch(\PDO::FETCH_ASSOC);
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([':uid' => $freight['user_id']]);
+            $owner = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-            if ($user) {
-                // 1. Mapeamento de Identidade
-                // Prioridade: Nome Fantasia (Companies) > Nome do Usuário (Users)
-                $freight['company_name'] = !empty($user['company_name_fantasy']) 
-                    ? $user['company_name_fantasy'] 
-                    : $user['user_real_name'];
+            if ($owner) {
+                $details = json_decode($owner['extended_attributes'] ?? '{}', true);
 
-                $rating = (float)$user['rating_avg'];
-                $freight['owner_rating'] = ($rating <= 0) ? 5.0 : round($rating, 1);
+                // Define o nome da empresa ou dono seguindo a mesma prioridade
+                $displayName = $details['company_name'] 
+                    ?? ($owner['trade_name'] 
+                    ?? ($owner['corporate_name'] ?? $owner['owner_user_name']));
 
-                // 2. Mapeamento de Contato (Vital para o WhatsApp)
-                // Na sua tabela, os dados estão em 'whatsapp'. Vamos garantir que isso chegue no format
-                $freight['owner_whatsapp_field'] = !empty($user['user_whatsapp_raw'])
-                    ? $user['user_whatsapp_raw'] 
-                    : (!empty($user['user_phone_raw']) ? $user['user_phone_raw'] : '');
-
-                // 3. Dados Complementares
-                $freight['avatar_url'] = $user['avatar_url'];
-                $freight['owner_verified'] = $user['verification_status'];
-                $freight['user_type'] = $user['user_type'];
+                $freight['owner_name'] = $displayName;
+                $freight['company_name'] = $displayName; // Para compatibilidade com cards
+                
+                $freight['owner_whatsapp'] = $owner['owner_whatsapp'];
+                $freight['owner_avatar'] = $owner['avatar_url'];
+                $freight['owner_slug'] = $owner['owner_slug'];
             }
 
-            return $this->formatFreightData($freight);
+            return method_exists($this, 'formatFreightData') ? $this->formatFreightData($freight) : $freight;
 
         } catch (\Exception $e) {
             error_log("❌ ERRO attachOwnerData: " . $e->getMessage());
+            return $freight;
         }
     }
 
@@ -1073,7 +1108,6 @@ class FreightRepository {
                     vehicle_type, 
                     body_type, 
                     description, 
-                    whatsapp, 
                     status,
                     user_id,
                     created_at, 
@@ -1087,5 +1121,95 @@ class FreightRepository {
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':uid' => (int)$userId]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function confirmStep($freightId, $userId, $step, $notes = "") {
+        // Insere o evento de confirmação
+        $sql = "INSERT INTO freight_tracking 
+                (freight_id, status, description, created_at) 
+                VALUES (:fid, :status, :desc, NOW())";
+        
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([
+            ':fid' => $freightId,
+            ':status' => $step, // Ex: 'FINANCIAL_AGREEMENT' ou 'DELIVERY_CONFIRMED'
+            ':desc' => "Confirmado pelo usuário ID: $userId. Obs: $notes"
+        ]);
+    }
+
+    public function respondToInvitation($alertId, $action) {
+        try {
+            $this->db->beginTransaction();
+
+            // 1. Busca os dados do alerta/convite
+            $stmt = $this->db->prepare("SELECT user_id, link FROM user_alerts WHERE id = ?");
+            $stmt->execute([$alertId]);
+            $alert = $stmt->fetch();
+
+            if (!$alert) throw new Exception("Alerta não encontrado.");
+
+            // Extrai o ID do frete do link (ex: /frete/123)
+            $freightId = str_replace('/frete/', '', $alert['link']);
+
+            if ($action === 'accept') {
+                // 2. Registra o Match na freight_tracking
+                $sqlTrack = "INSERT INTO freight_tracking 
+                            (freight_id, driver_id, status, description, created_at) 
+                            VALUES (?, ?, 'MATCH_ACCEPTED', 'Motorista aceitou o convite via marketplace.', NOW())";
+                $this->db->prepare($sqlTrack)->execute([$freightId, $alert['user_id']]);
+
+                // 3. Notificar a empresa de volta
+                $stmtCompany = $this->db->prepare("SELECT user_id FROM freights WHERE id = ?");
+                $stmtCompany->execute([$freightId]);
+                $company = $stmtCompany->fetch();
+                
+                if ($company) {
+                    $this->db->prepare("INSERT INTO user_alerts (user_id, message, type) VALUES (?, 'O motorista aceitou seu convite!', 'MATCH')")
+                            ->execute([$company['user_id']]);
+                }
+            }
+
+            // 4. Marca o alerta como lido/processado
+            $this->db->prepare("UPDATE user_alerts SET status = 'read' WHERE id = ?")->execute([$alertId]);
+
+            $this->db->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->db->rollBack();
+            error_log($e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Busca o frete que o motorista está a realizar no momento (Testemunha Digital)
+     */
+    public function getActiveFreight($driverId) {
+        $sql = "SELECT f.*, ft.status as tracking_status 
+                FROM freights f
+                INNER JOIN freight_tracking ft ON f.id = ft.freight_id
+                WHERE ft.driver_id = ? 
+                AND f.status = 'in_transit'
+                AND ft.status IN ('MATCH_ACCEPTED', 'PICKED_UP')
+                ORDER BY ft.created_at DESC 
+                LIMIT 1";
+                
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$driverId]);
+        return $stmt->fetch();
+    }
+
+    /**
+     * Busca os alertas de convite (Invitations)
+     */
+    public function getUserAlerts($userId, $type = 'INVITATION', $status = 'unread') {
+        $sql = "SELECT id, message, link, status, created_at 
+                FROM user_alerts 
+                WHERE user_id = ? AND type = ? AND status = ?
+                ORDER BY created_at DESC";
+                
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId, $type, $status]);
+        return $stmt->fetchAll();
     }
 }

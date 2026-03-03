@@ -116,6 +116,9 @@ class PublicController {
                 return Response::json(["success" => false, "message" => "Perfil não encontrado."], 404);
             }
 
+            // Incrementa visualização toda vez que o perfil público é acessado
+            $this->userRepo->incrementStats($profile['id'], 'VIEW');
+
             // --- TRATAMENTO DE DADOS PARA O FRONT ---    
             // WhatsApp limpo para o link do botão (usado no ProfileView.tsx)
             $profile['whatsapp_clean'] = preg_replace('/\D/', '', $profile['whatsapp'] ?? '');
@@ -170,7 +173,7 @@ class PublicController {
                 // Se for anunciante, busca na tabela de anúncios (ADS)
                 $results = $this->adRepo->getAdsByUserId($userId);
             } else {
-                // Se for motorista ou empresa, busca na tabela de fretes (FREIGHTS)
+                // Se for empresa, busca na tabela de fretes (FREIGHTS)
                 $results = $this->freightRepo->getPublicPostsByUser($userId);
             }
 
@@ -183,5 +186,15 @@ class PublicController {
             error_log("Erro getPublicPosts: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro ao carregar itens"], 500);
         }
+    }
+
+    // Método para o click do WhatsApp (vincular a uma rota POST no index)
+    public function trackWhatsAppClick($data) {
+        $userId = (int)($data['id'] ?? 0);
+        if ($userId > 0) {
+            $this->userRepo->incrementStats($userId, 'CLICK');
+            return Response::json(["success" => true]);
+        }
+        return Response::json(["success" => false], 400);
     }
 }

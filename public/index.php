@@ -67,9 +67,10 @@ try {
     $router->post('/api/delete-account', 'UserController@deleteAccount');
     
     $router->get('/api/public-freight/:slug', 'PublicController@getFreightDetails');
-    $router->get('/api/public-profile', 'PublicController@getProfilePage'); //Public profile @deprecated
+    //$router->get('/api/public-profile', 'PublicController@getProfilePage'); //Public profile @deprecated
     $router->get('/api/profile/page/:slug', 'PublicController@getProfilePage'); //trocar acima
     $router->get('/api/get-user-posts', 'PublicController@getPublicPosts');
+    $router->post('/api/profile/track-click/:id', 'PublicController@trackWhatsAppClick');
     $router->get('/api/get-user-ads', 'PublicController@getPublicAds'); //Criar
 
     $router->post('/api/upload-avatar', 'UserController@uploadAvatar');
@@ -83,14 +84,19 @@ try {
     $router->get('/api/list-my-freights', 'FreightController@listMyFreights');
     $router->post('/api/delete-freight', 'FreightController@deleteFreight');
     $router->post('/api/toggle-favorite', 'FreightController@toggleFavorite');
-    $router->get('/api/my-favorites', 'FreightController@listFavorites');
+    $router->get('/api/my-favorites', 'FreightController@myFavorites');
     $router->post('/api/finish-freight', 'FreightController@finishFreight');
-    $router->get('/api/recommended-freights', 'FreightController@recommended');
-    $router->get('/api/my-matches', 'FreightController@myMatches');
+    $router->get('/api/suggested-drivers', 'FreightController@getSuggestedDrivers');
+    $router->get('/api/confirm-match', 'FreightController@confirmMatch');
     $router->get('/api/get-interested-drivers', 'FreightController@getInterested');
     $router->post('/api/accept-driver', 'FreightController@acceptDriver');
     $router->post('/api/contact-advertiser', 'FreightController@contact');
     $router->get('/api/list-interests', 'FreightController@listInterests');
+    $router->get('/api/invite-driver', 'FreightController@inviteDriver');
+    $router->post('/api/respond-invitation', 'FreightController@respondInvitation'); 
+    $router->get('/api/user-alerts', 'FreightController@userAlerts'); 
+    $router->get('/api/my-active-freight', 'FreightController@myActiveFreight');
+    $router->get('/api/driver-stats', 'FreightController@getdriverstats');
     
     // --- ADS & BANNERS (MÉTRICAS ATIVAS) ---
     $router->get('/api/ads', 'AdController@list');

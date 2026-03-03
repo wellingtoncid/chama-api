@@ -30,19 +30,40 @@ class FreightController {
     $this->auditRepo = $auditRepo;
 }
 
-   public function listAll($data, $loggedUser) {
+    public function listAll($data, $loggedUser) {
         // 1. Limpeza de inputs
         $search = $data['search'] ?? $_GET['search'] ?? '';
         $page = isset($data['page']) ? (int)$data['page'] : (isset($_GET['page']) ? (int)$_GET['page'] : 1);
         $perPage = isset($data['perPage']) ? (int)$data['perPage'] : 15;
+        $isSmartMatch = isset($data['smart_match']) && $data['smart_match'] == 1; // <--- NOVA LINHA
+        
         if ($page < 1) $page = 1;
 
+        // 2. Lógica de Escopo Inteligente
+        $userIdParam = null;
+        if (isset($loggedUser['role']) && ($loggedUser['role'] === 'COMPANY' || $loggedUser['role'] === 'ENTERPRISE')) {
+            $userIdParam = $loggedUser['id'];
+        }
+
         try {
+            // 3. SE O RADAR SMART ESTIVER ATIVO (Apenas para Motoristas)
+            if ($isSmartMatch && isset($loggedUser['id'])) {
+                $freights = $this->repo->getSmartMatchFreights($loggedUser['id']);
+                return Response::json([
+                    "success" => true,
+                    "data" => $freights,
+                    "total" => count($freights),
+                    "page" => 1,
+                    "perPage" => 50
+                ]);
+            }
+
+            // 4. Lógica Padrão (Empresa vê os dela, Motorista vê tudo ou Busca)
             $results = $this->repo->listPaginated(
-                null, // Importante: NULL garante que a vitrine seja pública
+                $userIdParam, 
                 [
                     'search' => $search,
-                    'viewer_id' => $loggedUser['id'] ?? null // Usado apenas para ver se o viewer favoritou
+                    'viewer_id' => $loggedUser['id'] ?? null 
                 ], 
                 $page,
                 $perPage
@@ -60,91 +81,84 @@ class FreightController {
     }
 
     public function createFreight($data, $user) {
+        // 1. Anti-spam: 1 minuto entre postagens
         $lastFreight = $this->repo->getLastFreightTime((int)$user['id']);
-            if ($lastFreight && (time() - strtotime($lastFreight)) < 60) {
-                return Response::json(["success" => false, "message" => "Aguarde um minuto para postar novamente."], 429);
-            }
-        // 1. Validação de Acesso
+        if ($lastFreight && (time() - strtotime($lastFreight)) < 60) {
+            return Response::json(["success" => false, "message" => "Aguarde um minuto para postar novamente."], 429);
+        }
+
+        // 2. Validação de Regra (Apenas Empresa ou Admin)
         $role = strtoupper($user['role'] ?? '');
         if ($role !== 'COMPANY' && $role !== 'ADMIN') {
             return Response::json(["success" => false, "message" => "Acesso negado."], 403);
         }
 
-        // 2. Validação de Dados (Adicionei o Estado aqui também)
-        if (empty($data['origin_city']) || empty($data['dest_city']) || empty($data['product'])) {
-            return Response::json(["success" => false, "message" => "Dados obrigatórios faltando."], 400);
-        }
-
-        // --- NOVA VALIDAÇÃO DE DOCUMENTOS ---
-        $profile = $this->userRepo->getProfileData($user['id']); 
-        if ($role !== 'ADMIN' && ($profile['verification_status'] ?? '') !== 'verified') {
+        // 3. Validação de Onboarding (O que você pediu: Se preencher corretamente, libera)
+        // Usamos o parâmetro $user que vem do middleware de autenticação
+        if ($role === 'COMPANY' && (empty($user['document']) || empty($user['name']))) {
             return Response::json([
                 "success" => false, 
-                "message" => "Seus documentos ainda não foram aprovados. Você não pode publicar fretes."
+                "message" => "Perfil incompleto. Por favor, preencha seu CNPJ e nome para publicar."
             ], 403);
         }
 
+        // 4. Validação de Dados do Frete
+        if (empty($data['origin_city']) || empty($data['dest_city']) || empty($data['product'])) {
+            return Response::json(["success" => false, "message" => "Informe origem, destino e o produto."], 400);
+        }
+
         try {
-            // 3. Preparação dos Dados
-            $status = ($role === 'ADMIN' || ($user['is_verified'] ?? 0) == 1) ? 'OPEN' : 'PENDING';
+            // 5. Definição de Status
+            // Se chegou aqui e é COMPANY, o Onboarding está ok, então liberamos como OPEN.
+            // Moderação automática de palavras impróprias, ela rodará abaixo.
+            $status = 'OPEN'; 
+            
             $isFeatured = !empty($data['is_featured']) && $data['is_featured'] == true;
             $days = $isFeatured ? 30 : 7;
-            
-            // Limpeza de WhatsApp
-            $whatsapp = preg_replace('/\D/', '', !empty($data['whatsapp']) ? $data['whatsapp'] : ($user['whatsapp'] ?? ''));
 
-            // Geração do Slug ANTES do insert (Evita o UPDATE extra)
-            // Usamos um hash curto aleatório para garantir unicidade sem precisar do ID do banco
+            // 6. Verificação de Conteúdo (Filtro de palavrões/links)
+            $contentToVerify = ($data['product'] ?? '') . ' ' . ($data['description'] ?? '');
+            if (!$this->isContentClean($contentToVerify)) {
+                // Se tiver conteúdo suspeito, em vez de bloquear, mandamos para PENDING para análise
+                $status = 'PENDING';
+            }
+
+            // 7. Preparação do Payload
             $slugBase = trim($data['product']) . " de " . trim($data['origin_city']) . " para " . trim($data['dest_city']);
-            $uniqueSuffix = bin2hex(random_bytes(3)); // Gera 6 caracteres aleatórios (ex: a1b2c3)
+            $uniqueSuffix = bin2hex(random_bytes(3));
             $finalSlug = $this->generateSlug($slugBase, $uniqueSuffix);
 
             $payload = [
-                'user_id' => ($role === 'ADMIN' && !empty($data['user_id'])) ? (int)$data['user_id'] : (int)$user['id'],
-                'account_id'   => $user['account_id'],
+                'user_id'      => ($role === 'ADMIN' && !empty($data['user_id'])) ? (int)$data['user_id'] : (int)$user['id'],
+                'account_id'   => $user['account_id'] ?? null,
                 'origin_city'  => trim($data['origin_city']),
                 'origin_state' => strtoupper(trim($data['origin_state'] ?? '')),
                 'dest_city'    => trim($data['dest_city']),
                 'dest_state'   => strtoupper(trim($data['dest_state'] ?? '')),
                 'product'      => trim($data['product']),
                 'weight'       => max(0.0, (float)($data['weight'] ?? 0)),
-                'price'        => max(0.0, (float)($data['price'] ?? 0)), // Garante preço positivo
+                'price'        => max(0.0, (float)($data['price'] ?? 0)),
                 'vehicle_type' => $data['vehicle_type'] ?? 'Qualquer',
                 'body_type'    => $data['body_type'] ?? 'Qualquer',
                 'description'  => strip_tags($data['description'] ?? ''),
                 'status'       => $status,
-                'slug'         => $finalSlug, // Slug já vai no INSERT
+                'slug'         => $finalSlug,
                 'expires_at'   => date('Y-m-d H:i:s', strtotime("+$days days")),
                 'is_featured'  => $isFeatured ? 1 : 0
             ];
 
-            $contentToVerify = ($data['product'] ?? '') . ' ' . ($data['description'] ?? '');
-
-            if (!$this->isContentClean($contentToVerify)) {
-                //$status = 'PENDING';
-                return Response::json([
-                    "success" => false, 
-                    "message" => "O conteúdo contém termos não permitidos ou excesso de links."
-                ], 400);
-            }
-
-            // 4. Persistência Única
-            //$this->db->beginTransaction();
             $id = $this->repo->save($payload);
-            //$this->db->commit();
 
             return Response::json([
                 "success" => true, 
                 "id"      => (int)$id, 
                 "status"  => $status,
-                "slug"    => $finalSlug,
-                "message" => $status === 'PENDING' ? "Em análise." : "Publicado!"
+                "message" => $status === 'PENDING' ? "Frete publicado! (Aguardando revisão de conteúdo)" : "Frete publicado com sucesso!"
             ]);
 
         } catch (Exception $e) {
-            if ($this->db && $this->db->inTransaction()) $this->db->rollBack();
             error_log("Erro Create Freight: " . $e->getMessage());
-            return Response::json(["success" => false, "message" => "Erro interno."], 500);
+            return Response::json(["success" => false, "message" => "Erro interno ao salvar."], 500);
         }
     }
 
@@ -271,6 +285,43 @@ class FreightController {
                 "message" => "Não foi possível atualizar favoritos."
             ], 500);
         }
+    }
+
+    public function myFavorites($data, $loggedUser) {
+        // 1. Verifica se o usuário está logado
+        $userId = $loggedUser['id'] ?? $data['user_id'] ?? null;
+        
+        if (!$userId) {
+            return Response::json(["success" => false, "message" => "Usuário não identificado"], 400);
+        }
+
+        // 2. Chama o Repository
+        $favorites = $this->repo->getFavoritesByUser($userId);
+
+        // 3. Retorna para o Front-end
+        return Response::json([
+            "success" => true,
+            "data" => $favorites
+        ]);
+    }
+
+    /**
+     * Retorna os totais de cargas, favoritos e convites para os KPIs do topo
+     */
+    public function getDriverStats($data, $loggedUser) {
+        $userId = $loggedUser['id'] ?? $data['user_id'] ?? null;
+
+        if (!$userId) {
+            return Response::json(["success" => false, "message" => "Usuário não identificado"], 400);
+        }
+
+        // Chama o Repository que criamos anteriormente
+        $stats = $this->repo->getDriverStats($userId);
+
+        return Response::json([
+            "success" => true,
+            "data" => $stats
+        ]);
     }
 
     /**
@@ -558,6 +609,59 @@ class FreightController {
         }
     }
     
+    public function inviteDriver($freightId, $driverId, $companyId) {
+        // 1. Busca os detalhes do frete para a mensagem
+        $f = $this->db->query("SELECT product, origin_city, dest_city FROM freights WHERE id = $freightId")->fetch();
+        $company = $this->db->query("SELECT name FROM users WHERE id = $companyId")->fetch();
+
+        $message = "A empresa {$company['name']} te convidou para transportar {$f['product']} de {$f['origin_city']} para {$f['dest_city']}.";
+
+        // 2. Insere na tabela de alertas que você já possui
+        $sql = "INSERT INTO user_alerts (user_id, type, message, link, status, created_at) 
+                VALUES (?, 'INVITATION', ?, ?, 'unread', NOW())";
+        
+        $stmt = $this->db->prepare($sql);
+        $link = "/frete/" . $freightId; // Link para ele ver o frete
+        
+        return $stmt->execute([$driverId, $message, $link]);
+    }
+
+    public function respondInvitation(Request $request) {
+        $alertId = $request->input('alert_id');
+        $action = $request->input('action'); // 'accept' ou 'decline'
+
+        // Chama o repository
+        $success = $this->freightRepository->respondToInvitation($alertId, $action);
+
+        if ($success) {
+            return response()->json(['success' => true, 'message' => 'Resposta registrada!']);
+        } else {
+            return response()->json(['success' => false, 'message' => 'Erro ao processar convite.'], 500);
+        }
+    }
+
+    // Endpoint: my-active-freight
+    public function myActiveFreight(Request $request) {
+        $userId = $request->input('user_id');
+        
+        if (!$userId) {
+            return response()->json(['error' => 'Usuário não identificado'], 400);
+        }
+
+        $data = $this->freightRepository->getActiveFreight($userId);
+        return response()->json($data ?: null);
+    }
+
+    // Endpoint: user-alerts
+    public function userAlerts(Request $request) {
+        $userId = $request->input('user_id');
+        $type = $request->input('type', 'INVITATION');
+        $status = $request->input('status', 'unread');
+
+        $data = $this->freightRepository->getUserAlerts($userId, $type, $status);
+        return response()->json($data);
+    }
+
     /**
      * Rota: GET /api/list-my-freights
      */
@@ -843,5 +947,64 @@ class FreightController {
         $suggestions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         return Response::json($suggestions);
+    }
+
+    public function confirmMatch($freightId, $driverId, $companyId, $agreedAmount) {
+        try {
+            $this->db->beginTransaction();
+
+            // 1. Registrar na tabela financeira (Documentação Jurídica do Valor)
+            $sqlPay = "INSERT INTO freight_payments 
+                    (freight_id, payer_id, payee_id, amount, status, description, created_at) 
+                    VALUES (?, ?, ?, ?, 'escrow', 'Acordo digital firmado entre as partes.', NOW())";
+            $stmtPay = $this->db->prepare($sqlPay);
+            $stmtPay->execute([$freightId, $companyId, $driverId, $agreedAmount]);
+
+            // 2. Registrar na tabela de tracking (Ciclo de Vida)
+            $sqlTrack = "INSERT INTO freight_tracking 
+                        (freight_id, driver_id, company_id, status, description, created_at) 
+                        VALUES (?, ?, ?, 'MATCH_CONFIRMED', 'Aperto de mão digital realizado.', NOW())";
+            $stmtTrack = $this->db->prepare($sqlTrack);
+            $stmtTrack->execute([$freightId, $driverId, $companyId]);
+
+            // 3. Atualizar o frete para 'em andamento'
+            $sqlFreight = "UPDATE freights SET status = 'in_transit' WHERE id = ?";
+            $stmtFreight = $this->db->prepare($sqlFreight);
+            $stmtFreight->execute([$freightId]);
+
+            $this->db->commit();
+            return ["success" => true, "message" => "Acordo firmado com sucesso!"];
+
+        } catch (\Exception $e) {
+            $this->db->rollBack();
+            return ["success" => false, "message" => $e->getMessage()];
+        }
+    }
+
+    public function getSuggestedDrivers($freightId) {
+        // Busca os requisitos da carga postada
+        $freight = $this->db->query("SELECT origin_city, vehicle_type, body_type FROM freights WHERE id = $freightId")->fetch();
+
+        // Busca motoristas compatíveis
+        $sql = "SELECT 
+                    u.id, u.name, u.whatsapp, 
+                    up.avatar_url, up.vehicle_type, up.body_type,
+                    (SELECT COUNT(*) FROM reviews WHERE related_id = u.id) as total_reviews,
+                    (SELECT AVG(rating) FROM reviews WHERE related_id = u.id) as rating
+                FROM users u
+                INNER JOIN user_profiles up ON u.id = up.user_id
+                WHERE u.user_type = 'DRIVER'
+                AND up.vehicle_type = :v_type
+                AND (u.city = :city OR up.preferred_region = :city)
+                ORDER BY rating DESC, total_reviews DESC
+                LIMIT 4";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':v_type' => $freight['vehicle_type'],
+            ':city'   => $freight['origin_city']
+        ]);
+
+        return $stmt->fetchAll();
     }
 }

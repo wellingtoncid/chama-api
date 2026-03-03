@@ -1,11 +1,13 @@
 <?php
+use App\Controllers\NotificationController;
+use App\Core\Database;
 /**
  * Cron Job - Executar 1x por dia (ex: 09:00 AM)
  * Comando: php /caminho/do/seu/projeto/cron/check_expirations.php
  */
 
-require_once __DIR__ . '/../config/database.php'; // Ajuste conforme seu caminho
-require_once __DIR__ . '/../controllers/NotificationController.php';
+require_once __DIR__ . '/../../config/database.php'; // Ajuste conforme seu caminho
+require_once __DIR__ . '/../../controllers/NotificationController.php';
 
 $db = (new Database())->connect();
 $notifier = new NotificationController($db);

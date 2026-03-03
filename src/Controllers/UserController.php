@@ -79,38 +79,66 @@ class UserController {
      * Rota: POST /api/update-profile
      */
     public function updateProfile($data, $loggedUser) {
-        error_log("Rota update-profile acessada pelo ID: " . ($loggedUser['id'] ?? 'N/A'));
         if (!$loggedUser) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
 
         try {
             $userId = $loggedUser['id'];
+            $userType = $loggedUser['user_type'] ?? 'DRIVER';
 
-            // --- Lógica de Upload de AVATAR ---
-            if (isset($_FILES['avatar_file']) && $_FILES['avatar_file']['error'] === UPLOAD_ERR_OK) {
-                $path = $this->handleFileUpload($_FILES['avatar_file'], 'avatars', $userId);
-                if ($path) $data['avatar_url'] = $path;
+            // 1. Processamento de Imagens (Avatar e Capa)
+            $files = ['avatar_file' => 'avatar_url', 'cover_file' => 'cover_url'];
+            foreach ($files as $fileKey => $dataKey) {
+                if (isset($_FILES[$fileKey]) && $_FILES[$fileKey]['error'] === UPLOAD_ERR_OK) {
+                    $folder = ($fileKey === 'avatar_file') ? 'avatars' : 'covers';
+                    $path = $this->handleFileUpload($_FILES[$fileKey], $folder, $userId);
+                    if ($path) $data[$dataKey] = $path;
+                }
             }
 
-            // --- Lógica de Upload de CAPA (BANNER) ---
-            if (isset($_FILES['cover_file']) && $_FILES['cover_file']['error'] === UPLOAD_ERR_OK) {
-                $path = $this->handleFileUpload($_FILES['cover_file'], 'covers', $userId);
-                if ($path) $data['cover_url'] = $path;
+            // 2. Processamento de Documento de Verificação (PDF/Foto)
+            if (isset($_FILES['document_file']) && $_FILES['document_file']['error'] === UPLOAD_ERR_OK) {
+                $docPath = $this->handleFileUpload($_FILES['document_file'], 'documents', $userId);
+                if ($docPath) {
+                    $this->userRepo->saveUserDocument($userId, [
+                        'file_path' => $docPath,
+                        'document_type' => $data['doc_type_name'] ?? 'Identificação',
+                        'status' => 'pending'
+                    ]);
+                }
             }
 
-            // Validação de Documento
-            $document = preg_replace('/\D/', '', $data['cnpj'] ?? $data['document'] ?? '');
-            if ($document && !$this->isValidDocument($document)) {
+            // 3. Validação do CPF/CNPJ
+            $fiscalDoc = preg_replace('/\D/', '', $data['document_number'] ?? $data['document'] ?? $data['cnpj'] ?? '');
+            if ($fiscalDoc && !$this->isValidDocument($fiscalDoc)) {
                 return Response::json(["success" => false, "message" => "Documento inválido"], 400);
             }
+            $data['clean_document'] = $fiscalDoc ?: null;
 
-            // Chamada única para o Repository (Passando o tipo de usuário)
-            $data['user_type'] = $loggedUser['user_type'] ?? 'DRIVER';
-            $success = $this->userRepo->updateProfileFields($userId, $data);
+            // 4. Mesclar extended_attributes (JSON) nos dados para o updateFullProfile
+            if (!empty($data['extended_attributes'])) {
+                $extras = is_string($data['extended_attributes'])
+                    ? json_decode($data['extended_attributes'], true)
+                    : (array)$data['extended_attributes'];
+                if (is_array($extras)) {
+                    $data = array_merge($data, $extras);
+                }
+            }
+
+            // 5. Mapear trade_name → name para o repository
+            if (!empty($data['trade_name']) && empty($data['name'])) {
+                $data['name'] = $data['trade_name'];
+            }
+
+            // 6. Salvar no banco (users, accounts, user_profiles)
+            $this->userRepo->updateFullProfile($userId, $data);
+
+            // 7. Retornar perfil atualizado
+            $updatedUser = $this->userRepo->getProfileData($userId);
 
             return Response::json([
                 "success" => true,
-                "message" => "Perfil atualizado com sucesso!",
-                "user" => $this->userRepo->getProfileData($userId)
+                "message" => "Perfil atualizado!",
+                "user" => $updatedUser
             ]);
 
         } catch (\Exception $e) {
@@ -118,16 +146,25 @@ class UserController {
         }
     }
 
-    // Método auxiliar para evitar repetição de código
+    /**
+     * Função auxiliar privada para processar uploads de arquivos
+     */
     private function handleFileUpload($file, $folder, $userId) {
-        $uploadDir = __DIR__ . "/../../public/uploads/{$folder}/";
-        if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
+        $finfo = new \finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($file['tmp_name']);
+        
+        // Lista de mimes permitidos (Imagens e PDFs para documentos)
+        $allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+        if (!in_array($mime, $allowed)) return null;
 
         $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
-        $fileName = "{$folder}_{$userId}_" . time() . ".{$ext}";
-        
+        $fileName = $folder . "_" . $userId . "_" . time() . "." . $ext;
+        $uploadDir = $_SERVER['DOCUMENT_ROOT'] . "/uploads/" . $folder . "/";
+
+        if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
         if (move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
-            return "/uploads/{$folder}/" . $fileName;
+            return "/uploads/" . $folder . "/" . $fileName;
         }
         return null;
     }
@@ -189,45 +226,6 @@ class UserController {
         ]);
     }
 
-    public function uploadImage($db, $loggedUser, $data) {
-        // 1. Verificação de Autenticação
-        if (!$loggedUser || !isset($loggedUser['id'])) {
-            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
-        }
-
-        $userId = $loggedUser['id'];
-        $imageUrl = $data['image_url'] ?? '';
-        $type = $data['type'] ?? 'avatar'; // 'avatar' ou 'cover'/'banner'
-
-        if (empty($imageUrl)) {
-            return Response::json(["success" => false, "message" => "URL da imagem não fornecida"], 400);
-        }
-
-        // 2. Mapeamento de tipos para as colunas reais do seu banco
-        // Seu banco usa 'avatar_url' e 'cover_url'
-        $columnMap = [
-            'avatar' => 'avatar_url',
-            'cover'  => 'cover_url',
-            'banner' => 'cover_url' // Alias comum no Front
-        ];
-
-        $targetColumn = $columnMap[$type] ?? 'avatar_url';
-
-        // 3. Persistência via Repository
-        try {
-            $success = $this->userRepo->updateProfileFields($userId, $targetColumn, $imageUrl);
-            
-            return Response::json([
-                "success" => $success,
-                "message" => $success ? "Imagem atualizada!" : "Erro ao salvar no banco",
-                "column_updated" => $targetColumn
-            ]);
-        } catch (\Exception $e) {
-            error_log("Erro em uploadImage: " . $e->getMessage());
-            return Response::json(["success" => false, "message" => "Erro interno no servidor"], 500);
-        }
-    }
-
     public function deleteAccount($db, $loggedUser, $data) {
         // 1. Verificação de autenticação
         if (!$loggedUser || !isset($loggedUser['id'])) {
@@ -262,40 +260,6 @@ class UserController {
                 "message" => "Erro interno ao processar a exclusão."
             ], 500);
         }
-    }
-
-    /**
-     * Rota: POST /api/upload-avatar
-     */
-    public function uploadAvatar($db, $loggedUser, $data) {
-        if (!$loggedUser) return Response::json(["success" => false], 401);
-
-        $file = $_FILES['avatar'] ?? $_FILES['image'] ?? null;
-        if (!$file || $file['error'] !== UPLOAD_ERR_OK) {
-            return Response::json(["success" => false, "message" => "Falha no arquivo"], 400);
-        }
-
-        // Validação Real de MIME Type
-        $finfo = new \finfo(FILEINFO_MIME_TYPE);
-        $mime = $finfo->file($file['tmp_name']);
-        if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'])) {
-            return Response::json(["success" => false, "message" => "Formato inválido"], 400);
-        }
-
-        $fileName = "avatar_" . md5($loggedUser['id']) . "_" . time() . ".jpg";
-        $uploadDir = $_SERVER['DOCUMENT_ROOT'] . "/uploads/avatars/";
-        
-        if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-
-        if (move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
-            $url = "/uploads/avatars/" . $fileName;
-            $this->userRepo->updateProfileFields($loggedUser['id'], ['avatar_url' => $url]);
-            $this->userRepo->runVerificationProcess($userId);;
-            
-            return Response::json(["success" => true, "url" => $url]);
-        }
-
-        return Response::json(["success" => false, "message" => "Erro de permissão no servidor"], 500);
     }
 
     // Auxiliar para mensagens de erro do PHP

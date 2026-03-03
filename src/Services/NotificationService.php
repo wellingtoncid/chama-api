@@ -151,24 +151,39 @@ class NotificationService {
         return $stmt->rowCount();
     }
 
-    public function notifyCompanyQuote(int $companyId, string $quoteData) {
-        // 1. Procura o telegram_chat_id da empresa no banco
-        $stmt = $this->db->prepare("SELECT telegram_chat_id FROM companies WHERE id = ?");
-        $stmt->execute([$companyId]);
-        $company = $stmt->fetch();
+    public function notifyCompanyQuote(int $accountId, string $quoteData) {
+        // 1. Procura o telegram_chat_id de todos os usuários vinculados a esta ACCOUNT
+        // Isso garante que se a empresa tiver 2 atendentes, ambos recebam a cotação
+        $sql = "SELECT p.telegram_chat_id 
+                FROM user_profiles p
+                JOIN users u ON p.user_id = u.id
+                WHERE u.account_id = ? AND p.telegram_chat_id IS NOT NULL";
+                
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$accountId]);
+        $recipients = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        if ($company && $company['telegram_chat_id']) {
-            $message = "📦 <b>Nova Cotação!</b>\n\n" . $quoteData;
-            
-            // Envia para o telegram da empresa (que depois pode disparar o Zap)
-            $url = "https://api.telegram.org/bot{$this->tgToken}/sendMessage";
+        if (empty($recipients)) {
+            error_log("⚠️ Ninguém notificado para a conta #{$accountId}: Nenhum Telegram Chat ID encontrado.");
+            return false;
+        }
+
+        $message = "📦 <b>Nova Cotação Recebida!</b>\n\n" . $quoteData;
+        $url = "https://api.telegram.org/bot{$this->tgToken}/sendMessage";
+        $success = false;
+
+        // 2. Dispara a notificação para cada destinatário da conta
+        foreach ($recipients as $recipient) {
             $data = [
-                'chat_id'    => $company['telegram_chat_id'],
+                'chat_id'    => $recipient['telegram_chat_id'],
                 'parse_mode' => 'HTML',
                 'text'       => $message
             ];
-            return $this->executeRequest($url, $data, 'POST');
+            
+            $result = $this->executeRequest($url, $data, 'POST');
+            if ($result) $success = true;
         }
-        return false;
+
+        return $success;
     }
 }

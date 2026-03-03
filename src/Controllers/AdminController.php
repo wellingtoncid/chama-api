@@ -2,10 +2,12 @@
 
 namespace App\Controllers;
 
+use App\Controllers\NotificationController;
 use App\Core\Response;
 use App\Repositories\AdminRepository;
 use App\Repositories\GroupRepository;
 use Exception;
+
 
 class AdminController {
     private $repo;
@@ -28,7 +30,7 @@ class AdminController {
         if (file_exists($notifPath)) {
             require_once $notifPath;
             if (class_exists('NotificationController')) {
-                $this->notif = new \NotificationController($db);
+                $this->notif = new NotificationController($db);
             }
         }
     }
