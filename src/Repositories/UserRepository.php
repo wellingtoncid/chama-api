@@ -22,29 +22,40 @@ class UserRepository {
             $accountUuid = bin2hex(random_bytes(16)); 
             $roleSlug = strtolower($data['role'] ?? 'driver');
             $cleanDoc = preg_replace('/\D/', '', $data['document'] ?? $tempDoc);
+            $isCompany = ($roleSlug === 'company');
 
-            // 2. Inserção na tabela ACCOUNTS (Entidade Fiscal)
-            // Guardamos o nome tanto em corporate_name quanto trade_name inicialmente
+            // 2. Definir dados para accounts
+            // Para empresas: corporate_name = Razão Social, trade_name = Nome Fantasia
+            // Para motoristas: corporate_name = Nome do motorista
+            $corporateName = $isCompany ? ($data['corporate_name'] ?? $data['name']) : $data['name'];
+            $tradeName = $isCompany ? ($data['name_fantasy'] ?? null) : $data['name'];
+            
+            // 3. Definir nome do usuário
+            // Para empresas: users.name = Nome do responsável (owner_name)
+            // Para motoristas: users.name = Nome do motorista
+            $userName = $isCompany ? ($data['owner_name'] ?? $data['name']) : $data['name'];
+
+            // 4. Inserção na tabela ACCOUNTS (Entidade Fiscal)
             $sqlAccount = "INSERT INTO accounts (uuid, document_type, document_number, corporate_name, trade_name, status) 
-                            VALUES (:uuid, :doc_type, :doc_num, :name, :trade, 'active')";
+                            VALUES (:uuid, :doc_type, :doc_num, :corporate_name, :trade_name, 'active')";
             
             $stmtAcc = $this->db->prepare($sqlAccount);
             $stmtAcc->execute([
-                ':uuid'     => $accountUuid,
-                ':doc_type' => $data['document_type'] ?? (strlen($cleanDoc) === 14 ? 'CNPJ' : 'CPF'),
-                ':doc_num'  => $cleanDoc,
-                ':name'     => $data['name'],
-                ':trade'    => $data['name_fantasy'] ?? $data['name']
+                ':uuid'          => $accountUuid,
+                ':doc_type'      => $data['document_type'] ?? (strlen($cleanDoc) === 14 ? 'CNPJ' : 'CPF'),
+                ':doc_num'       => $cleanDoc,
+                ':corporate_name' => $corporateName,
+                ':trade_name'    => $tradeName
             ]);
             
             $accountId = $this->db->lastInsertId();
 
-            // 3. Buscar Role ID
+            // 5. Buscar Role ID
             $stmtRole = $this->db->prepare("SELECT id FROM roles WHERE slug = :slug LIMIT 1");
             $stmtRole->execute([':slug' => $roleSlug]);
             $roleId = $stmtRole->fetchColumn() ?: 2;
 
-            // 4. Criar o Usuário vinculado à Account
+            // 6. Criar o Usuário vinculado à Account
             $sqlUser = "INSERT INTO users (
                             name, email, password, whatsapp, 
                             account_id, role_id, role, user_type, status, plan_id, created_at
@@ -55,36 +66,39 @@ class UserRepository {
             
             $stmtUser = $this->db->prepare($sqlUser);
             $stmtUser->execute([
-                ':name'       => $data['name'],
+                ':name'       => $userName,
                 ':email'      => $data['email'],
                 ':password'   => $data['password'], // Deve estar hasheado via password_hash()
                 ':whatsapp'   => preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
                 ':account_id' => $accountId,
                 ':role_id'    => $roleId,
-                ':role'       => $data['role'], // Ex: 'company', 'driver'
+                ':role'       => $roleSlug,
                 ':user_type'  => strtoupper($data['user_type'] ?? ($roleSlug === 'driver' ? 'DRIVER' : 'COMPANY'))
             ]);
 
             $userId = $this->db->lastInsertId();
 
-            // 5. Criar Perfil Público (user_profiles)
+            // 8. Popular user_modules com módulos padrão baseado no cargo
+            $this->populateUserModules((int)$userId, $roleSlug);
+
+            // 7. Criar Perfil Público (user_profiles)
             // Geramos o slug e já inicializamos o JSON private_data
-            $baseSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $data['name'])));
+            $baseSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $userName)));
             $uniqueSlug = $baseSlug . '-' . $userId;
             
-            $initialDetails = [
+            $initialAttributes = [
                 'business_segment' => ($roleSlug === 'driver' ? 'motorista' : 'geral'),
-                'created_via' => 'registration'
+                'created_via' => 'registration',
+                'display_name' => $tradeName ?? $userName
             ];
 
-            $sqlProfile = "INSERT INTO user_profiles (user_id, name, slug, private_data, created_at) 
-                        VALUES (:user_id, :display_name, :slug, :json, NOW())";
+            $sqlProfile = "INSERT INTO user_profiles (user_id, slug, extended_attributes, availability_status, created_at) 
+                        VALUES (:user_id, :slug, :json, 'available', NOW())";
             
             $this->db->prepare($sqlProfile)->execute([
                 ':user_id'      => $userId,
-                ':display_name' => $data['name_fantasy'] ?? $data['name'],
                 ':slug'         => $uniqueSlug,
-                ':json'         => json_encode($initialDetails)
+                ':json'         => json_encode($initialAttributes)
             ]);
 
             $this->db->commit();
@@ -166,15 +180,9 @@ class UserRepository {
         $identifier = trim($identifier);
         if (empty($identifier)) return null;
 
-        // 1. Preparamos a variação apenas numérica para o WhatsApp
-        $onlyNumbers = preg_replace('/\D/', '', $identifier);
+        $isEmail = strpos($identifier, '@') !== false;
+        $whatsappSearch = preg_replace('/\D/', '', $identifier);
 
-        /**
-         * 2. SQL Otimizado para o Novo Modelo (Alto Padrão)
-         * - Buscamos o slug da role para o Auth::hasRole funcionar
-         * - Buscamos o account_id para o multi-tenancy (SaaS)
-         * - Mantemos o avatar do perfil
-         */
         $sql = "SELECT 
                     u.*, 
                     r.slug as role_slug, 
@@ -187,15 +195,14 @@ class UserRepository {
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 WHERE (u.email = :email OR u.whatsapp = :whatsapp) 
-                AND (u.deleted_at IS NULL OR u.deleted_at = '0000-00-00 00:00:00')
+                AND u.deleted_at IS NULL
                 LIMIT 1";
 
         try {
-            $stmt = $this->db->prepare($sql);
-            
+            $stmt = $this->db->prepare($sql);   
             $stmt->execute([
                 ':email'    => $identifier,
-                ':whatsapp' => !empty($onlyNumbers) ? $onlyNumbers : $identifier
+                ':whatsapp' => $isEmail ? '---' : $whatsappSearch
             ]);
 
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -204,20 +211,22 @@ class UserRepository {
                 // 3. Tipagem Garantida (Essencial para o Frontend/React não bugar)
                 $user['id'] = (int)$user['id'];
                 $user['account_id'] = $user['account_id'] ? (int)$user['account_id'] : null;
-                $user['role_id'] = $user['role_id'] ? (int)$user['role_id'] : null;
-                $user['plan_id'] = isset($user['plan_id']) ? (int)$user['plan_id'] : 1;
-                
-                // Manter compatibilidade com seu Auth.php antigo se necessário
-                $user['role'] = $user['role_slug']; 
+                $user['role_slug'] = $user['role_slug'] ?? 'driver';
+                $user['status'] = $user['status'] ?? 'pending'; 
+                    if (!isset($user['password'])) {
+                    error_log("ERRO: Campo password não retornado do banco.");
+                }
             }
 
             return $user ?: null;
 
         } catch (\PDOException $e) {
-            error_log("Erro Crítico em findByEmailOrWhatsapp: " . $e->getMessage());
-            return null;
+                error_log("Erro Crítico em findByEmailOrWhatsapp: " . $e->getMessage());
+                return null;
         }
     }
+
+    // findByEmailOnly foi removido para manter o comportamento original sem fallback
     
     /**
      * Atualiza dados da tabela principal 'users'
@@ -369,6 +378,9 @@ class UserRepository {
             ]);
 
             $this->db->commit();
+
+            $this->autoApproveProfile($userId);
+
             return true;
         } catch (\Exception $e) {
             if ($this->db->inTransaction()) $this->db->rollBack();
@@ -507,10 +519,68 @@ class UserRepository {
         return (object)['is_verified' => $deservesBadge, 'score' => $points];
     }
 
+    public function autoApproveProfile($userId) {
+        $user = $this->getProfileData($userId);
+        if (!$user) return null;
+
+        $userType = $user['user_type'] ?? 'DRIVER';
+        $score = 0;
+        $maxScore = 0;
+
+        if ($userType === 'COMPANY') {
+            $companyFields = [
+                'company_name' => 25,
+                'document' => 25,
+                'city' => 15,
+                'state' => 10,
+                'phone' => 10,
+                'bio' => 10,
+                'avatar_url' => 5
+            ];
+            foreach ($companyFields as $field => $weight) {
+                $maxScore += $weight;
+                $value = $user[$field] ?? ($user['details'][lcfirst(str_replace(' ', '', ucwords(str_replace('_', ' ', $field))))] ?? '');
+                if (!empty($value)) $score += $weight;
+            }
+        } else {
+            $driverFields = [
+                'name' => 25,
+                'whatsapp' => 20,
+                'city' => 15,
+                'state' => 10,
+                'avatar_url' => 15,
+                'bio' => 10,
+                'vehicle_type' => 5
+            ];
+            foreach ($driverFields as $field => $weight) {
+                $maxScore += $weight;
+                $value = $user[$field] ?? '';
+                if (!empty($value)) $score += $weight;
+            }
+        }
+
+        $percentage = $maxScore > 0 ? round(($score / $maxScore) * 100) : 0;
+        
+        $currentStatus = $user['verification_status'] ?? 'none';
+        $newStatus = ($percentage >= 60) ? 'verified' : 'pending';
+
+        if ($newStatus !== $currentStatus) {
+            $stmt = $this->db->prepare("UPDATE user_profiles SET verification_status = :status WHERE user_id = :id");
+            $stmt->execute([':status' => $newStatus, ':id' => $userId]);
+        }
+
+        return (object)[
+            'verification_status' => $newStatus,
+            'profile_completion' => $percentage,
+            'score' => $score,
+            'max_score' => $maxScore
+        ];
+    }
+
     private function sendVerificationNotify($userId, $status) {
         try {
             $notif = new \App\Controllers\NotificationController($this->db);
-            if ($status) {
+            if ($status && method_exists($notif, 'notify')) {
                 $notif->notify($userId, "🎉 Perfil Verificado!", "Seu selo de confiança foi ativado.");
             }
         } catch (\Throwable $e) {}
@@ -1076,5 +1146,25 @@ class UserRepository {
             'search' => "%$search%"
         ]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function populateUserModules(int $userId, string $roleSlug): void {
+        $stmt = $this->db->prepare("
+            SELECT module_key FROM modules 
+            WHERE JSON_CONTAINS(default_for, :role)
+            OR is_required = 1
+        ");
+        $stmt->execute([':role' => '"' . $roleSlug . '"']);
+        $modules = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        foreach ($modules as $moduleKey) {
+            $this->db->prepare("
+                INSERT IGNORE INTO user_modules (user_id, module_key, status, activated_at)
+                VALUES (:user_id, :module_key, 'active', NOW())
+            ")->execute([
+                ':user_id' => $userId,
+                ':module_key' => $moduleKey
+            ]);
+        }
     }
 }

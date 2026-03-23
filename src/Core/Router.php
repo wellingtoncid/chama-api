@@ -114,12 +114,21 @@ class Router {
                 break;
 
             case 'AdminController':
-                // CORREÇÃO: AdminController precisa do loggedUser no construtor
-                $controller = new $controllerClass($db, $loggedUser);
+                $controller = new $controllerClass(
+                    $db, 
+                    new \App\Repositories\AdminRepository($db), 
+                    $loggedUser                                  
+                );
                 break;
 
             case 'NotificationController':
                 $controller = new $controllerClass(new NotificationService($db));
+                break;
+
+            case 'RoleController':
+            case 'ModuleController':
+            case 'PermissionController':
+                $controller = new $controllerClass($db, $loggedUser);
                 break;
 
             default:

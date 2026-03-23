@@ -136,32 +136,23 @@ class AdminRepository {
                     f.status,
                     f.payment_status,
                     f.created_at,
-                    COALESCE(a.trade_name, p.name, u.name) as company_name,
+                    COALESCE(a.trade_name, a.corporate_name, u.name) as company_name,
                     u.email as user_email
                 FROM freights f
                 LEFT JOIN users u ON f.user_id = u.id
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 WHERE f.deleted_at IS NULL
-                AND f.status != 'DELETED'
                 ORDER BY f.created_at DESC";
         try {
             $stmt = $this->db->prepare($sql);
             $stmt->execute();
-            $results = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-
-            // Opcional: Pequeno tratamento para garantir que o Admin identifique sub-contas
-            return array_map(function($row) {
-                $row['price'] = (float)$row['price'];
-                $row['is_featured'] = (bool)$row['is_featured'];
-                return $row;
-            }, $results);
-
+            return $stmt->fetchAll(\PDO::FETCH_ASSOC); 
         } catch (\Exception $e) {
-            error_log("Erro Crítico no AdminRepository (getAllFreights): " . $e->getMessage());
+            error_log("Erro no AdminRepository: " . $e->getMessage());
             return [];
         }
-    }
+    }   
 
     public function toggleFeatured($id, $featured) {
         $sql = "UPDATE freights SET is_featured = ?, requested_featured = '0' WHERE id = ?";
@@ -197,10 +188,28 @@ class AdminRepository {
         ")->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    public function getFinancialStats() {
+        $confirmed = $this->db->query("
+            SELECT IFNULL(SUM(amount), 0) as total 
+            FROM transactions 
+            WHERE status IN ('approved', 'completed')
+        ")->fetch(PDO::FETCH_ASSOC);
+
+        $pending = $this->db->query("
+            SELECT IFNULL(SUM(amount), 0) as total 
+            FROM transactions 
+            WHERE status = 'pending'
+        ")->fetch(PDO::FETCH_ASSOC);
+
+        return [
+            'total_revenue' => number_format((float)$confirmed['total'], 2, '.', ''),
+            'pending_revenue' => number_format((float)$pending['total'], 2, '.', '')
+        ];
+    }
+
     // USUÁRIOS (Incluso Soft Delete e Filtros)
 
     public function listUsersByRole($role = '%', $search = '%') {
-        // 1. O SQL agora foca na relação User -> Account (Empresa) e User -> User (Hierarquia)
         $sql = "SELECT 
                     u.id, 
                     u.parent_id,
@@ -212,47 +221,46 @@ class AdminRepository {
                     u.user_type,
                     u.plan_id,
                     u.account_id,
-                    -- Nome do indivíduo
-                    u.name as individual_name,
-                    -- Nome Fantasia da Empresa (Vem da Account compartilhada)
+                    u.is_verified,
+                    u.access_level,
+                    u.name as user_name,
                     a.trade_name as company_name,
-                    -- Se for um sub-usuário, pegamos o nome do Master
-                    p.name as parent_owner_name,
-                    -- Status de Verificação (Vem do Perfil)
-                    up.is_verified,
-                    -- Lógica de Display: Nome Fantasia se for empresa, senão nome da pessoa
-                    COALESCE(a.trade_name, u.name) as display_name,
-                    -- Campo extraído do JSON do Perfil para busca (ex: transportadora, embarcador)
-                    up.private_data as profile_details
+                    a.corporate_name as company_corporate_name,
+                    a.document_number as company_document,
+                    a.document_type as company_document_type,
+                    p.name as parent_name,
+                    COALESCE(a.trade_name, a.corporate_name, u.name) as display_name,
+                    up.extended_attributes as profile_details
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
-                LEFT JOIN user_profiles up ON u.id = up.user_id
+                LEFT JOIN user_profiles up ON u.id = up.user_id 
                 LEFT JOIN users p ON u.parent_id = p.id
-                WHERE (u.role LIKE ? OR u.user_type LIKE ?) 
+                WHERE u.deleted_at IS NULL 
+                AND (? = '%' OR u.role LIKE ? OR u.user_type LIKE ?)
                 AND (
                     u.name LIKE ? 
                     OR u.email LIKE ? 
-                    OR a.trade_name LIKE ? 
-                    OR a.corporate_name LIKE ?
-                    OR up.private_data LIKE ? -- Busca dentro do JSON (opcional, mas útil)
-                ) 
-                AND u.deleted_at IS NULL 
+                    OR (a.trade_name IS NOT NULL AND a.trade_name LIKE ?) 
+                    OR (a.corporate_name IS NOT NULL AND a.corporate_name LIKE ?)
+                    OR (up.extended_attributes IS NOT NULL AND up.extended_attributes LIKE ?)
+                )
                 ORDER BY u.id DESC";
 
         $stmt = $this->db->prepare($sql);
         
         $searchTerm = "%$search%";
-        $roleTerm = $role === '%' ? '%' : $role;
+        $roleTerm = ($role === '' || $role === null || $role === '%') ? '%' : $role;
 
         // Executamos com os parâmetros mapeados para a nova estrutura
         $stmt->execute([
             $roleTerm,     // u.role
             $roleTerm,     // u.user_type (backup de busca)
+            $roleTerm,     // Comparação direta para o OR ? = '%'
             $searchTerm,   // u.name
             $searchTerm,   // u.email
             $searchTerm,   // a.trade_name
             $searchTerm,   // a.corporate_name
-            $searchTerm    // up.private_data
+            $searchTerm    // up.extended_attributes
         ]);
         
         $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -285,42 +293,86 @@ class AdminRepository {
             
             $sqlUser = "UPDATE users SET 
                             name = ?, whatsapp = ?, role = ?, 
-                            status = ?, permissions = ?, plan_id = ? 
+                            status = ?, permissions = ?, plan_id = ?,
+                            user_type = ?, access_level = ?
                         WHERE id = ?";
             
             $this->db->prepare($sqlUser)->execute([
-                $data['name'] ?? '', 
+                $data['user_name'] ?? $data['name'] ?? '', 
                 preg_replace('/\D/', '', $data['whatsapp'] ?? ''), 
                 $data['role'] ?? 'company', 
                 $data['status'] ?? 'pending', 
                 $perms, 
                 $data['plan_id'] ?? 0, 
+                $data['user_type'] ?? 'COMPANY',
+                $data['access_level'] ?? null,
                 $data['id']
             ]);
 
-            // 2. Busca o account_id vinculado a este usuário
+            // 2. Atualiza ACCOUNTS (Dados Fiscais/Identidade da Empresa)
+            // Primeiro busca o account_id vinculado a este usuário
             $stmtAccId = $this->db->prepare("SELECT account_id FROM users WHERE id = ?");
             $stmtAccId->execute([$data['id']]);
             $accountId = $stmtAccId->fetchColumn();
 
             if ($accountId) {
-                // Atualiza ACCOUNTS (Dados Fiscais/Identidade da Empresa)
+                // Atualiza ACCOUNTS com os dados do documento (CNPJ ou CPF)
+                $documentNumber = preg_replace('/\D/', '', $data['document'] ?? $data['company_document'] ?? $data['cnpj'] ?? '');
+                $documentType = $data['document_type'] ?? $data['company_document_type'] ?? (strlen($documentNumber) === 14 ? 'CNPJ' : (strlen($documentNumber) === 11 ? 'CPF' : null));
+                
                 $sqlAccount = "UPDATE accounts SET 
                                     trade_name = ?, 
                                     document_number = ?,
+                                    document_type = ?,
                                     corporate_name = ?
                                 WHERE id = ?";
                 $this->db->prepare($sqlAccount)->execute([
                     $data['company_name'] ?? ($data['name'] ?? ''),
-                    preg_replace('/\D/', '', $data['cnpj'] ?? ''),
-                    $data['corporate_name'] ?? ($data['company_name'] ?? $data['name']),
+                    $documentNumber,
+                    $documentType,
+                    $data['company_corporate_name'] ?? $data['corporate_name'] ?? ($data['company_name'] ?? $data['name']),
                     $accountId
                 ]);
+            } elseif (!empty($data['document']) || !empty($data['company_document']) || !empty($data['cnpj'])) {
+                // Se não tem account ainda mas tem documento, cria um
+                $documentNumber = preg_replace('/\D/', '', $data['document'] ?? $data['company_document'] ?? $data['cnpj'] ?? '');
+                $documentType = $data['document_type'] ?? $data['company_document_type'] ?? (strlen($documentNumber) === 14 ? 'CNPJ' : 'CPF');
+                
+                $accountUuid = bin2hex(random_bytes(16));
+                $sqlAccount = "INSERT INTO accounts (uuid, document_type, document_number, corporate_name, trade_name, status) 
+                                VALUES (?, ?, ?, ?, ?, 'active')";
+                $this->db->prepare($sqlAccount)->execute([
+                    $accountUuid,
+                    $documentType,
+                    $documentNumber,
+                    $data['company_corporate_name'] ?? $data['company_name'] ?? $data['name'] ?? '',
+                    $data['company_name'] ?? $data['name'] ?? ''
+                ]);
+                $accountId = $this->db->lastInsertId();
+                
+                // Vincula o usuário à nova conta
+                $this->db->prepare("UPDATE users SET account_id = ? WHERE id = ?")->execute([$accountId, $data['id']]);
             }
 
-            // 3. Atualiza USER_PROFILES (Dados Técnicos no JSON private_data)
+            // 2b. Atualiza user_profiles com documento (CPF para drivers)
+            $documentNumber = preg_replace('/\D/', '', $data['document'] ?? '');
+            if ($documentNumber && strlen($documentNumber) === 11) {
+                $stmtCheckProfile = $this->db->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
+                $stmtCheckProfile->execute([$data['id']]);
+                $profileExists = $stmtCheckProfile->fetchColumn();
+
+                if ($profileExists) {
+                    $this->db->prepare("UPDATE user_profiles SET cpf_cnpj = ?, document_type = 'CPF' WHERE user_id = ?")
+                        ->execute([$documentNumber, $data['id']]);
+                } else {
+                    $this->db->prepare("INSERT INTO user_profiles (user_id, cpf_cnpj, document_type) VALUES (?, ?, 'CPF')")
+                        ->execute([$data['id'], $documentNumber]);
+                }
+            }
+
+            // 3. Atualiza USER_PROFILES (Dados Técnicos no JSON extended_attributes)
             // Primeiro buscamos o JSON atual para não sobrescrever outros campos (como redes sociais)
-            $stmtProf = $this->db->prepare("SELECT private_data FROM user_profiles WHERE user_id = ?");
+            $stmtProf = $this->db->prepare("SELECT extended_attributes FROM user_profiles WHERE user_id = ?");
             $stmtProf->execute([$data['id']]);
             $currentJson = $stmtProf->fetchColumn();
             $details = $currentJson ? json_decode($currentJson, true) : [];
@@ -336,7 +388,7 @@ class AdminRepository {
 
             $sqlProfile = "UPDATE user_profiles SET 
                                 name = ?,
-                                private_data = ?
+                                extended_attributes = ?
                         WHERE user_id = ?";
             
             $this->db->prepare($sqlProfile)->execute([
@@ -344,6 +396,10 @@ class AdminRepository {
                 json_encode($details),
                 $data['id']
             ]);
+
+            if (isset($data['role'])) {
+                $this->syncUserModulesByRole((int)$data['id'], $data['role']);
+            }
 
             $this->db->commit();
             return ["success" => true];
@@ -384,7 +440,7 @@ class AdminRepository {
             // No Admin, podemos estar criando um usuário para uma empresa que já existe ou uma nova.
             $accountId = $data['account_id'] ?? null;
 
-            if (!$accountId) {
+            if (!$accountId && ($data['user_type'] === 'COMPANY' || $data['role'] === 'company')) {
                 $accountUuid = bin2hex(random_bytes(16));
                 $sqlAccount = "INSERT INTO accounts (uuid, document_type, document_number, corporate_name, trade_name, status) 
                             VALUES (?, ?, ?, ?, ?, 'active')";
@@ -405,8 +461,9 @@ class AdminRepository {
             // 2. Inserção na tabela principal: USERS
             $sqlUser = "INSERT INTO users (
                 name, email, whatsapp, password, role, user_type, 
-                city, state, status, plan_id, plan_type, account_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+                city, state, status, plan_id, account_id, 
+                parent_id, access_level, area, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
             
             $stmt = $this->db->prepare($sqlUser);
             $stmt->execute([
@@ -415,16 +472,20 @@ class AdminRepository {
                 preg_replace('/\D/', '', $data['whatsapp'] ?? ''),
                 password_hash($data['password'], PASSWORD_BCRYPT),
                 $data['role'] ?? 'driver',
-                strtoupper($data['user_type']), 
+                strtoupper($data['user_type'] ?? 'COMPANY'), 
                 $data['city'] ?? null,
                 $data['state'] ?? null,
                 $data['status'] ?? 'active',
                 $data['plan_id'] ?? 1,
-                $data['plan_type'] ?? 'free',
-                $accountId
+                $accountId,
+                $data['parent_id'] ?? null,
+                $data['access_level'] ?? null,
+                $data['area'] ?? null
             ]);
-            
             $userId = $this->db->lastInsertId();
+
+            // 6. Popular user_modules baseado no cargo
+            $this->populateUserModules((int)$userId, $data['role'] ?? 'driver');
 
             // 3. Inserção no perfil: USER_PROFILES (Incluindo dados que eram da companies no JSON)
             $slug = $this->generateSlug($data['name']) . '-' . $userId;
@@ -439,7 +500,7 @@ class AdminRepository {
 
             $sqlProfile = "INSERT INTO user_profiles (
                 user_id, name, slug, profile_template, 
-                vehicle_type, body_type, availability_status, private_data
+                vehicle_type, body_type, availability_status, extended_attributes
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
             
             $this->db->prepare($sqlProfile)->execute([
@@ -587,11 +648,11 @@ class AdminRepository {
     // ADS, SETTINGS & PLANS
 
     public function softDeleteAd($id) {
-        return $this->db->prepare("UPDATE ads SET is_deleted = 1, is_active = 0 WHERE id = ?")->execute([$id]);
+        return $this->db->prepare("UPDATE ads SET deleted_at = NOW(), status = 'rejected' WHERE id = ?")->execute([$id]);
     }
 
     public function toggleAdStatus($id) {
-        return $this->db->prepare("UPDATE ads SET is_active = NOT is_active WHERE id = ?")->execute([$id]);
+        return $this->db->prepare("UPDATE ads SET status = IF(status='active','inactive','active') WHERE id = ?")->execute([$id]);
     }
 
     public function saveSettings($data) {
@@ -750,17 +811,23 @@ class AdminRepository {
     public function getUserFullDetails($id) {
         // 1. Busca os dados principais (Usuário + Dados de Conta/Empresa + Saldo + Perfil)
         $sql = "SELECT 
-                    u.*, 
+                    u.id, u.name as user_name, u.email, u.whatsapp, u.role, u.status, u.created_at,
+                    u.user_type, u.plan_id, u.account_id, u.is_verified, u.access_level, u.parent_id,
                     a.trade_name as company_name, 
-                    a.document_number as cnpj,
-                    a.corporate_name,
-                    p.private_data,
+                    a.corporate_name as company_corporate_name,
+                    a.document_number as company_document,
+                    a.document_type as company_document_type,
+                    p.extended_attributes,
                     p.avatar_url,
-                    COALESCE(uw.balance_available, 0) as wallet_balance
+                    p.cpf_cnpj as document,
+                    p.document_type as document_type,
+                    COALESCE(uw.balance_available, 0) as wallet_balance,
+                    parent.name as parent_name
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 LEFT JOIN user_wallets uw ON u.id = uw.user_id
+                LEFT JOIN users parent ON u.parent_id = parent.id
                 WHERE u.id = ?"; 
                     
         $stmt = $this->db->prepare($sql);
@@ -770,14 +837,14 @@ class AdminRepository {
         if (!$user) return null;
 
         // Decodifica o JSON do perfil para extrair dados operacionais que eram da tabela companie
-        $details = $user['private_data'] ? json_decode($user['private_data'], true) : [];
+        $details = $user['extended_attributes'] ? json_decode($user['extended_attributes'], true) : [];
         $user['business_type'] = $details['business_type'] ?? 'N/A';
         $user['storage_capacity_m2'] = $details['storage_capacity_m2'] ?? 0;
         $user['has_dock'] = $details['has_dock'] ?? 0;
         $user['coverage_area'] = $details['coverage_area'] ?? '';
         
         // Removemos o campo bruto para limpar o retorno
-        unset($user['private_data']);
+        unset($user['extended_attributes']);
 
         // 2. Busca os documentos associados
         // Agora vinculamos ao ACCOUNT_ID para que documentos da empresa apareçam para todos os membros
@@ -841,10 +908,10 @@ class AdminRepository {
     }
 
     public function getCompanyMembers($companyId) {
-        $sql = "SELECT id, name, email, role, status, whatsapp, created_at 
+        $sql = "SELECT id, name as user_name, email, role, status, whatsapp, created_at, access_level, parent_id
                 FROM users 
-                WHERE company_id = ? 
-                ORDER BY name ASC";
+                WHERE account_id = ? 
+                ORDER BY parent_id ASC, name ASC";
         $stmt = $this->db->prepare($sql);
         $stmt->execute([$companyId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -861,8 +928,8 @@ class AdminRepository {
             $this->db->beginTransaction();
 
             // 1. Camada de Acesso (users)
-            $sqlUser = "INSERT INTO users (name, email, password, role, user_type, plan_type, permissions, status, created_at) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+            $sqlUser = "INSERT INTO users (name, email, password, role, user_type, permissions, status, created_at) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())";
             
             $stmt = $this->db->prepare($sqlUser);
             $stmt->execute([
@@ -871,7 +938,6 @@ class AdminRepository {
                 password_hash($data['password'], PASSWORD_DEFAULT),
                 $data['role'], 
                 $data['user_type'], 
-                $data['plan_type'] ?? 'free',
                 json_encode($data['permissions']), // Guardando a matriz de poder
                 $data['status'] ?? 'active'
             ]);
@@ -902,5 +968,47 @@ class AdminRepository {
 
     private function onlyNumbers($str) {
         return preg_replace('/\D/', '', $str);
+    }
+
+    private function populateUserModules(int $userId, string $roleSlug): void {
+        $stmt = $this->db->prepare("
+            SELECT module_key FROM modules 
+            WHERE JSON_CONTAINS(default_for, :role)
+            OR is_required = 1
+        ");
+        $stmt->execute([':role' => '"' . $roleSlug . '"']);
+        $modules = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        foreach ($modules as $moduleKey) {
+            $this->db->prepare("
+                INSERT IGNORE INTO user_modules (user_id, module_key, status, activated_at)
+                VALUES (:user_id, :module_key, 'active', NOW())
+            ")->execute([
+                ':user_id' => $userId,
+                ':module_key' => $moduleKey
+            ]);
+        }
+    }
+
+    private function syncUserModulesByRole(int $userId, string $newRole): void {
+        $this->db->prepare("DELETE FROM user_modules WHERE user_id = ?")->execute([$userId]);
+        
+        $stmt = $this->db->prepare("
+            SELECT module_key FROM modules 
+            WHERE JSON_CONTAINS(default_for, :role)
+            OR is_required = 1
+        ");
+        $stmt->execute([':role' => '"' . $newRole . '"']);
+        $modules = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        foreach ($modules as $moduleKey) {
+            $this->db->prepare("
+                INSERT INTO user_modules (user_id, module_key, status, activated_at)
+                VALUES (:user_id, :module_key, 'active', NOW())
+            ")->execute([
+                ':user_id' => $userId,
+                ':module_key' => $moduleKey
+            ]);
+        }
     }
 }

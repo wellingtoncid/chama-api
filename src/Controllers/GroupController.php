@@ -30,10 +30,26 @@ class GroupController {
     }
 
     /**
+     * Lista grupos para a plataforma (usuários logados)
+     * Filtra por display_location = 'platform' ou 'both'
+     */
+    public function listPlatformGroups() {
+        $role = $this->loggedUser['role'] ?? 'all';
+        $groups = $this->groupRepo->listForPlatform($role);
+
+        if (!in_array(strtolower($role), ['admin', 'manager']) && !empty($groups)) {
+            $ids = array_column($groups, 'id');
+            $this->groupRepo->incrementViews($ids);
+        }
+
+        return Response::json(["success" => true, "data" => $groups]);
+    }
+
+    /**
      * Cria ou atualiza um grupo (Apenas Admin/Manager)
      */
     public function manageGroups($data, $loggedUser) {
-        $this->authorize($loggedUser);
+        $this->checkAuth();
         
         $result = $this->groupRepo->save($data);
         if ($result) {
@@ -86,7 +102,7 @@ class GroupController {
      * Deleta um grupo (Apenas Admin/Manager)
      */
     public function deleteGroup($data, $loggedUser) {
-        $this->authorize($loggedUser);
+        $this->checkAuth();
         $id = $data['id'] ?? null;
 
         if ($id && $this->groupRepo->softDelete($id)) {

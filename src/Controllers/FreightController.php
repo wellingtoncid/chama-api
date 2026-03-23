@@ -39,11 +39,9 @@ class FreightController {
         
         if ($page < 1) $page = 1;
 
-        // 2. Lógica de Escopo Inteligente
+        // 2. ListAll SEMPRE retorna todos os fretes (público)
+        // Para fretes da empresa, usar /api/list-my-freights
         $userIdParam = null;
-        if (isset($loggedUser['role']) && ($loggedUser['role'] === 'COMPANY' || $loggedUser['role'] === 'ENTERPRISE')) {
-            $userIdParam = $loggedUser['id'];
-        }
 
         try {
             // 3. SE O RADAR SMART ESTIVER ATIVO (Apenas para Motoristas)
@@ -76,6 +74,32 @@ class FreightController {
             return Response::json([
                 "success" => false, 
                 "message" => "Erro ao processar listagem de fretes."
+            ], 500);
+        }
+    }
+
+    public function myFreights($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Unauthorized"], 401);
+        }
+        
+        $userId = $loggedUser['id'];
+        $search = $data['search'] ?? '';
+        
+        try {
+            $results = $this->repo->listPaginated(
+                $userId, 
+                ['search' => $search],
+                1,
+                50
+            );
+            
+            return Response::json($results);
+        } catch (Exception $e) {
+            error_log("❌ ERRO NO CONTROLLER myFreights: " . $e->getMessage());
+            return Response::json([
+                "success" => false, 
+                "message" => "Erro ao carregar fretes."
             ], 500);
         }
     }
@@ -1006,5 +1030,50 @@ class FreightController {
         ]);
 
         return $stmt->fetchAll();
+    }
+
+    /**
+     * Retorna as empresas que mais anunciam (Top 10)
+     */
+    public function getTopAdvertisersFreight($request, $response) {
+        try {
+            // CORREÇÃO DO ERRO "ON ARRAY":
+            // Verifica se é array (pega direto) ou objeto (usa o método do Slim)
+            $limit = 10;
+            if (is_array($request)) {
+                $limit = isset($request['limit']) ? (int)$request['limit'] : 10;
+            } elseif (method_exists($request, 'getQueryParams')) {
+                $params = $request->getQueryParams();
+                $limit = isset($params['limit']) ? (int)$params['limit'] : 10;
+            }
+
+            // Garante que o repo existe
+            if (!$this->repo) {
+                return $response->withJson([
+                    'success' => false, 
+                    'message' => 'Repositório não configurado'
+                ], 500);
+            }
+
+            $result = $this->repo->getTopAdvertisers($limit);
+
+            if ($result['success']) {
+                return \App\Core\Response::json([
+                    'success' => true,
+                    'data' => $result['data']
+                ], 200);
+            }
+
+            return \App\Core\Response::json([
+                'success' => false,
+                'message' => 'Erro ao buscar anunciantes'
+            ], 400);
+
+        } catch (\Exception $e) {
+            return \App\Core\Response::json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 }

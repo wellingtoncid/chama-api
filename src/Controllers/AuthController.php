@@ -22,26 +22,29 @@ class AuthController {
     public function login($data) {
         // Sanitização básica das entradas
         $loginIdentifier = trim($data['login'] ?? $data['email'] ?? '');
-        $password = $data['password'] ?? '';
+        // Normalize and trim password to avoid issues with accidental whitespace
+        $password = isset($data['password']) ? (string)$data['password'] : '';
 
         if (empty($loginIdentifier) || empty($password)) {
             return Response::json(["success" => false, "message" => "Usuário e senha são obrigatórios"], 400);
         }
 
-        $searchKey = (strpos($loginIdentifier, '@') === false) 
-            ? preg_replace('/\D/', '', $loginIdentifier) 
-            : $loginIdentifier;
-
         // Busca o usuário no repositório
-        $user = $this->userRepo->findByEmailOrWhatsapp($searchKey);
-
-        // 1. Verificação de existência e senha
-        if (!$user || !password_verify($password, $user['password'])) {
+        $user = $this->userRepo->findByEmailOrWhatsapp($loginIdentifier);
+        // Debug: log de encontrado/no encontrado
+        if (!$user) {
+            error_log("DEBUG_LOGIN: Usuário não encontrado para: $loginIdentifier");
             return Response::json(["success" => false, "message" => "E-mail/WhatsApp ou senha incorretos"], 401);
         }
-        // 2. Tratamento do Status (Evita a mensagem vazia)
+
+       // Verificação da Senha (Onde ocorre o 401)
+        if (!password_verify($password, $user['password'])) {
+            error_log("DEBUG_LOGIN: Senha inválida para ID: {$user['id']}");
+            return Response::json(["success" => false, "message" => "E-mail/WhatsApp ou senha incorretos"], 401);
+        }
+        // Tratamento do Status (Evita a mensagem vazia)
         // Se o status for nulo, assumimos 'pending' por segurança
-      $currentStatus = $user['status'] ?? 'pending'; 
+        $currentStatus = $user['status'] ?? 'pending'; 
         if ($currentStatus !== 'active') {
             $statusMessages = [
                 'pending'   => 'pendente de ativação',
@@ -55,7 +58,7 @@ class AuthController {
             ], 403);
         }
 
-        // 3. Preparação do Token JWT (Com a nova estrutura)
+        // Preparação do Token JWT (Com a nova estrutura)
         $issuedAt = time();
         $expire = $issuedAt + (int)($_ENV['JWT_EXPIRE'] ?? 86400); 
 
@@ -78,16 +81,26 @@ class AuthController {
             // Atualiza último login
             $this->userRepo->updateLastLogin($user['id']);
 
+            // Sincroniza status de verificação do perfil
+            $this->userRepo->autoApproveProfile($user['id']);
+
+            // Busca dados atualizados do perfil para retornar
+            $profileData = $this->userRepo->getProfileData($user['id']);
+
             return Response::json([
                 "success" => true,
                 "token"   => $jwt,
                 "user"    => [
                     "id"          => (int)$user['id'],
                     "name"        => $user['name'],
-                    "account_id"  => $user['account_id'], // Retorna para o Front saber a empresa
+                    "account_id"  => $user['account_id'],
                     "role"        => strtoupper($user['role_slug'] ?? 'driver'),
-                    "company"     => $user['company_name'] ?? null, // Nome da Account vindo do JOIN
-                    "avatar"      => $user['avatar_url'] ?? null
+                    "company"     => $user['company_name'] ?? null,
+                    "avatar"      => $user['avatar_url'] ?? null,
+                    "company_name" => $profileData['company_name'] ?? null,
+                    "document"    => $profileData['document'] ?? null,
+                    "verification_status" => $profileData['verification_status'] ?? 'none',
+                    "user_type"   => $profileData['user_type'] ?? null
                 ]
             ]);
 

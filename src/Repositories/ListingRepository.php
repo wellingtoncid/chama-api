@@ -38,6 +38,17 @@ class ListingRepository {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    public function findByUser($userId) {
+        $stmt = $this->db->prepare("
+            SELECT l.* 
+            FROM listings l 
+            WHERE l.user_id = ? 
+            ORDER BY l.created_at DESC
+        ");
+        $stmt->execute([$userId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     /**
      * Busca todas as imagens de um conjunto de anúncios de uma vez só
      * Melhora a performance drasticamente na listagem
@@ -102,5 +113,74 @@ class ListingRepository {
             error_log("Erro ao incrementar contador na tabela {$tableName}: " . $e->getMessage());
             return false;
         }
+    }
+
+    // ==================== ADMIN METHODS ====================
+
+    public function findAll($filters = []) {
+        $sql = "SELECT l.*, u.name as seller_name, u.email as seller_email 
+                FROM listings l 
+                LEFT JOIN users u ON l.user_id = u.id
+                WHERE 1=1";
+        
+        $params = [];
+
+        if (!empty($filters['status']) && $filters['status'] !== 'all') {
+            $sql .= " AND l.status = :status";
+            $params[':status'] = $filters['status'];
+        }
+
+        if (!empty($filters['category']) && $filters['category'] !== 'all') {
+            $sql .= " AND l.category = :category";
+            $params[':category'] = $filters['category'];
+        }
+
+        if (!empty($filters['search'])) {
+            $sql .= " AND (l.title LIKE :search OR u.name LIKE :search OR u.email LIKE :search)";
+            $params[':search'] = "%{$filters['search']}%";
+        }
+
+        $sql .= " ORDER BY l.created_at DESC";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function findByIdAdmin($id) {
+        $stmt = $this->db->prepare("
+            SELECT l.*, u.name as seller_name, u.email as seller_email 
+            FROM listings l 
+            LEFT JOIN users u ON l.user_id = u.id
+            WHERE l.id = ?
+        ");
+        $stmt->execute([$id]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    public function update($id, $data) {
+        $fields = [];
+        $params = [':id' => $id];
+
+        $allowedFields = ['title', 'description', 'price', 'category', 'location_city', 'location_state', 'status', 'is_featured'];
+
+        foreach ($allowedFields as $field) {
+            if (isset($data[$field])) {
+                $fields[] = "$field = :$field";
+                $params[":$field"] = $data[$field];
+            }
+        }
+
+        if (empty($fields)) {
+            return false;
+        }
+
+        $stmt = $this->db->prepare("UPDATE listings SET " . implode(', ', $fields) . " WHERE id = :id");
+        return $stmt->execute($params);
+    }
+
+    public function delete($id) {
+        $stmt = $this->db->prepare("UPDATE listings SET status = 'deleted' WHERE id = ?");
+        return $stmt->execute([$id]);
     }
 }

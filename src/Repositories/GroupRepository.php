@@ -11,16 +11,16 @@ class GroupRepository {
     }
 
     /**
-     * Lista grupos: 
-     * - Se Admin/Manager: Lista todos os não deletados.
-     * - Se Usuário/All: Lista apenas ativos e respeita o target_role.
+     * Lista grupos para o site público (não logado)
+     * Filtra por display_location = 'site' ou 'both'
      */
     public function listActive($userRole = 'all') {
         $userRole = strtolower($userRole);
         $isAdmin = in_array($userRole, ['admin', 'manager']);
 
-        // Se for admin, não filtra por status 'active'
+        // Filtro obrigatório: apenas grupos visíveis no site público
         $sql = "SELECT * FROM whatsapp_groups WHERE is_deleted = 0";
+        $sql .= " AND (display_location = 'site' OR display_location = 'both')";
         
         if (!$isAdmin) {
             $sql .= " AND status = 'active'";
@@ -34,7 +34,38 @@ class GroupRepository {
             $params[] = strtoupper($userRole);
         }
 
-        $sql .= " ORDER BY priority_level DESC, region_name ASC";
+        $sql .= " ORDER BY is_visible_home DESC, is_premium DESC, priority_level DESC, region_name ASC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Lista grupos para a plataforma (usuários logados)
+     * Filtra por display_location = 'platform' ou 'both'
+     */
+    public function listForPlatform($userRole = 'all') {
+        $userRole = strtolower($userRole);
+        $isAdmin = in_array($userRole, ['admin', 'manager']);
+
+        // Filtro obrigatório: apenas grupos visíveis na plataforma
+        $sql = "SELECT * FROM whatsapp_groups WHERE is_deleted = 0";
+        $sql .= " AND (display_location = 'platform' OR display_location = 'both')";
+        
+        if (!$isAdmin) {
+            $sql .= " AND status = 'active'";
+        }
+
+        $params = [];
+
+        // Filtro de Role - aplica apenas para não-admins
+        if (!$isAdmin && $userRole !== 'all') {
+            $sql .= " AND (target_role = ? OR target_role = 'ALL')";
+            $params[] = strtoupper($userRole);
+        }
+
+        $sql .= " ORDER BY is_premium DESC, priority_level DESC, region_name ASC";
         
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
@@ -54,6 +85,16 @@ class GroupRepository {
     public function incrementClick($id) {
         return $this->db->prepare("UPDATE whatsapp_groups SET clicks_count = clicks_count + 1 WHERE id = ?")
                         ->execute([$id]);
+    }
+
+    /**
+     * Lista TODOS os grupos para admin (sem filtro de display_location)
+     */
+    public function listAll() {
+        $sql = "SELECT * FROM whatsapp_groups WHERE is_deleted = 0 ORDER BY priority_level DESC, region_name ASC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     public function save(array $data) {

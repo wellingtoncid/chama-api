@@ -71,7 +71,7 @@ class FreightRepository {
             $sqlCount = "SELECT COUNT(DISTINCT f.id) 
                         FROM freights f 
                         LEFT JOIN users u ON f.user_id = u.id 
-                        LEFT JOIN accounts a ON f.account_id = a.id
+                        LEFT JOIN accounts a ON u.account_id = a.id
                         $where";
             
             $stmtCount = $this->db->prepare($sqlCount);
@@ -95,7 +95,7 @@ class FreightRepository {
                         (CASE WHEN fav.id IS NOT NULL THEN 1 ELSE 0 END) as is_favorite
                     FROM freights f 
                     LEFT JOIN users u ON f.user_id = u.id 
-                    LEFT JOIN accounts a ON f.account_id = a.id 
+                    LEFT JOIN accounts a ON u.account_id = a.id 
                     LEFT JOIN user_profiles p ON u.id = p.user_id
                     LEFT JOIN favorites fav ON f.id = fav.target_id 
                         AND fav.target_type = 'FREIGHT' 
@@ -1211,5 +1211,37 @@ class FreightRepository {
         $stmt = $this->db->prepare($sql);
         $stmt->execute([$userId, $type, $status]);
         return $stmt->fetchAll();
+    }
+
+    public function getTopAdvertisers($limit = 10) {
+        try {
+            $sql = "SELECT 
+                        COALESCE(a.trade_name, a.corporate_name, u.name) as name,
+                        p.avatar_url as logo,   
+                        COUNT(f.id) as freights
+                    FROM freights f
+                    INNER JOIN users u ON f.user_id = u.id
+                    LEFT JOIN accounts a ON u.account_id = a.id
+                    LEFT JOIN user_profiles p ON u.id = p.user_id 
+                    WHERE f.deleted_at IS NULL 
+                    AND f.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                    GROUP BY u.id, a.id, a.trade_name, a.corporate_name, u.name, p.avatar_url
+                    HAVING freights > 0
+                    ORDER BY freights DESC
+                    LIMIT :limit";
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->bindValue(':limit', (int)$limit, \PDO::PARAM_INT);
+            $stmt->execute();
+
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+            
+            return [
+                'success' => true,
+                'data' => $rows ?: []
+            ];
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
     }
 }

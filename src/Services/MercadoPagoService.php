@@ -10,22 +10,27 @@ class MercadoPagoService {
     private $paymentRepo;
 
     public function __construct($db) {
-        $this->accessToken = $_ENV['MP_ACCESS_TOKEN'];
-        $this->baseUrl = $_ENV['BASE_URL'];
-        // Injetando o repositório para gerenciar o banco
+        $this->accessToken = $_ENV['MP_ACCESS_TOKEN'] ?? getenv('MP_ACCESS_TOKEN') ?: '';
+        $this->baseUrl = $_ENV['BASE_URL'] ?? getenv('BASE_URL') ?: 'http://127.0.0.1:8000';
         $this->paymentRepo = new PaymentRepository($db);
     }
 
     /**
      * Cria a preferência de pagamento (Checkout Pro)
+     * Suporta billing_cycle: monthly, quarterly, semiannual, yearly
      */
     public function createPreference($data, $userId) {
         // 1. Registra a intenção de compra no nosso banco via Repository
+        $billingCycle = $data['billing_cycle'] ?? 'monthly';
+        $durationDays = $data['duration_days'] ?? 30;
+        
         $transactionId = $this->paymentRepo->createTransaction(
             $userId, 
             $data['plan_id'] ?? null, 
             $data['amount'], 
-            null // ID Externo será atualizado depois
+            null, // ID Externo será atualizado depois
+            $billingCycle,
+            $durationDays
         );
 
         if (!$transactionId) throw new Exception("Falha ao registrar transação local.");
@@ -70,10 +75,17 @@ class MercadoPagoService {
 
         if ($transactionId && $status === 'approved') {
             // Atualiza no banco via Repository
-            return $this->paymentRepo->updateStatusByExternalId($transactionId, 'paid');
+            return $this->paymentRepo->updateStatusByExternalId($transactionId, 'approved');
         }
 
         return false;
+    }
+
+    /**
+     * Retorna dados do pagamento
+     */
+    public function getPaymentData($resourceId) {
+        return $this->callAPI('GET', "v1/payments/{$resourceId}");
     }
 
     /**

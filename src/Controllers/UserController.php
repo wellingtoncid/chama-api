@@ -5,6 +5,7 @@ use App\Core\Response;
 use App\Core\Auth;
 use App\Repositories\UserRepository;
 use App\Controllers\NotificationController;
+use PDO;
 
 class UserController {
     private $userRepo;
@@ -312,6 +313,384 @@ class UserController {
         }
         $resto = $soma % 11;
         return $cnpj[13] == ($resto < 2 ? 0 : 11 - $resto);
+    }
+
+    /**
+     * Rota: GET /api/company/summary
+     */
+    public function getCompanySummary($data, $loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
+            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+        }
+
+        try {
+            $userId = $loggedUser['id'];
+            
+            $profile = $this->userRepo->getProfileData($userId);
+            
+            if (!$profile) {
+                return Response::json(["success" => false, "message" => "Perfil não encontrado"], 404);
+            }
+
+            $summary = [
+                'id' => $profile['id'],
+                'name' => $profile['name'],
+                'company_name' => $profile['company_name'] ?? null,
+                'trade_name' => $profile['trade_name'] ?? null,
+                'corporate_name' => $profile['corporate_name'] ?? null,
+                'document' => $profile['document'] ?? null,
+                'avatar_url' => $profile['avatar_url'] ?? null,
+                'cover_url' => $profile['cover_url'] ?? null,
+                'slug' => $profile['slug'] ?? null,
+                'bio' => $profile['bio'] ?? null,
+                'city' => $profile['city'] ?? null,
+                'state' => $profile['state'] ?? null,
+                'rating' => (float)($profile['rating_avg'] ?? 5.0),
+                'rating_count' => (int)($profile['rating_count'] ?? 0),
+                'verification_status' => $profile['verification_status'] ?? 'none',
+                'status' => $profile['status'] ?? 'pending',
+                'user_type' => $profile['user_type'] ?? null,
+                'is_verified' => (int)($profile['is_verified'] ?? 0) === 1,
+                'created_at' => $profile['created_at'] ?? null,
+                'extended_attributes' => $profile['details'] ?? []
+            ];
+
+            return Response::json(["success" => true, "data" => $summary]);
+
+        } catch (\Throwable $e) {
+            error_log("ERRO getCompanySummary: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/user/modules - Lista módulos do usuário
+     */
+    public function getUserModules($data, $loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
+            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+        }
+
+        try {
+            $userId = $loggedUser['id'];
+            $userType = strtoupper($loggedUser['user_type'] ?? 'DRIVER');
+            $role = strtoupper($loggedUser['role'] ?? '');
+            
+            // Verifica se é empresa pelo role
+            $isCompany = ($role === 'COMPANY');
+            
+            $availableModules = [];
+            $allowedModules = [];
+
+            if ($role === 'ADMIN') {
+                $availableModules = [
+                    ['key' => 'freights', 'name' => 'Fretes', 'description' => 'Publicação e gestão de cargas'],
+                    ['key' => 'marketplace', 'name' => 'Marketplace', 'description' => 'Compra e venda de itens'],
+                    ['key' => 'quotes', 'name' => 'Cotações', 'description' => 'Solicitar e responder cotações'],
+                    ['key' => 'advertiser', 'name' => 'Publicidade', 'description' => 'Anúncios publicitários'],
+                    ['key' => 'chat', 'name' => 'Chat', 'description' => 'Mensagens e conversas'],
+                    ['key' => 'financial', 'name' => 'Financeiro', 'description' => 'Transações e relatórios'],
+                    ['key' => 'groups', 'name' => 'Grupos', 'description' => 'Grupos WhatsApp'],
+                    ['key' => 'plans', 'name' => 'Planos', 'description' => 'Planos de assinatura'],
+                    ['key' => 'support', 'name' => 'Suporte', 'description' => 'Tickets de atendimento']
+                ];
+                $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'financial', 'groups', 'plans', 'support'];
+            } elseif ($isCompany) {
+                $availableModules = [
+                    ['key' => 'freights', 'name' => 'Fretes', 'description' => 'Publicação e gestão de cargas'],
+                    ['key' => 'marketplace', 'name' => 'Marketplace', 'description' => 'Compra e venda de itens'],
+                    ['key' => 'quotes', 'name' => 'Cotações', 'description' => 'Solicitar e responder cotações'],
+                    ['key' => 'advertiser', 'name' => 'Publicidade', 'description' => 'Anúncios publicitários'],
+                    ['key' => 'chat', 'name' => 'Chat', 'description' => 'Mensagens e conversas'],
+                    ['key' => 'financial', 'name' => 'Financeiro', 'description' => 'Transações e relatórios'],
+                    ['key' => 'groups', 'name' => 'Grupos', 'description' => 'Grupos WhatsApp'],
+                    ['key' => 'plans', 'name' => 'Planos', 'description' => 'Planos de assinatura'],
+                    ['key' => 'support', 'name' => 'Suporte', 'description' => 'Tickets de atendimento']
+                ];
+                $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'financial', 'groups', 'plans', 'support'];
+            } else {
+                $availableModules = [
+                    ['key' => 'driver', 'name' => 'Driver Pro', 'description' => 'Recursos premium para motoristas'],
+                    ['key' => 'freights', 'name' => 'Radar de Cargas', 'description' => 'Encontre cargas compatíveis'],
+                    ['key' => 'marketplace', 'name' => 'Marketplace', 'description' => 'Compra e venda de itens'],
+                    ['key' => 'chat', 'name' => 'Chat', 'description' => 'Mensagens e conversas'],
+                    ['key' => 'groups', 'name' => 'Grupos', 'description' => 'Grupos WhatsApp'],
+                    ['key' => 'plans', 'name' => 'Planos', 'description' => 'Planos de assinatura'],
+                    ['key' => 'support', 'name' => 'Suporte', 'description' => 'Tickets de atendimento']
+                ];
+                $allowedModules = ['driver', 'freights', 'marketplace', 'chat', 'groups', 'plans', 'support'];
+            }
+
+            $stmt = $this->db->prepare("SELECT module_key, status, activated_at, expires_at FROM user_modules WHERE user_id = :user_id");
+            $stmt->execute([':user_id' => $userId]);
+            $userModules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $modulesMap = [];
+            foreach ($userModules as $m) {
+                $modulesMap[$m['module_key']] = $m;
+            }
+
+            $modules = [];
+            foreach ($availableModules as $mod) {
+                $userMod = $modulesMap[$mod['key']] ?? null;
+                $modules[] = [
+                    'key' => $mod['key'],
+                    'name' => $mod['name'],
+                    'description' => $mod['description'],
+                    'status' => $userMod ? $userMod['status'] : 'inactive',
+                    'is_active' => $userMod && $userMod['status'] === 'active',
+                    'activated_at' => $userMod['activated_at'] ?? null,
+                    'expires_at' => $userMod['expires_at'] ?? null,
+                    'is_allowed' => in_array($mod['key'], $allowedModules)
+                ];
+            }
+
+            // Para empresas, todos os módulos permitidos são ativos por padrão
+            $isCompanyDefault = $isCompany;
+
+            $modules = [];
+            foreach ($availableModules as $mod) {
+                $userMod = $modulesMap[$mod['key']] ?? null;
+                $isAllowed = in_array($mod['key'], $allowedModules);
+                
+                // Se não há registro do usuário, usa o padrão
+                // Empresas: módulos permitidos são ativos por padrão
+                // Motoristas: fretes é ativo, demais depende do registro
+                $isActive = false;
+                if ($userMod) {
+                    $isActive = $userMod['status'] === 'active';
+                } elseif ($isAllowed) {
+                    // Para empresas, todos os módulos permitidos são ativos
+                    // Para motoristas, fretes é obrigatório e ativo
+                    $isActive = $isCompanyDefault || $mod['key'] === 'fretes';
+                }
+
+                $modules[] = [
+                    'key' => $mod['key'],
+                    'name' => $mod['name'],
+                    'description' => $mod['description'],
+                    'status' => $isActive ? 'active' : 'inactive',
+                    'is_active' => $isActive,
+                    'activated_at' => $userMod['activated_at'] ?? ($isActive ? date('Y-m-d H:i:s') : null),
+                    'expires_at' => $userMod['expires_at'] ?? null,
+                    'is_allowed' => $isAllowed
+                ];
+            }
+
+            return Response::json([
+                "success" => true, 
+                "data" => [
+                    'modules' => $modules,
+                    'user_type' => $userType,
+                    'role' => $role
+                ]
+            ]);
+
+        } catch (\Throwable $e) {
+            error_log("ERRO getUserModules: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
+     * Rota: POST /api/user/modules - Ativa/desativa módulo
+     */
+    public function toggleModule($data, $loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
+            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+        }
+
+        $moduleKey = $data['module_key'] ?? '';
+        $action = $data['action'] ?? 'activate';
+        
+        $role = strtoupper($loggedUser['role'] ?? '');
+        $userType = strtoupper($loggedUser['user_type'] ?? 'DRIVER');
+        $isCompany = ($role === 'COMPANY');
+        
+        // Define módulos permitidos por tipo de usuário (chaves em inglês)
+        if ($role === 'ADMIN') {
+            $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'financial', 'groups', 'plans', 'support'];
+        } elseif ($isCompany) {
+            // Empresas podem ativar: freights, marketplace, quotes, advertiser, chat, groups
+            $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'groups'];
+        } else {
+            // Motoristas: freights (leitura), marketplace
+            $allowedModules = ['freights', 'marketplace'];
+        }
+        
+        if (!in_array($moduleKey, $allowedModules)) {
+            return Response::json(["success" => false, "message" => "Módulo não disponível para seu perfil"], 400);
+        }
+
+        try {
+            $userId = $loggedUser['id'];
+
+            if ($action === 'activate') {
+                $stmt = $this->db->prepare("
+                    INSERT INTO user_modules (user_id, module_key, status, activated_at) 
+                    VALUES (:user_id, :module_key, 'active', NOW())
+                    ON DUPLICATE KEY UPDATE status = 'active', activated_at = NOW()
+                ");
+                $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+                $message = "Módulo ativado com sucesso!";
+            } else {
+                $stmt = $this->db->prepare("UPDATE user_modules SET status = 'inactive' WHERE user_id = :user_id AND module_key = :module_key");
+                $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+                $message = "Módulo desativado!";
+            }
+
+            return Response::json(["success" => true, "message" => $message]);
+
+        } catch (\Throwable $e) {
+            error_log("ERRO toggleModule: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao processar"], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/pricing/rules - Lista preços configuráveis (público)
+     */
+    public function getPricingRules($data, $loggedUser) {
+        try {
+            $stmt = $this->db->query("
+                SELECT * FROM pricing_rules 
+                WHERE is_active = 1 
+                ORDER BY module_key, feature_key
+            ");
+            $rules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            return Response::json(["success" => true, "data" => $rules]);
+        } catch (\Throwable $e) {
+            error_log("ERRO getPricingRules: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/site-settings - Retorna configurações do site
+     */
+    public function getSiteSettings($data, $loggedUser) {
+        try {
+            $keys = $data['keys'] ?? '';
+            
+            if ($keys) {
+                $keyList = explode(',', $keys);
+                $placeholders = implode(',', array_fill(0, count($keyList), '?'));
+                $stmt = $this->db->prepare("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ($placeholders)");
+                $stmt->execute($keyList);
+            } else {
+                $stmt = $this->db->query("SELECT setting_key, setting_value FROM site_settings");
+            }
+            
+            $settings = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $result = [];
+            foreach ($settings as $s) {
+                $result[$s['setting_key']] = $s['setting_value'];
+            }
+            
+            return Response::json($result);
+        } catch (\Throwable $e) {
+            error_log("ERRO getSiteSettings: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/user/usage - Consulta uso atual do usuário
+     */
+    public function getUserUsage($data, $loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
+            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+        }
+
+        try {
+            $userId = $loggedUser['id'];
+            
+            // Busca módulos ativos do usuário
+            $stmt = $this->db->prepare("
+                SELECT module_key, status FROM user_modules 
+                WHERE user_id = :user_id AND status = 'active'
+            ");
+            $stmt->execute([':user_id' => $userId]);
+            $activeModules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Conta uso por módulo (exemplo para freights)
+            $usage = [];
+            
+            // Freights publicados este mês
+            $stmt = $this->db->prepare("
+                SELECT COUNT(*) as total FROM freights 
+                WHERE user_id = :user_id 
+                AND MONTH(created_at) = MONTH(CURRENT_DATE())
+                AND YEAR(created_at) = YEAR(CURRENT_DATE())
+            ");
+            $stmt->execute([':user_id' => $userId]);
+            $usage['freights_published'] = (int)$stmt->fetch()['total'];
+            
+            // Anúncios marketplace ativos
+            $stmt = $this->db->prepare("
+                SELECT COUNT(*) as total FROM listings 
+                WHERE user_id = :user_id AND status = 'active'
+            ");
+            $stmt->execute([':user_id' => $userId]);
+            $usage['marketplace_listings'] = (int)$stmt->fetch()['total'];
+            
+            return Response::json([
+                "success" => true, 
+                "data" => [
+                    'active_modules' => array_column($activeModules, 'module_key'),
+                    'usage' => $usage
+                ]
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO getUserUsage: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/companies - Lista empresas (público, usado no admin)
+     */
+    public function listCompanies($data, $loggedUser) {
+        try {
+            $stmt = $this->db->query("
+                SELECT id, name, email, phone, user_type, created_at 
+                FROM users 
+                WHERE (user_type = 'COMPANY' OR role = 'company' OR role = 'partner')
+                AND deleted_at IS NULL
+                AND status = 'active'
+                ORDER BY name ASC
+            ");
+            $companies = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return Response::json(["success" => true, "companies" => $companies]);
+        } catch (\Throwable $e) {
+            error_log("ERRO listCompanies: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/plans - Lista planos disponíveis (público para usuários logados)
+     */
+    public function getPlans($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Login necessário"], 401);
+        }
+
+        try {
+            $stmt = $this->db->query("
+                SELECT id, name, price, duration_days, type, description, active 
+                FROM plans 
+                WHERE active = 1 
+                ORDER BY price ASC
+            ");
+            $plans = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            return Response::json(["success" => true, "plans" => $plans]);
+        } catch (\Throwable $e) {
+            error_log("ERRO getPlans: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
     }
 
 }

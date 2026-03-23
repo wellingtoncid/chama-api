@@ -36,7 +36,8 @@ class LeadController {
      */
     public function listLeads($data, $loggedUser) {
         // Apenas gerentes ou admins podem ver
-        if (!$loggedUser || !in_array($loggedUser['role'], ['ADMIN', 'MANAGER'])) {
+        $role = strtolower($loggedUser['role'] ?? '');
+        if (!$loggedUser || !in_array($role, ['admin', 'manager'])) {
             return Response::json(["success" => false, "message" => "Não autorizado"], 403);
         }
 

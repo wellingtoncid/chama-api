@@ -35,7 +35,7 @@ find src -name "*.php" -exec php -l {} \;
 2. Configure `launch.json` with path mappings to `/mnt/c/xampp/htdocs/chama-frete/api`
 
 ### Database
-- MySQL/MariaDB on port 3308 (configurable via `.env`)
+- MySQL/MariaDB on port 3306 (configurable via `.env`)
 - Uses PDO with prepared statements
 - Schema includes: `users`, `accounts`, `user_profiles`, `freights`, `reviews`, `notifications`, etc.
 
@@ -242,10 +242,10 @@ $router->get('/api/user/:id', 'UserController@getUser');
 Use `.env` file for configuration:
 ```
 DB_HOST=127.0.0.1
-DB_NAME=chama_frete
+DB_NAME=chama_frete_dev
 DB_USER=root
 DB_PASS=
-DB_PORT=3308
+DB_PORT=3306
 JWT_SECRET=your_secret
 JWT_EXPIRE=86400
 SMTP_HOST=smtp.example.com
@@ -298,4 +298,82 @@ public function createUserWithAccount($data) {
 Use `deleted_at` column with timestamp (not hard deletes):
 ```php
 $stmt = $this->db->prepare("SELECT * FROM users WHERE id = :id AND deleted_at IS NULL");
+```
+
+## Roles & Permissions
+
+### Database Tables
+- `roles` - User roles (admin, driver, company, etc.)
+- `permissions` - Individual permissions (freight.create, marketplace.view, etc.)
+- `role_permissions` - Many-to-many relationship between roles and permissions
+- `modules` - System modules (fretes, marketplace, chat, grupos, etc.)
+- `user_modules` - Active modules per user
+
+### Available Roles
+**External (platform users):**
+- `driver` - Motorista
+- `company` - Empresa/Transportadora
+
+**Internal (Chama Frete team):**
+- `admin` - Administrador Master
+- `gerente` - Gerente
+- `suporte` - Suporte
+- `financeiro` - Financeiro
+- `marketing` - Marketing
+- `vendas` - Vendas
+- `coordenador` - Coordenador
+- `supervisor` - Supervisor
+
+### Available Modules
+- `fretes` - Fretes (obrigatório para company/driver)
+- `marketplace` - Anúncios de vendas
+- `cotacoes` - Sistema de cotações
+- `publicidade` - Anúncios publicitários
+- `chat` - Mensagens
+- `financeiro` - Transações e relatórios
+- `grupos` - Grupos WhatsApp
+- `planos` - Planos de assinatura
+- `suporte` - Tickets de suporte
+
+### Auth Helper Methods
+```php
+use App\Core\Auth;
+
+// Check user role
+Auth::hasRole('admin');
+
+// Check any of multiple roles
+Auth::hasAnyRole(['admin', 'manager']);
+
+// Check specific permission
+Auth::hasPermission('freight.create');
+
+// Check module access
+Auth::hasModule('marketplace');
+
+// Require auth or role
+$user = Auth::requireAuth();
+$user = Auth::requireRole('admin');
+$user = Auth::requirePermission('freight.create');
+```
+
+### API Endpoints
+```
+# Roles
+GET    /api/admin-roles         - List all roles
+POST   /api/admin-roles         - Create role
+PUT    /api/admin-roles         - Update role
+DELETE /api/admin-roles         - Delete role
+
+# Permissions
+GET    /api/admin-permissions   - List all permissions
+POST   /api/admin-permissions   - Create permission
+PUT    /api/admin-permissions   - Update permission
+DELETE /api/admin-permissions   - Delete permission
+
+# Modules
+GET    /api/admin-modules      - List all modules
+POST   /api/admin-modules       - Create module
+PUT    /api/admin-modules      - Update module
+DELETE /api/admin-modules      - Delete module
 ```

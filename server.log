@@ -1,0 +1,4 @@
+[Wed Mar  4 18:10:38 2026] PHP Warning:  Module "openssl" is already loaded in Unknown on line 0
+[Wed Mar  4 18:10:38 2026] PHP 8.2.12 Development Server (http://127.0.0.1:8000) started
+<br />
+<b>Warning</b>:  Module "openssl" is already loaded in <b>Unknown</b> on line <b>0</b><br />

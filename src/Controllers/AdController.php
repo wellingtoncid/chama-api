@@ -3,17 +3,29 @@ namespace App\Controllers;
 
 use App\Core\Response;
 use App\Repositories\AdRepository;
+use PDO;
 
 class AdController {
     private $adRepo;
+    private $db;
 
     public function __construct($db) {
+        $this->db = $db;
         $this->adRepo = new AdRepository($db);
+    }
+
+    /**
+     * Cria novo anúncio (chama store)
+     * POST /api/upload-ad
+     */
+    public function create($data, $loggedUser = null) {
+        return $this->store($data, $loggedUser);
     }
 
     /**
      * Lista anúncios com inteligência geográfica e controle de créditos
      * GET /api/ads?position=...&state=...&city=...&search=...
+     * NÃO incrementa mais views automaticamente - views são contadas via frontend com IntersectionObserver
      */
     public function list($data) {
         // 1. Captura de dados (Mantendo a funcionalidade original)
@@ -31,18 +43,10 @@ class AdController {
             5 // Limite de anúncios por bloco
         );
 
-        // 3. Incremento e Débito (Funcionalidade de log estatístico + Financeiro)
-        // Só ocorre se houver resultados para evitar chamadas inúteis ao banco
-        if (!empty($ads)) {
-            $ids = array_column($ads, 'id');
-            
-            /** * Importante: O método incrementViews agora é transacional no Repository.
-             * Ele incrementa o views_count e debita os ad_credits dos donos.
-             */
-            $this->adRepo->incrementViews($ids);
-        }
+        // Views agora são contadas pelo frontend via IntersectionObserver
+        // Não incrementamos mais automaticamente para evitar contagem duplicada
 
-        // 4. Resposta para o Frontend (Mantendo compatibilidade com React)
+        // 3. Resposta para o Frontend (Mantendo compatibilidade com React)
         return Response::json([
             "success" => true, 
             "data" => $ads ?: [],
@@ -81,9 +85,61 @@ class AdController {
     /**
      * Salva ou Atualiza Anúncio (Admin/Empresa)
      */
-    public function store($data) {
-        if (($data['action'] ?? '') === 'delete') {
-            return Response::json(["success" => $this->adRepo->softDelete($data['id'])]);
+    public function store($data, $loggedUser = null) {
+        $action = $data['action'] ?? '';
+        
+        if ($action === 'delete') {
+            $id = $data['id'] ?? null;
+            if ($id) {
+                $this->adRepo->save(['id' => $id, 'status' => 'rejected', 'deleted_at' => date('Y-m-d H:i:s')]);
+                return Response::json(["success" => true]);
+            }
+            return Response::json(["success" => false, "message" => "ID inválido"]);
+        }
+
+        // Update existing ad
+        if (!empty($data['id'])) {
+            // Se houver upload de imagem
+            if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
+                $uploadPath = $this->uploadFile($_FILES['image']);
+                if ($uploadPath) $data['image_url'] = $uploadPath;
+            }
+            
+            $result = $this->adRepo->save($data);
+            return Response::json([
+                "success" => $result,
+                "message" => $result ? "Anúncio atualizado com sucesso" : "Erro ao atualizar"
+            ]);
+        }
+
+        // Se for admin criando para outro usuário, usa o user_id informado
+        // Se não, usa o usuário logado
+        $targetUserId = $data['target_user_id'] ?? $data['user_id'] ?? null;
+        
+        // Verifica se é admin (pode criar sem pagar)
+        $role = strtolower($loggedUser['role'] ?? '');
+        $isAdmin = in_array($role, ['admin', 'manager']);
+        
+        // Verifica elegibilidade se for usuário logado ou user_id especificado (mas não para admin)
+        $position = $data['position'] ?? 'sidebar';
+        $featureKey = $this->getFeatureKeyFromPosition($position);
+        
+        $checkUserId = $targetUserId ?? ($loggedUser['id'] ?? null);
+        
+        // Admin pode criar anúncios sem restrição de pagamento
+        if ($checkUserId && !$isAdmin) {
+            $eligibility = $this->adRepo->checkAdPositionEligibility($checkUserId, $featureKey);
+            
+            if (!$eligibility['allowed']) {
+                return Response::json([
+                    "success" => false,
+                    "message" => $eligibility['reason'],
+                    "requires_payment" => $eligibility['requires_payment'],
+                    "price_monthly" => $eligibility['price_monthly'] ?? 0,
+                    "price_per_use" => $eligibility['price_per_use'] ?? 0,
+                    "feature_name" => $eligibility['feature_name'] ?? ''
+                ], 402);
+            }
         }
 
         // Se houver upload de imagem
@@ -99,6 +155,24 @@ class AdController {
             "id" => $result,
             "message" => $result ? "Anúncio salvo com sucesso" : "Erro ao salvar"
         ]);
+    }
+
+    /**
+     * Converte posição para feature_key
+     */
+    private function getFeatureKeyFromPosition($position) {
+        $map = [
+            'sidebar' => 'sidebar_banner',
+            'home_hero' => 'home_banner',
+            'popup' => 'video_ad',
+            'freight_list' => 'sponsored',
+            'footer' => 'footer_banner',
+            'header' => 'header_banner',
+            'spotlight' => 'spotlight_ad',
+            'in-feed' => 'infeed_ad',
+            'details_page' => 'details_ad'
+        ];
+        return $map[$position] ?? 'publish_ad';
     }
 
     private function uploadFile($file) {
@@ -142,5 +216,85 @@ class AdController {
             "success" => true,
             "data" => $packages
         ]);
+    }
+
+    /**
+     * Retorna relatório de anúncios do usuário logado
+     * GET /api/ads/my-report?period=weekly|monthly|all
+     */
+    public function getUserAdsReport($data, $loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
+            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+        }
+
+        $userId = $loggedUser['id'];
+        $period = $data['period'] ?? 'monthly';
+
+        // Define o filtro de data baseado no período
+        $dateFilter = match($period) {
+            'weekly' => 'AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)',
+            'monthly' => 'AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)',
+            'daily' => 'AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)',
+            default => '' // 'all' ou qualquer outro
+        };
+
+        try {
+            // Estatísticas gerais dos anúncios do usuário
+            $stmt = $this->db->prepare("
+                SELECT 
+                    COUNT(*) as total_ads,
+                    SUM(views_count) as total_views,
+                    SUM(clicks_count) as total_clicks,
+                    SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_ads,
+                    SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) as expired_ads
+                FROM ads 
+                WHERE user_id = ? $dateFilter
+            ");
+            $stmt->execute([$userId]);
+            $stats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Lista de anúncios com métricas
+            $adsStmt = $this->db->prepare("
+                SELECT 
+                    id, title, position, status, views_count, clicks_count, 
+                    created_at, expires_at,
+                    CASE 
+                        WHEN clicks_count > 0 AND views_count > 0 
+                        THEN ROUND((clicks_count / views_count) * 100, 2)
+                        ELSE 0 
+                    END as ctr
+                FROM ads 
+                WHERE user_id = ? $dateFilter
+                ORDER BY views_count DESC, clicks_count DESC
+                LIMIT 50
+            ");
+            $adsStmt->execute([$userId]);
+            $ads = $adsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Calcula CTR geral
+            $overallCtr = 0;
+            if ($stats['total_views'] > 0 && $stats['total_clicks'] > 0) {
+                $overallCtr = round(($stats['total_clicks'] / $stats['total_views']) * 100, 2);
+            }
+
+            return Response::json([
+                "success" => true,
+                "data" => [
+                    "period" => $period,
+                    "summary" => [
+                        "total_ads" => (int)($stats['total_ads'] ?? 0),
+                        "active_ads" => (int)($stats['active_ads'] ?? 0),
+                        "expired_ads" => (int)($stats['expired_ads'] ?? 0),
+                        "total_views" => (int)($stats['total_views'] ?? 0),
+                        "total_clicks" => (int)($stats['total_clicks'] ?? 0),
+                        "overall_ctr" => $overallCtr
+                    ],
+                    "ads" => $ads
+                ]
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO getUserAdsReport: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao carregar relatório"], 500);
+        }
     }
 }
