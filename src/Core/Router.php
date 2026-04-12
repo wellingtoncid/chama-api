@@ -125,6 +125,14 @@ class Router {
                 $controller = new $controllerClass(new NotificationService($db));
                 break;
 
+            case 'ReportController':
+                $controller = new $controllerClass($db, $loggedUser);
+                break;
+
+            case 'ReviewController':
+                $controller = new $controllerClass($db);
+                break;
+
             case 'RoleController':
             case 'ModuleController':
             case 'PermissionController':

@@ -4,6 +4,7 @@ namespace App\Controllers;
 use App\Core\Response;
 use App\Repositories\FreightRepository;
 use App\Services\NotificationService;
+use App\Services\CreditService;
 use Exception;
 
 class FreightController {
@@ -13,6 +14,7 @@ class FreightController {
     private $notificationService;
     private $chatRepo;
     private $auditRepo;
+    private $creditService;
 
     public function __construct(
     $freightRepo, 
@@ -28,6 +30,7 @@ class FreightController {
     $this->db = $db;
     $this->chatRepo = $chatRepo;
     $this->auditRepo = $auditRepo;
+    $this->creditService = $db ? new CreditService($db) : null;
 }
 
     public function listAll($data, $loggedUser) {
@@ -117,8 +120,7 @@ class FreightController {
             return Response::json(["success" => false, "message" => "Acesso negado."], 403);
         }
 
-        // 3. Validação de Onboarding (O que você pediu: Se preencher corretamente, libera)
-        // Usamos o parâmetro $user que vem do middleware de autenticação
+        // 3. Validação de Onboarding
         if ($role === 'COMPANY' && (empty($user['document']) || empty($user['name']))) {
             return Response::json([
                 "success" => false, 
@@ -131,29 +133,69 @@ class FreightController {
             return Response::json(["success" => false, "message" => "Informe origem, destino e o produto."], 400);
         }
 
-        try {
-            // 5. Definição de Status
-            // Se chegou aqui e é COMPANY, o Onboarding está ok, então liberamos como OPEN.
-            // Moderação automática de palavras impróprias, ela rodará abaixo.
-            $status = 'OPEN'; 
-            
-            $isFeatured = !empty($data['is_featured']) && $data['is_featured'] == true;
-            $days = $isFeatured ? 30 : 7;
+        // 5. Verificar tipo de publicação e calcular valor
+        $isUrgent = !empty($data['is_urgent']) && $data['is_urgent'] == true;
+        $isFeatured = !empty($data['is_featured']) && $data['is_featured'] == true;
 
-            // 6. Verificação de Conteúdo (Filtro de palavrões/links)
+        $featureKey = 'publish';
+        $amount = 14.90;
+        $expiresDays = 7;
+
+        if ($isUrgent) {
+            $featureKey = 'urgent';
+            $amount = 24.90;
+            $expiresDays = 2;
+        } elseif ($isFeatured) {
+            $featureKey = 'boost';
+            $amount = 19.90;
+            $expiresDays = 5;
+        }
+
+        $userId = ($role === 'ADMIN' && !empty($data['user_id'])) ? (int)$data['user_id'] : (int)$user['id'];
+
+        // Admin não paga
+        $paymentRequired = ($role !== 'ADMIN');
+
+        // 6. Verificar saldo e debitar
+        if ($paymentRequired && $this->creditService) {
+            $balance = $this->creditService->getBalance($userId);
+            
+            if ($balance < $amount) {
+                return Response::json([
+                    "success" => false,
+                    "message" => "Saldo insuficiente. Você tem R$ " . number_format($balance, 2, ',', '.') . " na carteira. Custo: R$ " . number_format($amount, 2, ',', '.') . ".",
+                    "balance" => $balance,
+                    "required" => $amount,
+                    "code" => "INSUFFICIENT_BALANCE"
+                ], 402);
+            }
+
+            $debited = $this->creditService->debit($userId, $amount, 'freights', $featureKey);
+            if (!$debited) {
+                return Response::json([
+                    "success" => false,
+                    "message" => "Erro ao debitar saldo. Tente novamente."
+                ], 500);
+            }
+        }
+
+        try {
+            // 7. Definição de Status
+            $status = 'OPEN'; 
+
+            // 8. Verificação de Conteúdo
             $contentToVerify = ($data['product'] ?? '') . ' ' . ($data['description'] ?? '');
             if (!$this->isContentClean($contentToVerify)) {
-                // Se tiver conteúdo suspeito, em vez de bloquear, mandamos para PENDING para análise
                 $status = 'PENDING';
             }
 
-            // 7. Preparação do Payload
+            // 9. Preparação do Payload
             $slugBase = trim($data['product']) . " de " . trim($data['origin_city']) . " para " . trim($data['dest_city']);
             $uniqueSuffix = bin2hex(random_bytes(3));
             $finalSlug = $this->generateSlug($slugBase, $uniqueSuffix);
 
             $payload = [
-                'user_id'      => ($role === 'ADMIN' && !empty($data['user_id'])) ? (int)$data['user_id'] : (int)$user['id'],
+                'user_id'      => $userId,
                 'account_id'   => $user['account_id'] ?? null,
                 'origin_city'  => trim($data['origin_city']),
                 'origin_state' => strtoupper(trim($data['origin_state'] ?? '')),
@@ -167,16 +209,21 @@ class FreightController {
                 'description'  => strip_tags($data['description'] ?? ''),
                 'status'       => $status,
                 'slug'         => $finalSlug,
-                'expires_at'   => date('Y-m-d H:i:s', strtotime("+$days days")),
-                'is_featured'  => $isFeatured ? 1 : 0
+                'expires_at'   => date('Y-m-d H:i:s', strtotime("+$expiresDays days")),
+                'is_featured'  => $isFeatured ? 1 : 0,
+                'is_urgent'    => $isUrgent ? 1 : 0
             ];
 
             $id = $this->repo->save($payload);
+
+            $newBalance = $paymentRequired && $this->creditService ? $this->creditService->getBalance($userId) : null;
 
             return Response::json([
                 "success" => true, 
                 "id"      => (int)$id, 
                 "status"  => $status,
+                "cost"    => $paymentRequired ? $amount : 0,
+                "balance" => $newBalance,
                 "message" => $status === 'PENDING' ? "Frete publicado! (Aguardando revisão de conteúdo)" : "Frete publicado com sucesso!"
             ]);
 
@@ -1074,6 +1121,235 @@ class FreightController {
                 'success' => false,
                 'message' => $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Busca o histórico de tracking de um frete
+     */
+    public function getFreightTracking($data, $loggedUser) {
+        try {
+            $freightId = intval($data['freight_id'] ?? 0);
+            
+            if (!$freightId) {
+                return Response::json([
+                    'success' => false,
+                    'message' => 'ID do frete é obrigatório'
+                ], 400);
+            }
+
+            $stmt = $this->db->prepare("
+                SELECT 
+                    ft.id,
+                    ft.status,
+                    ft.description,
+                    ft.latitude,
+                    ft.longitude,
+                    ft.created_at,
+                    ft.is_final_step,
+                    d.name as driver_name,
+                    d.whatsapp as driver_whatsapp,
+                    c.name as company_name
+                FROM freight_tracking ft
+                LEFT JOIN users d ON ft.driver_id = d.id
+                LEFT JOIN users c ON ft.company_id = c.id
+                WHERE ft.freight_id = ?
+                ORDER BY ft.created_at ASC
+            ");
+            $stmt->execute([$freightId]);
+            $tracking = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            // Busca info do frete
+            $stmt = $this->db->prepare("
+                SELECT 
+                    f.id,
+                    f.status,
+                    f.origin_city,
+                    f.origin_state,
+                    f.destination_city,
+                    f.destination_state,
+                    f.vehicle_type,
+                    f.body_type,
+                    f.cargo_type,
+                    f.weight,
+                    f.agreed_amount,
+                    f.driver_id,
+                    f.company_id,
+                    u.name as driver_name,
+                    u.phone as driver_phone,
+                    c.name as company_name
+                FROM freights f
+                LEFT JOIN users u ON f.driver_id = u.id
+                LEFT JOIN users c ON f.company_id = c.id
+                WHERE f.id = ?
+            ");
+            $stmt->execute([$freightId]);
+            $freight = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if (!$freight) {
+                return Response::json([
+                    'success' => false,
+                    'message' => 'Frete não encontrado'
+                ], 404);
+            }
+
+            return Response::json([
+                'success' => true,
+                'data' => [
+                    'freight' => $freight,
+                    'tracking' => $tracking
+                ]
+            ]);
+        } catch (\Exception $e) {
+            return Response::json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Busca motoristas compatíveis com um frete específico
+     * Rota: GET /api/freight/:id/matching-drivers
+     */
+    public function findMatchingDrivers($data, $loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
+            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+        }
+        
+        try {
+            $freightId = (int)($data['id'] ?? 0);
+            $maxDistance = (int)($data['max_distance_km'] ?? 200);
+            
+            if (!$freightId) {
+                return Response::json(["success" => false, "message" => "ID do frete não informado"], 400);
+            }
+            
+            // Verifica se o frete pertence ao usuário ou se é admin
+            $stmt = $this->db->prepare("
+                SELECT id, origin_city, origin_state, origin_lat, origin_lng,
+                       dest_city, dest_state, vehicle_type, body_type, product,
+                       user_id, equipment_needed, certifications_needed
+                FROM freights 
+                WHERE id = ? AND deleted_at IS NULL
+            ");
+            $stmt->execute([$freightId]);
+            $freight = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            if (!$freight) {
+                return Response::json(["success" => false, "message" => "Frete não encontrado"], 404);
+            }
+            
+            // Empresas só veem fretes delas
+            if ($loggedUser['role'] === 'company' && $freight['user_id'] != $loggedUser['id']) {
+                return Response::json(["success" => false, "message" => "Acesso negado"], 403);
+            }
+            
+            // Se não tem coordenadas, retorna mensagem
+            if (!$freight['origin_lat'] || !$freight['origin_lng']) {
+                return Response::json([
+                    "success" => true,
+                    "drivers" => [],
+                    "message" => "Frete ainda não possui localização georreferenciada. Atualize o endereço para encontrar motoristas próximos."
+                ]);
+            }
+            
+            // Busca motoristas compatíveis
+            $query = "
+                SELECT 
+                    u.id AS driver_id,
+                    u.name AS driver_name,
+                    u.slug AS driver_slug,
+                    u.whatsapp AS driver_whatsapp,
+                    p.vehicle_type,
+                    p.body_type,
+                    p.home_city,
+                    p.home_state,
+                    p.service_radius_km,
+                    p.available_equipment,
+                    p.rntrc_number,
+                    p.avatar_url,
+                    p.verification_status,
+                    p.profile_completeness,
+                    ROUND(
+                        6371 * ACOS(
+                            LEAST(1.0, GREATEST(-1.0,
+                            COS(RADIANS(:origin_lat)) * COS(RADIANS(p.home_lat)) *
+                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng)) +
+                            SIN(RADIANS(:origin_lat)) * SIN(RADIANS(p.home_lat))
+                            ))
+                        )
+                    , 2) AS distance_km,
+                    CASE WHEN p.availability_status = 'available' THEN 30 ELSE 0 END +
+                    CASE WHEN p.vehicle_type = :vehicle_type THEN 30 ELSE 0 END +
+                    CASE WHEN p.body_type = :body_type THEN 20 ELSE 0 END +
+                    CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END AS match_score
+                FROM users u
+                INNER JOIN user_profiles p ON u.id = p.user_id
+                WHERE u.role = 'driver'
+                    AND u.status = 'active'
+                    AND p.availability_status = 'available'
+                    AND p.home_lat IS NOT NULL
+                    AND p.home_lng IS NOT NULL
+                    AND ROUND(
+                        6371 * ACOS(
+                            LEAST(1.0, GREATEST(-1.0,
+                            COS(RADIANS(:origin_lat2)) * COS(RADIANS(p.home_lat)) *
+                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng2)) +
+                            SIN(RADIANS(:origin_lat2)) * SIN(RADIANS(p.home_lat))
+                            ))
+                        )
+                    , 2) <= :max_distance
+                    AND ROUND(
+                        6371 * ACOS(
+                            LEAST(1.0, GREATEST(-1.0,
+                            COS(RADIANS(:origin_lat3)) * COS(RADIANS(p.home_lat)) *
+                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng3)) +
+                            SIN(RADIANS(:origin_lat3)) * SIN(RADIANS(p.home_lat))
+                            ))
+                        )
+                    , 2) <= p.service_radius_km
+                ORDER BY match_score DESC, distance_km ASC
+                LIMIT 30
+            ";
+            
+            $stmt = $this->db->prepare($query);
+            $stmt->execute([
+                ':origin_lat' => $freight['origin_lat'],
+                ':origin_lng' => $freight['origin_lng'],
+                ':vehicle_type' => $freight['vehicle_type'] ?? '',
+                ':body_type' => $freight['body_type'] ?? '',
+                ':origin_lat2' => $freight['origin_lat'],
+                ':origin_lng2' => $freight['origin_lng'],
+                ':origin_lat3' => $freight['origin_lat'],
+                ':origin_lng3' => $freight['origin_lng'],
+                ':max_distance' => $maxDistance,
+            ]);
+            
+            $drivers = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+            
+            // Parse JSON e limpa dados
+            foreach ($drivers as &$driver) {
+                $driver['available_equipment'] = isset($driver['available_equipment']) 
+                    ? json_decode($driver['available_equipment'], true) ?? [] 
+                    : [];
+                // Não expõe dados sensíveis
+                unset($driver['rntrc_number']);
+            }
+            
+            return Response::json([
+                "success" => true,
+                "freight_id" => $freightId,
+                "origin" => $freight['origin_city'] . '/' . $freight['origin_state'],
+                "vehicle_type" => $freight['vehicle_type'],
+                "body_type" => $freight['body_type'],
+                "drivers" => $drivers,
+                "total" => count($drivers)
+            ]);
+            
+        } catch (\Exception $e) {
+            error_log("ERRO findMatchingDrivers: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao buscar motoristas"], 500);
         }
     }
 }

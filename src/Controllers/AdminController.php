@@ -9,6 +9,7 @@ use App\Repositories\AdRepository;
 use App\Repositories\GroupRepository;
 use App\Repositories\FreightRepository;
 use App\Repositories\UserRepository;
+use App\Services\CreditService;
 use Exception;
 use PDO;
 
@@ -17,6 +18,7 @@ class AdminController {
     private $repo;
     private $db;
     private $notif;
+    private $creditService;
     private $loggedUser;
     private $groupRepo;
     private $freightRepo;
@@ -30,6 +32,7 @@ class AdminController {
         $this->groupRepo = new GroupRepository($db);
         $this->freightRepo = new FreightRepository($db);
         $this->adRepo = new AdRepository($db);
+        $this->creditService = new CreditService($db);
         $this->loggedUser = $loggedUser; 
 
         // Definição do caminho antes do uso
@@ -692,6 +695,39 @@ class AdminController {
     }
 
     /**
+     * Busca usuários para autocomplete (sem paginação, apenas resultados básicos).
+     */
+    public function searchUsers($data, $loggedUser) {
+        try {
+            // Verifica se está logado (qualquer role)
+            if (!$loggedUser) {
+                return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+            }
+
+            $query = (!empty($data['q'])) ? trim($data['q']) : '';
+            
+            if (strlen($query) < 2) {
+                return Response::json(["success" => true, "data" => []]);
+            }
+
+            $limit = (!empty($data['limit'])) ? (int)$data['limit'] : 10;
+            
+            $users = $this->repo->searchUsers($query, $limit);
+            
+            return Response::json([
+                "success" => true,
+                "data" => $users
+            ]);
+        } catch (Exception $e) {
+            $code = ($e->getCode() >= 400 && $e->getCode() < 600) ? $e->getCode() : 400;
+            return Response::json([
+                "success" => false,
+                "message" => $e->getMessage()
+            ], $code);
+        }
+    }
+
+    /**
      * Gerencia a edição de usuários com Log de Auditoria detalhado.
      */
     public function manageUsers($data, $loggedUser) {
@@ -887,17 +923,36 @@ class AdminController {
             return Response::json(["success" => $this->repo->softDeleteAd($id)]);
         }
         
-        // Toggle status
-        return Response::json(["success" => $this->repo->toggleAdStatus($id)]);
-    }
-
-    public function updateSettings($data, $loggedUser) {
-        $this->authorize($loggedUser, 'ADMIN');
-        if ($this->repo->saveSettings($data)) {
-            $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'SETTING_UPDATE', "Alterou configurações do sistema", 0, 'SYSTEM');
-            return Response::json(["success" => true]);
+        // Pause ad
+        if ($action === 'pause' && $id) {
+            $success = $this->adRepo->pauseAd($id);
+            if ($success) {
+                $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'PAUSE_AD', "Pausou anúncio #$id", $id, 'AD');
+            }
+            return Response::json(["success" => $success]);
         }
-        return Response::json(["success" => false]);
+        
+        // Activate ad
+        if ($action === 'activate' && $id) {
+            $success = $this->adRepo->activateAd($id);
+            if ($success) {
+                $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'ACTIVATE_AD', "Ativou anúncio #$id", $id, 'AD');
+            }
+            return Response::json(["success" => $success]);
+        }
+        
+        // Renew ad (estender expiração)
+        if ($action === 'renew' && $id) {
+            $days = isset($data['days']) ? (int)$data['days'] : 30;
+            $success = $this->adRepo->renewAd($id, $days);
+            if ($success) {
+                $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'RENEW_AD', "Renovou anúncio #$id por $days dias", $id, 'AD');
+            }
+            return Response::json(["success" => $success]);
+        }
+        
+        // Toggle status (legacy)
+        return Response::json(["success" => $this->repo->toggleAdStatus($id)]);
     }
 
     public function managePlans($data, $loggedUser) {
@@ -976,7 +1031,19 @@ class AdminController {
     }
 
     public function getSettings($data, $loggedUser) {
-        $this->authorize($loggedUser, 'ADMIN');
+        error_log("getSettings chamado com loggedUser: " . json_encode($loggedUser));
+        
+        // Se loggedUser não foi passado, usa o interno
+        if (!$loggedUser && $this->loggedUser) {
+            $loggedUser = $this->loggedUser;
+        }
+        
+        try {
+            $this->authorize($loggedUser, 'ADMIN');
+        } catch (\Throwable $e) {
+            error_log("Authorize falhou: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Não autorizado: " . $e->getMessage()], 403);
+        }
         
         try {
             $stmt = $this->db->query("SELECT * FROM site_settings");
@@ -991,8 +1058,13 @@ class AdminController {
                 $byCategory[$cat][$key] = $s['setting_value'];
             }
             
-            $plansStmt = $this->db->query("SELECT id, name, price, duration_days, type, description FROM plans ORDER BY price ASC");
-            $plans = $plansStmt->fetchAll(PDO::FETCH_ASSOC);
+            $plans = [];
+            try {
+                $plansStmt = $this->db->query("SELECT id, name, price, duration_days, type, description FROM plans ORDER BY price ASC");
+                $plans = $plansStmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (\Throwable $e) {
+                error_log("Tabela plans não existe ou erro: " . $e->getMessage());
+            }
             
             return Response::json([
                 "success" => true, 
@@ -1001,7 +1073,285 @@ class AdminController {
                 "plans" => $plans
             ]);
         } catch (\Throwable $e) {
+            error_log("ERRO getSettings: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro ao carregar configurações"]);
+        }
+    }
+
+    public function updateSettings($data, $loggedUser) {
+        $this->authorize($loggedUser, 'ADMIN');
+        
+        try {
+            $key = $data['key'] ?? null;
+            $value = $data['value'] ?? null;
+            
+            // Bulk update mode - recebe todas as configs de uma vez
+            if (!$key && isset($data['site_name'])) {
+                $allowedKeys = [
+                    'site_name', 'site_email', 'site_phone', 'site_whatsapp', 'site_logo', 'site_favicon',
+                    'module_freights', 'module_quotes', 'module_marketplace', 'module_groups', 'module_ads',
+                    'auto_approve_users', 'freight_expiration_days', 'commission_percent', 'min_withdraw',
+                    'mp_client_id', 'mp_client_secret', 'mp_access_token', 'referral_enabled', 'referral_commission',
+                    'default_plan', 'freight_free_limit', 'maintenance_mode',
+                    'vehicle_types', 'body_types', 'equipment_types', 'certification_types',
+                    'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from_email', 'smtp_from_name',
+                    // Moderation settings
+                    'review_auto_approve_high_rating', 'review_auto_approve_threshold', 'review_auto_reject_bad_words',
+                    'report_auto_dismiss_duplicate'
+                ];
+                
+                foreach ($allowedKeys as $settingKey) {
+                    if (isset($data[$settingKey])) {
+                        $this->upsertSetting($settingKey, $data[$settingKey]);
+                    }
+                }
+                
+                error_log("SETTINGS_BULK_UPDATE: by_user={$loggedUser['id']}");
+                return Response::json(["success" => true, "message" => "Configurações salvas com sucesso"]);
+            }
+            
+            // Single key update mode
+            if (!$key) {
+                return Response::json(["success" => false, "message" => "Chave não informada"], 400);
+            }
+            
+            $this->upsertSetting($key, $value);
+            error_log("SETTINGS_UPDATE: key={$key}, by_user={$loggedUser['id']}");
+            
+            return Response::json([
+                "success" => true, 
+                "message" => "Configuração atualizada com sucesso"
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO updateSettings: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao atualizar configuração"]);
+        }
+    }
+    
+    private function upsertSetting(string $key, $value): void {
+        $stmt = $this->db->prepare("SELECT setting_key FROM site_settings WHERE setting_key = ?");
+        $stmt->execute([$key]);
+        $exists = $stmt->fetch();
+        
+        if ($exists) {
+            $update = $this->db->prepare("
+                UPDATE site_settings 
+                SET setting_value = ?, updated_at = NOW() 
+                WHERE setting_key = ?
+            ");
+            $update->execute([(string)$value, $key]);
+        }
+    }
+    
+    /**
+     * Encontra motoristas compatíveis com um frete usando Haversine
+     * Rota: GET /api/admin/freight-matching
+     */
+    public function findMatchingDrivers($data, $loggedUser) {
+        $this->authorize($loggedUser, 'ADMIN');
+        
+        try {
+            $freightId = (int)($data['freight_id'] ?? 0);
+            $maxDistance = (int)($data['max_distance_km'] ?? 200);
+            
+            if (!$freightId) {
+                return Response::json(["success" => false, "message" => "ID do frete não informado"], 400);
+            }
+            
+            // Busca dados do frete
+            $stmt = $this->db->prepare("
+                SELECT id, origin_city, origin_state, origin_lat, origin_lng,
+                       dest_city, dest_state, vehicle_type, body_type, product,
+                       equipment_needed, certifications_needed
+                FROM freights 
+                WHERE id = ? AND deleted_at IS NULL
+            ");
+            $stmt->execute([$freightId]);
+            $freight = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$freight) {
+                return Response::json(["success" => false, "message" => "Frete não encontrado"], 404);
+            }
+            
+            // Se não tem coordenadas, retorna erro
+            if (!$freight['origin_lat'] || !$freight['origin_lng']) {
+                return Response::json([
+                    "success" => false,
+                    "message" => "Frete não possui coordenadas de origem. Use a página de edição para geolocalizar."
+                ], 400);
+            }
+            
+            // Busca motoristas compatíveis usando a stored procedure ou query direta
+            // Query direta para compatibilidade com MySQL 8 sem stored procedure
+            $query = "
+                SELECT 
+                    u.id AS driver_id,
+                    u.name AS driver_name,
+                    u.slug AS driver_slug,
+                    u.whatsapp AS driver_whatsapp,
+                    p.vehicle_type,
+                    p.body_type,
+                    p.home_city,
+                    p.home_state,
+                    p.service_radius_km,
+                    p.available_equipment,
+                    p.certifications,
+                    p.avatar_url,
+                    p.verification_status,
+                    p.profile_completeness,
+                    ROUND(
+                        6371 * ACOS(
+                            COS(RADIANS(:origin_lat)) * COS(RADIANS(p.home_lat)) *
+                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng)) +
+                            SIN(RADIANS(:origin_lat)) * SIN(RADIANS(p.home_lat))
+                        )
+                    , 2) AS distance_km,
+                    CASE WHEN p.availability_status = 'available' THEN 30 ELSE 0 END +
+                    CASE WHEN p.vehicle_type = :vehicle_type THEN 30 ELSE 0 END +
+                    CASE WHEN p.body_type = :body_type THEN 20 ELSE 0 END +
+                    CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END AS match_score
+                FROM users u
+                INNER JOIN user_profiles p ON u.id = p.user_id
+                WHERE u.role = 'driver'
+                    AND u.status = 'active'
+                    AND p.availability_status = 'available'
+                    AND p.home_lat IS NOT NULL
+                    AND p.home_lng IS NOT NULL
+                    AND ROUND(
+                        6371 * ACOS(
+                            COS(RADIANS(:origin_lat2)) * COS(RADIANS(p.home_lat)) *
+                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng2)) +
+                            SIN(RADIANS(:origin_lat2)) * SIN(RADIANS(p.home_lat))
+                        )
+                    , 2) <= :max_distance
+                    AND ROUND(
+                        6371 * ACOS(
+                            COS(RADIANS(:origin_lat3)) * COS(RADIANS(p.home_lat)) *
+                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng3)) +
+                            SIN(RADIANS(:origin_lat3)) * SIN(RADIANS(p.home_lat))
+                        )
+                    , 2) <= p.service_radius_km
+                ORDER BY match_score DESC, distance_km ASC
+                LIMIT 50
+            ";
+            
+            $stmt = $this->db->prepare($query);
+            $stmt->execute([
+                ':origin_lat' => $freight['origin_lat'],
+                ':origin_lng' => $freight['origin_lng'],
+                ':vehicle_type' => $freight['vehicle_type'] ?? '',
+                ':body_type' => $freight['body_type'] ?? '',
+                ':origin_lat2' => $freight['origin_lat'],
+                ':origin_lng2' => $freight['origin_lng'],
+                ':origin_lat3' => $freight['origin_lat'],
+                ':origin_lng3' => $freight['origin_lng'],
+                ':max_distance' => $maxDistance,
+            ]);
+            
+            $drivers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Parse JSON fields
+            foreach ($drivers as &$driver) {
+                if (isset($driver['available_equipment'])) {
+                    $driver['available_equipment'] = json_decode($driver['available_equipment'], true) ?? [];
+                }
+                if (isset($driver['certifications'])) {
+                    $driver['certifications'] = json_decode($driver['certifications'], true) ?? [];
+                }
+            }
+            
+            return Response::json([
+                "success" => true,
+                "freight" => [
+                    "id" => $freight['id'],
+                    "origin" => $freight['origin_city'] . '/' . $freight['origin_state'],
+                    "destination" => $freight['dest_city'] . '/' . $freight['dest_state'],
+                    "product" => $freight['product'],
+                    "vehicle_type" => $freight['vehicle_type'],
+                    "body_type" => $freight['body_type'],
+                    "equipment_needed" => $freight['equipment_needed'] ? json_decode($freight['equipment_needed'], true) : [],
+                    "certifications_needed" => $freight['certifications_needed'] ? json_decode($freight['certifications_needed'], true) : [],
+                ],
+                "drivers" => $drivers,
+                "total" => count($drivers)
+            ]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO findMatchingDrivers: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao buscar motoristas"], 500);
+        }
+    }
+    
+    /**
+     * Atualiza coordenadas e dados de localização do perfil do motorista
+     * Rota: POST /api/admin/driver-location
+     */
+    public function updateDriverLocation($data, $loggedUser) {
+        $this->authorize($loggedUser, 'ADMIN');
+        
+        try {
+            $userId = (int)($data['user_id'] ?? 0);
+            $homeLat = (float)($data['home_lat'] ?? 0);
+            $homeLng = (float)($data['home_lng'] ?? 0);
+            $homeCity = trim($data['home_city'] ?? '');
+            $homeState = trim($data['home_state'] ?? '');
+            $serviceRadius = (int)($data['service_radius_km'] ?? 100);
+            
+            if (!$userId) {
+                return Response::json(["success" => false, "message" => "ID do usuário não informado"], 400);
+            }
+            
+            if (!$homeLat || !$homeLng) {
+                return Response::json(["success" => false, "message" => "Coordenadas inválidas"], 400);
+            }
+            
+            $stmt = $this->db->prepare("
+                UPDATE user_profiles 
+                SET home_lat = ?, home_lng = ?, home_city = ?, home_state = ?, service_radius_km = ?
+                WHERE user_id = ?
+            ");
+            $stmt->execute([$homeLat, $homeLng, $homeCity, $homeState, $serviceRadius, $userId]);
+            
+            // Recalcula completeness
+            $this->recalculateProfileCompleteness($userId);
+            
+            return Response::json(["success" => true, "message" => "Localização atualizada"]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO updateDriverLocation: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao atualizar localização"], 500);
+        }
+    }
+    
+    private function recalculateProfileCompleteness(int $userId): void {
+        try {
+            $stmt = $this->db->prepare("
+                SELECT u.name, p.bio, p.avatar_url, p.vehicle_type, p.body_type, 
+                       p.home_lat, p.home_lng, p.rntrc_number, p.verification_status
+                FROM users u
+                INNER JOIN user_profiles p ON u.id = p.user_id
+                WHERE u.id = ?
+            ");
+            $stmt->execute([$userId]);
+            $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$profile) return;
+            
+            $score = 0;
+            if (!empty($profile['name'])) $score += 10;
+            if (!empty($profile['bio'])) $score += 10;
+            if (!empty($profile['avatar_url'])) $score += 10;
+            if (!empty($profile['vehicle_type'])) $score += 15;
+            if (!empty($profile['body_type'])) $score += 15;
+            if (!empty($profile['home_lat']) && !empty($profile['home_lng'])) $score += 15;
+            if (!empty($profile['rntrc_number'])) $score += 10;
+            if ($profile['verification_status'] === 'verified') $score += 15;
+            
+            $update = $this->db->prepare("UPDATE user_profiles SET profile_completeness = ? WHERE user_id = ?");
+            $update->execute([$score, $userId]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO recalculateProfileCompleteness: " . $e->getMessage());
         }
     }
 
@@ -1302,22 +1652,27 @@ class AdminController {
     }
 
     public function manageGroups($data, $loggedUser) {
-        $this->authorize($loggedUser);
-        
-        $result = $this->groupRepo->save($data);
-        if ($result) {
-            $action = isset($data['id']) ? 'UPDATE_GROUP' : 'CREATE_GROUP';
-            $this->adminRepo->saveLog(
-                $loggedUser['id'], 
-                $loggedUser['name'], 
-                $action, 
-                "Gerenciou grupo: " . ($data['region_name'] ?? 'ID '.$result), 
-                $result, 
-                'WA_GROUP'
-            );
-            return Response::json(["success" => true, "id" => $result]);
+        try {
+            $this->authorize($loggedUser);
+            
+            $result = $this->groupRepo->save($data);
+            if ($result) {
+                $action = isset($data['id']) ? 'UPDATE_GROUP' : 'CREATE_GROUP';
+                $this->adminRepo->saveLog(
+                    $loggedUser['id'], 
+                    $loggedUser['name'], 
+                    $action, 
+                    "Gerenciou grupo: " . ($data['region_name'] ?? 'ID '.$result), 
+                    $result, 
+                    'WA_GROUP'
+                );
+                return Response::json(["success" => true, "id" => $result]);
+            }
+            return Response::json(["success" => false, "message" => "Erro ao salvar grupo"]);
+        } catch (Exception $e) {
+            $code = $e->getCode() ?: 400;
+            return Response::json(["success" => false, "message" => $e->getMessage()], $code);
         }
-        return Response::json(["success" => false, "message" => "Erro ao salvar grupo"]);
     }
 
     public function getUserDetails($data, $loggedUser) {
@@ -1383,5 +1738,815 @@ class AdminController {
             "count" => count($members),
             "data" => $members
         ]);
+    }
+
+    /**
+     * Lista verificações de drivers pendentes
+     */
+    public function listDriverVerifications($data, $loggedUser) {
+        $this->authorize($loggedUser);
+
+        $status = $data['status'] ?? 'awaiting_review';
+        $limit = $data['limit'] ?? 50;
+
+        try {
+            // Busca apenas a transação mais recente por usuário
+            $stmt = $this->db->prepare("
+                SELECT 
+                    t.id as transaction_id,
+                    t.user_id,
+                    t.status,
+                    t.amount,
+                    t.created_at as requested_at,
+                    t.gateway_id,
+                    u.name as user_name,
+                    u.email as user_email,
+                    u.whatsapp as user_whatsapp,
+                    u.role as user_role
+                FROM transactions t
+                JOIN users u ON t.user_id = u.id
+                WHERE t.module_key = 'driver' 
+                    AND t.feature_key = 'document_verification'
+                    AND t.status = :status
+                    AND t.id = (
+                        SELECT MAX(t2.id) 
+                        FROM transactions t2 
+                        WHERE t2.user_id = t.user_id 
+                        AND t2.module_key = 'driver' 
+                        AND t2.feature_key = 'document_verification'
+                        AND t2.status = :status2
+                    )
+                ORDER BY t.created_at DESC
+                LIMIT :limit
+            ");
+            $stmt->bindValue(':status', $status, PDO::PARAM_STR);
+            $stmt->bindValue(':status2', $status, PDO::PARAM_STR);
+            $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+            $stmt->execute();
+            $verifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Busca documentos do usuário (apenas o mais recente de cada tipo)
+            foreach ($verifications as &$v) {
+                $stmt = $this->db->prepare("
+                    SELECT document_type, file_path, status, rejection_reason, created_at 
+                    FROM user_documents 
+                    WHERE entity_id = ? AND entity_type = 'user' AND status != 'replaced'
+                    ORDER BY id DESC
+                ");
+                $stmt->execute([$v['user_id']]);
+                $allDocs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // Filtra para pegar apenas o mais recente de cada tipo
+                $seenTypes = [];
+                $v['documents'] = [];
+                foreach ($allDocs as $doc) {
+                    if (!in_array($doc['document_type'], $seenTypes)) {
+                        $v['documents'][] = $doc;
+                        $seenTypes[] = $doc['document_type'];
+                    }
+                }
+            }
+
+            return Response::json([
+                "success" => true,
+                "count" => count($verifications),
+                "data" => $verifications
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO listDriverVerifications: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao buscar verificações"], 500);
+        }
+    }
+
+    /**
+     * Aprova verificação de driver
+     */
+    public function approveDriverVerification($data, $loggedUser) {
+        $this->authorize($loggedUser);
+
+        $transactionId = $data['transaction_id'] ?? null;
+        $notes = $data['notes'] ?? null;
+
+        if (!$transactionId) {
+            return Response::json(["success" => false, "message" => "ID da transação não informado"], 400);
+        }
+
+        try {
+            // Busca transação
+            $stmt = $this->db->prepare("
+                SELECT * FROM transactions WHERE id = ? AND module_key = 'driver' AND feature_key = 'document_verification'
+            ");
+            $stmt->execute([$transactionId]);
+            $transaction = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$transaction) {
+                return Response::json(["success" => false, "message" => "Transação não encontrada"], 404);
+            }
+
+            if ($transaction['status'] === 'approved') {
+                return Response::json(["success" => false, "message" => "Verificação já foi aprovada"], 400);
+            }
+
+            // Atualiza transação para approved
+            $stmt = $this->db->prepare("
+                UPDATE transactions 
+                SET status = 'approved', reviewed_at = NOW(), reviewed_by = ?, updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$loggedUser['id'], $transactionId]);
+
+            // Calcula data de expiração (30 dias)
+            $expiresAt = date('Y-m-d H:i:s', strtotime('+30 days'));
+
+            // Ativa verificação no usuário
+            $stmt = $this->db->prepare("
+                UPDATE users 
+                SET is_verified = 1, 
+                    verified_at = NOW(), 
+                    verified_until = ?,
+                    verified_by = ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$expiresAt, $loggedUser['id'], $transaction['user_id']]);
+
+            // Atualiza os documentos do usuário para approved
+            $stmt = $this->db->prepare("
+                UPDATE user_documents 
+                SET status = 'approved', 
+                    verified_at = NOW(),
+                    verified_by = ?
+                WHERE entity_id = ? AND entity_type = 'user' AND status = 'pending'
+            ");
+            $stmt->execute([$loggedUser['id'], $transaction['user_id']]);
+
+            // Notifica o driver
+            if ($this->notif) {
+                $this->notif->createNotification(
+                    $transaction['user_id'],
+                    'Verificação Aprovada',
+                    'Sua verificação de documentos foi aprovada! Seu perfil agora exibe o badge de usuário verificado.',
+                    'verification',
+                    $transactionId
+                );
+            }
+
+            error_log("DRIVER VERIFICATION: Aprovada para usuário {$transaction['user_id']} por {$loggedUser['id']}");
+
+            return Response::json([
+                "success" => true,
+                "message" => "Verificação aprovada com sucesso!",
+                "expires_at" => $expiresAt
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO approveDriverVerification: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao aprovar verificação"], 500);
+        }
+    }
+
+    /**
+     * Rejeita verificação de driver
+     */
+    public function rejectDriverVerification($data, $loggedUser) {
+        $this->authorize($loggedUser);
+
+        $transactionId = $data['transaction_id'] ?? null;
+        $reason = $data['reason'] ?? '';
+        $reasonTemplate = $data['reason_template'] ?? null;
+
+        if (!$transactionId) {
+            return Response::json(["success" => false, "message" => "ID da transação não informado"], 400);
+        }
+
+        if (empty($reason) && empty($reasonTemplate)) {
+            return Response::json(["success" => false, "message" => "Motivo da rejeição é obrigatório"], 400);
+        }
+
+        // Combina template + reason livre
+        $fullReason = $reasonTemplate;
+        if (!empty($reasonTemplate) && !empty($reason)) {
+            $fullReason = $reasonTemplate . ': ' . $reason;
+        } elseif (!empty($reason)) {
+            $fullReason = $reason;
+        }
+
+        try {
+            // Busca transação
+            $stmt = $this->db->prepare("
+                SELECT * FROM transactions WHERE id = ? AND module_key = 'driver' AND feature_key = 'document_verification'
+            ");
+            $stmt->execute([$transactionId]);
+            $transaction = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$transaction) {
+                return Response::json(["success" => false, "message" => "Transação não encontrada"], 404);
+            }
+
+            if ($transaction['status'] !== 'awaiting_review') {
+                return Response::json(["success" => false, "message" => "Esta transação não pode ser rejeitada (status atual: {$transaction['status']})"], 400);
+            }
+
+            // Estorna o valor para a carteira do usuário
+            $amount = (float)$transaction['amount'];
+            if ($amount > 0) {
+                $this->creditService->refund($transaction['user_id'], $amount, "Verificação rejeitada: {$fullReason}");
+            }
+
+            // Atualiza transação para rejected com motivo
+            $stmt = $this->db->prepare("
+                UPDATE transactions 
+                SET status = 'rejected', 
+                    reviewed_at = NOW(), 
+                    reviewed_by = ?,
+                    rejection_reason = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$loggedUser['id'], $fullReason, $transactionId]);
+
+            // Atualiza os documentos do usuário para rejected com o motivo
+            $stmt = $this->db->prepare("
+                UPDATE user_documents 
+                SET status = 'rejected', 
+                    rejection_reason = ?
+                WHERE entity_id = ? AND entity_type = 'user' AND status = 'pending'
+            ");
+            $stmt->execute([$fullReason, $transaction['user_id']]);
+
+            // Notifica o driver
+            if ($this->notif) {
+                $this->notif->createNotification(
+                    $transaction['user_id'],
+                    'Verificação Recusada',
+                    "Sua verificação de documentos foi recusada. Motivo: {$fullReason}. O valor de R$ " . number_format($amount, 2, ',', '.') . " foi devolvido para sua carteira.",
+                    'verification',
+                    $transactionId
+                );
+            }
+
+            error_log("DRIVER VERIFICATION: Rejeitada para usuário {$transaction['user_id']} por {$loggedUser['id']}. Motivo: {$fullReason}. Valor estornado: {$amount}");
+
+            return Response::json([
+                "success" => true,
+                "message" => "Verificação recusada. Valor estornado: R$ " . number_format($amount, 2, ',', '.'),
+                "amount_refunded" => $amount
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO rejectDriverVerification: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao recusar verificação: " . $e->getMessage()], 500);
+        }
+    }
+
+    public function getAllVerifications($data, $loggedUser) {
+        $this->authorize(['ADMIN', 'MANAGER', 'SUPPORT']);
+
+        try {
+            $type = $data['type'] ?? 'all';
+            $status = $data['status'] ?? 'pending';
+            $page = intval($data['page'] ?? 1);
+            $limit = intval($data['limit'] ?? 20);
+            $offset = ($page - 1) * $limit;
+
+            $results = [];
+
+            if ($type === 'all' || $type === 'driver') {
+                // Para drivers, buscar tanto por transações quanto por documentos
+                // Se não tiver transação ainda mas tiver documentos, também aparece
+                $driverSql = "
+                    SELECT DISTINCT
+                        u.id as user_id,
+                        u.name as user_name,
+                        u.email as user_email,
+                        u.role as user_type,
+                        u.is_verified,
+                        u.whatsapp as user_whatsapp,
+                        u.document_verified_at,
+                        COALESCE(
+                            t.status,
+                            CASE 
+                                WHEN EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER' AND status = 'rejected') THEN 'rejected'
+                                WHEN EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER' AND status = 'pending') THEN 'pending'
+                                WHEN EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER') THEN 'pending'
+                                ELSE NULL
+                            END,
+                            'pending'
+                        ) as transaction_status,
+                        CASE 
+                            WHEN u.is_verified = 1 THEN 'approved'
+                            WHEN COALESCE(t.status, 'pending') = 'rejected' OR EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER' AND status = 'rejected') THEN 'rejected'
+                            WHEN u.is_verified = 0 AND EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER') THEN 'pending'
+                            WHEN t.status IN ('pending', 'awaiting_review') THEN 'pending'
+                            ELSE 'pending'
+                        END as status,
+                        u.document_verified_at as verified_at,
+                        COALESCE(t.created_at, (SELECT MIN(created_at) FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER')) as requested_at,
+                        t.amount,
+                        COALESCE(t.id, (SELECT MAX(id) FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER')) as verification_id,
+                        (SELECT rejection_reason FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER' AND status = 'rejected' ORDER BY id DESC LIMIT 1) as rejection_reason
+                    FROM users u
+                    LEFT JOIN transactions t ON t.user_id = u.id 
+                        AND t.module_key = 'driver' 
+                        AND t.feature_key = 'document_verification'
+                    WHERE u.role = 'driver'
+                    AND u.deleted_at IS NULL
+                    AND (
+                        EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER')
+                        OR EXISTS (SELECT 1 FROM transactions WHERE user_id = u.id AND module_key = 'driver' AND feature_key = 'document_verification')
+                    )
+                ";
+
+                if ($status === 'pending') {
+                    $driverSql .= " AND u.is_verified = 0 AND (t.status IN ('pending', 'awaiting_review') OR EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER' AND status = 'pending'))";
+                } elseif ($status === 'approved') {
+                    $driverSql .= " AND (t.status = 'approved' OR u.is_verified = 1)";
+                } elseif ($status === 'rejected') {
+                    $driverSql .= " AND (t.status = 'rejected' OR EXISTS (SELECT 1 FROM user_documents WHERE entity_id = u.id AND entity_type = 'USER' AND status = 'rejected'))";
+                }
+
+                $driverSql .= " ORDER BY requested_at DESC";
+
+                $stmt = $this->db->prepare($driverSql);
+                $stmt->execute();
+                $driverVerifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($driverVerifications as $v) {
+                    $v['type'] = 'driver';
+                    $v['description'] = 'Documentos do Motorista';
+                    $v['documents'] = $this->getDriverDocuments($v['user_id']);
+                    $results[] = $v;
+                }
+            }
+
+            if ($type === 'all' || $type === 'company') {
+                $sql = "
+                    SELECT 
+                        'company' as type,
+                        u.id as user_id,
+                        u.name as user_name,
+                        u.email as user_email,
+                        u.role as user_type,
+                        v.id as verification_id,
+                        v.cnpj,
+                        v.razao_social,
+                        v.nome_fantasia,
+                        v.situacao,
+                        v.status,
+                        v.created_at,
+                        v.verified_at,
+                        v.reviewed_at,
+                        v.rejection_reason,
+                        ru.name as reviewed_by_name,
+                        tr.amount as transaction_amount,
+                        CONCAT('CNPJ: ', v.cnpj) as description
+                    FROM verified_cnpj v
+                    JOIN users u ON v.user_id = u.id
+                    LEFT JOIN transactions tr ON tr.user_id = v.user_id 
+                        AND tr.module_key = 'company_pro' 
+                        AND tr.feature_key = 'identity_verification'
+                        AND tr.status = 'approved'
+                    LEFT JOIN users ru ON v.reviewed_by = ru.id
+                    WHERE 1=1
+                ";
+
+                $params = [];
+
+                if ($status !== 'all') {
+                    $sql .= " AND v.status = ?";
+                    $params[] = $status;
+                }
+
+                $sql .= " ORDER BY v.created_at DESC";
+
+                $stmt = $this->db->prepare($sql);
+                $stmt->execute($params);
+                $companyVerifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                $results = array_merge($results, $companyVerifications);
+            }
+
+            usort($results, function($a, $b) {
+                return strtotime($b['created_at']) - strtotime($a['created_at']);
+            });
+
+            $total = count($results);
+            $paginatedResults = array_slice($results, $offset, $limit);
+
+            return Response::json([
+                "success" => true,
+                "data" => [
+                    "verifications" => $paginatedResults,
+                    "total" => $total,
+                    "page" => $page,
+                    "limit" => $limit,
+                    "total_pages" => ceil($total / $limit)
+                ]
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO getAllVerifications: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao buscar verificações: " . $e->getMessage()], 500);
+        }
+    }
+
+    public function approveVerification($data, $loggedUser) {
+        $this->authorize(['ADMIN', 'MANAGER']);
+
+        try {
+            $id = intval($data['id'] ?? 0);
+            $type = $data['type'] ?? '';
+
+            if (!$id || !in_array($type, ['driver', 'company'])) {
+                return Response::json(["success" => false, "message" => "ID e tipo são obrigatórios"], 400);
+            }
+
+            if ($type === 'driver') {
+                return $this->approveDriverByUserId($id, $loggedUser);
+            } else {
+                return $this->approveCompanyById($id, $loggedUser);
+            }
+        } catch (\Throwable $e) {
+            error_log("ERRO approveVerification: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao aprovar verificação: " . $e->getMessage()], 500);
+        }
+    }
+
+    private function approveDriverByUserId($id, $loggedUser) {
+        // $id pode ser transaction_id ou user_id
+        // Primeiro tenta buscar por transaction_id
+        $stmt = $this->db->prepare("SELECT user_id FROM transactions WHERE id = ? AND module_key = 'driver' AND feature_key = 'document_verification'");
+        $stmt->execute([$id]);
+        $trans = $stmt->fetch();
+        
+        $userId = $trans ? $trans['user_id'] : $id;
+        
+        $stmt = $this->db->prepare("SELECT * FROM users WHERE id = ? AND role = 'driver'");
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user) {
+            return Response::json(["success" => false, "message" => "Motorista não encontrado"], 404);
+        }
+        
+        // Atualiza a transação para approved
+        if ($trans) {
+            $stmt = $this->db->prepare("UPDATE transactions SET status = 'approved', approved_at = NOW() WHERE id = ?");
+            $stmt->execute([$id]);
+        } else {
+            // Se não encontrou transação pelo ID, busca e atualiza a última transação do usuário
+            $stmt = $this->db->prepare("UPDATE transactions SET status = 'approved', approved_at = NOW() WHERE user_id = ? AND module_key = 'driver' AND feature_key = 'document_verification' ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$userId]);
+        }
+
+        $stmt = $this->db->prepare("UPDATE user_documents SET status = 'approved', verified_by = ?, verified_at = NOW() WHERE entity_id = ? AND entity_type = 'USER'");
+        $stmt->execute([$loggedUser['id'], $userId]);
+
+        $stmt = $this->db->prepare("UPDATE users SET is_verified = 1, document_verified_at = NOW() WHERE id = ?");
+        $stmt->execute([$userId]);
+
+        $stmt = $this->db->prepare("
+            INSERT INTO user_modules (user_id, module_key, is_active, activated_at)
+            VALUES (?, 'identity_verification', 1, NOW())
+            ON DUPLICATE KEY UPDATE is_active = 1, activated_at = NOW()
+        ");
+        $stmt->execute([$userId]);
+
+        if ($this->notif) {
+            $this->notif->createNotification(
+                $userId,
+                'Verificação Aprovada!',
+                'Parabéns! Sua verificação de documentos foi aprovada. Seu perfil agora exibe o badge de identidade confirmada.',
+                'verification',
+                $userId
+            );
+        }
+
+        error_log("VERIFICATION APPROVED: Driver {$userId} approved by {$loggedUser['id']}");
+
+        return Response::json([
+            "success" => true,
+            "message" => "Verificação do motorista aprovada com sucesso!"
+        ]);
+    }
+
+    private function approveCompanyById($cnpjId, $loggedUser) {
+        $stmt = $this->db->prepare("SELECT * FROM verified_cnpj WHERE id = ?");
+        $stmt->execute([$cnpjId]);
+        $cnpj = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$cnpj) {
+            return Response::json(["success" => false, "message" => "CNPJ não encontrado"], 404);
+        }
+
+        $stmt = $this->db->prepare("UPDATE verified_cnpj SET status = 'verified', reviewed_by = ?, reviewed_at = NOW(), verified_at = NOW() WHERE id = ?");
+        $stmt->execute([$loggedUser['id'], $cnpjId]);
+
+        $stmt = $this->db->prepare("UPDATE users SET is_verified = 1 WHERE id = ?");
+        $stmt->execute([$cnpj['user_id']]);
+
+        $stmt = $this->db->prepare("
+            INSERT INTO user_modules (user_id, module_key, is_active, activated_at)
+            VALUES (?, 'identity_verification', 1, NOW())
+            ON DUPLICATE KEY UPDATE is_active = 1, activated_at = NOW()
+        ");
+        $stmt->execute([$cnpj['user_id']]);
+
+        if ($this->notif) {
+            $this->notif->createNotification(
+                $cnpj['user_id'],
+                'Verificação Aprovada!',
+                'Parabéns! Sua verificação de empresa foi aprovada. Seu perfil agora exibe o badge de identidade confirmada.',
+                'verification',
+                $cnpjId
+            );
+        }
+
+        error_log("VERIFICATION APPROVED: Company {$cnpj['user_id']} (CNPJ {$cnpj['cnpj']}) approved by {$loggedUser['id']}");
+
+        return Response::json([
+            "success" => true,
+            "message" => "Verificação da empresa aprovada com sucesso!"
+        ]);
+    }
+
+    public function rejectVerification($data, $loggedUser) {
+        $this->authorize(['ADMIN', 'MANAGER']);
+
+        try {
+            $id = intval($data['id'] ?? 0);
+            $type = $data['type'] ?? '';
+            $reason = trim($data['reason'] ?? '');
+
+            if (!$id || !in_array($type, ['driver', 'company'])) {
+                return Response::json(["success" => false, "message" => "ID e tipo são obrigatórios"], 400);
+            }
+
+            if (empty($reason)) {
+                return Response::json(["success" => false, "message" => "Motivo da rejeição é obrigatório"], 400);
+            }
+
+            if ($type === 'driver') {
+                return $this->rejectDriverByUserId($id, $loggedUser, $reason);
+            } else {
+                return $this->rejectCompanyById($id, $loggedUser, $reason);
+            }
+        } catch (\Throwable $e) {
+            error_log("ERRO rejectVerification: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao rejeitar verificação: " . $e->getMessage()], 500);
+        }
+    }
+
+    private function rejectDriverByUserId($id, $loggedUser, $reason) {
+        // $id pode ser transaction_id ou user_id
+        // Primeiro tenta buscar por transaction_id
+        $stmt = $this->db->prepare("SELECT user_id FROM transactions WHERE id = ? AND module_key = 'driver' AND feature_key = 'document_verification'");
+        $stmt->execute([$id]);
+        $trans = $stmt->fetch();
+        
+        $userId = $trans ? $trans['user_id'] : $id;
+        
+        $stmt = $this->db->prepare("SELECT u.*, tr.amount, tr.id as trans_id FROM users u LEFT JOIN transactions tr ON tr.user_id = u.id AND tr.module_key = 'driver' AND tr.feature_key = 'document_verification' WHERE u.id = ? AND u.role = 'driver'");
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user) {
+            return Response::json(["success" => false, "message" => "Motorista não encontrado"], 404);
+        }
+
+        $stmt = $this->db->prepare("UPDATE user_documents SET status = 'rejected', rejection_reason = ? WHERE entity_id = ? AND entity_type = 'USER' AND status != 'approved'");
+        $stmt->execute([$reason, $userId]);
+
+        // Atualiza a transação para rejected
+        if (!empty($user['trans_id'])) {
+            $stmt = $this->db->prepare("UPDATE transactions SET status = 'rejected' WHERE id = ?");
+            $stmt->execute([$user['trans_id']]);
+        } else {
+            // Busca e atualiza a última transação do usuário
+            $stmt = $this->db->prepare("UPDATE transactions SET status = 'rejected' WHERE user_id = ? AND module_key = 'driver' AND feature_key = 'document_verification' ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$userId]);
+        }
+
+        $amount = floatval($user['amount'] ?? 0);
+        if ($amount > 0) {
+            $this->creditService->refund($userId, $amount, "Verificação rejeitada: {$reason}");
+        }
+
+        if ($this->notif) {
+            $msg = $amount > 0 
+                ? "Sua verificação de documentos foi recusada. Motivo: {$reason}. O valor de R$ " . number_format($amount, 2, ',', '.') . " foi devolvido para sua carteira."
+                : "Sua verificação de documentos foi recusada. Motivo: {$reason}.";
+            $this->notif->createNotification($userId, 'Verificação Recusada', $msg, 'verification', $userId);
+        }
+
+        error_log("VERIFICATION REJECTED: Driver {$userId} rejected by {$loggedUser['id']}. Reason: {$reason}. Refunded: {$amount}");
+
+        return Response::json([
+            "success" => true,
+            "message" => "Verificação do motorista recusada." . ($amount > 0 ? " Valor estornado: R$ " . number_format($amount, 2, ',', '.') : ""),
+            "amount_refunded" => $amount
+        ]);
+    }
+
+    private function rejectCompanyById($cnpjId, $loggedUser, $reason) {
+        $stmt = $this->db->prepare("SELECT vc.*, tr.amount FROM verified_cnpj vc LEFT JOIN transactions tr ON tr.user_id = vc.user_id AND tr.module_key = 'company_pro' AND tr.feature_key = 'identity_verification' AND tr.status = 'approved' WHERE vc.id = ?");
+        $stmt->execute([$cnpjId]);
+        $cnpj = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$cnpj) {
+            return Response::json(["success" => false, "message" => "CNPJ não encontrado"], 404);
+        }
+
+        $stmt = $this->db->prepare("UPDATE verified_cnpj SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = NOW() WHERE id = ?");
+        $stmt->execute([$reason, $loggedUser['id'], $cnpjId]);
+
+        $amount = floatval($cnpj['amount'] ?? 0);
+        if ($amount > 0) {
+            $this->creditService->refund($cnpj['user_id'], $amount, "Verificação CNPJ rejeitada: {$reason}");
+        }
+
+        if ($this->notif) {
+            $msg = $amount > 0 
+                ? "Sua verificação de empresa foi recusada. Motivo: {$reason}. O valor de R$ " . number_format($amount, 2, ',', '.') . " foi devolvido para sua carteira."
+                : "Sua verificação de empresa foi recusada. Motivo: {$reason}.";
+            $this->notif->createNotification($cnpj['user_id'], 'Verificação Recusada', $msg, 'verification', $cnpjId);
+        }
+
+        error_log("VERIFICATION REJECTED: Company {$cnpj['user_id']} (CNPJ {$cnpj['cnpj']}) rejected by {$loggedUser['id']}. Reason: {$reason}. Refunded: {$amount}");
+
+        return Response::json([
+            "success" => true,
+            "message" => "Verificação da empresa recusada." . ($amount > 0 ? " Valor estornado: R$ " . number_format($amount, 2, ',', '.') : ""),
+            "amount_refunded" => $amount
+        ]);
+    }
+
+    private function getDriverDocuments($userId) {
+        $stmt = $this->db->prepare("
+            SELECT document_type, file_path, status, rejection_reason 
+            FROM user_documents 
+            WHERE entity_id = ? AND entity_type = 'USER'
+            ORDER BY created_at DESC
+        ");
+        $stmt->execute([$userId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // =====================================================
+    // GESTÃO DE AVALIAÇÕES (REVIEWS)
+    // =====================================================
+
+    public function getReviews($data, $loggedUser = null) {
+        $this->authorize($loggedUser, 'MANAGER');
+
+        try {
+            $status = $data['status'] ?? null;
+            $limit = (int)($data['limit'] ?? 20);
+            $offset = (int)($data['offset'] ?? 0);
+
+            $reviewRepo = new \App\Repositories\ReviewRepository($this->db);
+            $reviews = $reviewRepo->getAll([
+                'limit' => $limit,
+                'offset' => $offset,
+                'status' => $status
+            ]);
+
+            $pendingCount = $reviewRepo->getCountAll(['status' => 'pending']);
+            $publishedCount = $reviewRepo->getCountAll(['status' => 'published']);
+            $rejectedCount = $reviewRepo->getCountAll(['status' => 'rejected']);
+
+            return Response::json([
+                "success" => true,
+                "data" => $reviews,
+                "counts" => [
+                    "pending" => $pendingCount,
+                    "published" => $publishedCount,
+                    "rejected" => $rejectedCount,
+                    "total" => $pendingCount + $publishedCount + $rejectedCount
+                ],
+                "pagination" => [
+                    "limit" => $limit,
+                    "offset" => $offset
+                ]
+            ]);
+        } catch (\Exception $e) {
+            error_log("Error getting reviews: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao buscar avaliações."], 500);
+        }
+    }
+
+    public function approveReview($data, $loggedUser = null) {
+        $this->authorize($loggedUser, 'MANAGER');
+
+        $reviewId = (int)($data['review_id'] ?? 0);
+        if (!$reviewId) {
+            return Response::json(["success" => false, "message" => "ID da avaliação é obrigatório."], 400);
+        }
+
+        try {
+            $reviewRepo = new \App\Repositories\ReviewRepository($this->db);
+            
+            $review = $reviewRepo->findById($reviewId);
+            if (!$review) {
+                return Response::json(["success" => false, "message" => "Avaliação não encontrada."], 404);
+            }
+
+            if ($review['status'] !== 'pending') {
+                return Response::json(["success" => false, "message" => "Apenas avaliações pendentes podem ser aprovadas."], 400);
+            }
+
+            $reviewRepo->approve($reviewId);
+
+            // Notificar usuário
+            if ($this->notif) {
+                $this->notif->createNotification(
+                    $review['target_id'],
+                    'Avaliação Aprovada',
+                    "Sua avaliação foi publicada no seu perfil.",
+                    'review',
+                    $reviewId
+                );
+            }
+
+            error_log("REVIEW APPROVED: Review {$reviewId} approved by admin {$loggedUser['id']}");
+
+            return Response::json([
+                "success" => true,
+                "message" => "Avaliação aprovada e publicada."
+            ]);
+        } catch (\Exception $e) {
+            error_log("Error approving review: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao aprovar avaliação."], 500);
+        }
+    }
+
+    public function rejectReview($data, $loggedUser = null) {
+        $this->authorize($loggedUser, 'MANAGER');
+
+        $reviewId = (int)($data['review_id'] ?? 0);
+        $reason = trim($data['reason'] ?? 'Violação das diretrizes da comunidade.');
+        
+        if (!$reviewId) {
+            return Response::json(["success" => false, "message" => "ID da avaliação é obrigatório."], 400);
+        }
+
+        try {
+            $reviewRepo = new \App\Repositories\ReviewRepository($this->db);
+            
+            $review = $reviewRepo->findById($reviewId);
+            if (!$review) {
+                return Response::json(["success" => false, "message" => "Avaliação não encontrada."], 404);
+            }
+
+            $reviewRepo->reject($reviewId, $reason);
+
+            // Notificar usuário
+            if ($this->notif) {
+                $this->notif->createNotification(
+                    $review['reviewer_id'],
+                    'Avaliação Rejeitada',
+                    "Sua avaliação foi rejeitada: {$reason}",
+                    'review',
+                    $reviewId
+                );
+            }
+
+            error_log("REVIEW REJECTED: Review {$reviewId} rejected by admin {$loggedUser['id']}. Reason: {$reason}");
+
+            return Response::json([
+                "success" => true,
+                "message" => "Avaliação rejeitada."
+            ]);
+        } catch (\Exception $e) {
+            error_log("Error rejecting review: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao rejeitar avaliação."], 500);
+        }
+    }
+
+    public function deleteReview($data, $loggedUser = null) {
+        $this->authorize($loggedUser, 'MANAGER');
+
+        $reviewId = (int)($data['review_id'] ?? 0);
+        
+        if (!$reviewId) {
+            return Response::json(["success" => false, "message" => "ID da avaliação é obrigatório."], 400);
+        }
+
+        try {
+            $reviewRepo = new \App\Repositories\ReviewRepository($this->db);
+            
+            $review = $reviewRepo->findById($reviewId);
+            if (!$review) {
+                return Response::json(["success" => false, "message" => "Avaliação não encontrada."], 404);
+            }
+
+            $reviewRepo->delete($reviewId);
+
+            error_log("REVIEW DELETED: Review {$reviewId} deleted by admin {$loggedUser['id']}");
+
+            return Response::json([
+                "success" => true,
+                "message" => "Avaliação excluída."
+            ]);
+        } catch (\Exception $e) {
+            error_log("Error deleting review: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao excluir avaliação."], 500);
+        }
     }
 }

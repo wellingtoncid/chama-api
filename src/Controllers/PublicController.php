@@ -5,16 +5,19 @@ use App\Core\Response;
 use App\Repositories\FreightRepository;
 use App\Repositories\UserRepository;
 use App\Repositories\AdRepository;
+use App\Repositories\ListingRepository;
 
 class PublicController {
     private $freightRepo;
     private $userRepo;
     private $adRepo;
+    private $listingRepo;
 
     public function __construct($db) {
         $this->freightRepo = new FreightRepository($db);
         $this->userRepo = new UserRepository($db);
         $this->adRepo = new AdRepository($db);
+        $this->listingRepo = new ListingRepository($db);
     }
 
     public function getFreightDetails($data, $loggedUser = null) {
@@ -123,8 +126,11 @@ class PublicController {
             // WhatsApp limpo para o link do botão (usado no ProfileView.tsx)
             $profile['whatsapp_clean'] = preg_replace('/\D/', '', $profile['whatsapp'] ?? '');
             
-            // Status de verificação amigável
-            $profile['is_verified'] = true; //pode vincular a um campo real do banco
+            // Status de verificação: só mostra se is_verified = 1 E (verified_until é NULL ou não expirou)
+            $isVerified = (int)($profile['is_verified'] ?? 0) === 1;
+            $verifiedUntil = $profile['verified_until'] ?? null;
+            $isNotExpired = !$verifiedUntil || strtotime($verifiedUntil) > time();
+            $profile['is_verified'] = $isVerified && $isNotExpired;
 
             // --- SEO DINÂMICO ---
             $userTypeLabel = match($profile['user_type']) {
@@ -162,19 +168,25 @@ class PublicController {
         if (!$userId) return Response::json(["success" => false, "message" => "ID ausente"], 400);
 
         try {
-            // Buscamos apenas o tipo do usuário (método leve que sugerimos criar no Repo)
             $user = $this->userRepo->getUserTypeAndName($userId);
             if (!$user) return Response::json(["success" => false, "message" => "Usuário não encontrado"], 404);
 
             $results = [];
             
-            // Lógica de Chaveamento
             if ($user['user_type'] === 'ADVERTISER') {
-                // Se for anunciante, busca na tabela de anúncios (ADS)
                 $results = $this->adRepo->getAdsByUserId($userId);
             } else {
-                // Se for empresa, busca na tabela de fretes (FREIGHTS)
-                $results = $this->freightRepo->getPublicPostsByUser($userId);
+                // Busca fretes do usuário
+                $freights = $this->freightRepo->getPublicPostsByUser($userId);
+                
+                // Busca marketplace listings do usuário
+                $listings = $this->listingRepo->findByUser($userId);
+                
+                // Adiciona type para identificar o tipo
+                foreach ($freights as &$f) { $f['type'] = 'freight'; }
+                foreach ($listings as &$l) { $l['type'] = 'marketplace'; }
+                
+                $results = array_merge($freights, $listings);
             }
 
             return Response::json([

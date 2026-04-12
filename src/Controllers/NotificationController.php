@@ -17,7 +17,8 @@ class NotificationController {
     public function index($data, $user) {
         if (!$user) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
 
-        $notifications = $this->service->getUserNotifications($user['id']);
+        $limit = (int)($data['limit'] ?? 20);
+        $notifications = $this->service->getUserNotifications($user['id'], $limit);
         $unreadCount = $this->service->getUnreadCount($user['id']);
 
         return Response::json([
@@ -46,6 +47,39 @@ class NotificationController {
         if (!$user) return Response::json(["success" => false], 401);
         
         $success = $this->service->markAllRead($user['id']);
+        return Response::json(["success" => $success]);
+    }
+
+    /**
+     * Verifica e notifica sobre perfil incompleto
+     */
+    public function checkProfileCompleteness($data, $user) {
+        if (!$user) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        
+        $notified = $this->service->checkAndNotifyIncompleteProfile($user['id']);
+        
+        return Response::json([
+            "success" => true,
+            "notified" => $notified
+        ]);
+    }
+
+    /**
+     * Envia notificação de convite de frete para motorista
+     */
+    public function sendFreightInvite($data, $user) {
+        if (!$user) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        
+        $driverId = (int)($data['driver_id'] ?? 0);
+        $freightId = (int)($data['freight_id'] ?? 0);
+        $companyName = $data['company_name'] ?? 'Uma empresa';
+        
+        if (!$driverId || !$freightId) {
+            return Response::json(["success" => false, "message" => "Dados incompletos"], 400);
+        }
+        
+        $success = $this->service->notifyFreightInvite($driverId, $freightId, $companyName);
+        
         return Response::json(["success" => $success]);
     }
 }

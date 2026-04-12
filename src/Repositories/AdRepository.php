@@ -609,16 +609,19 @@ class AdRepository {
 
     /**
      * Lista todos os anúncios para o admin (sem filtros de posição)
+     * Suporta filtros: all, active, paused, expired
      */
     public function listAll($status = null, $search = null) {
-        $sql = "SELECT a.*, u.name as user_name, u.email as user_email
+        $sql = "SELECT a.*, u.name as user_name, u.email as user_email,
+                DATEDIFF(a.expires_at, CURDATE()) as days_until_expiry
                 FROM ads a
                 LEFT JOIN users u ON a.user_id = u.id
                 WHERE 1=1";
         
         $params = [];
         
-        if ($status) {
+        // Filtro por status: all = todos, ou status específico
+        if ($status && $status !== 'all') {
             $sql .= " AND a.status = :status";
             $params[':status'] = $status;
         }
@@ -628,15 +631,100 @@ class AdRepository {
             $params[':search'] = "%$search%";
         }
         
-        $sql .= " ORDER BY a.created_at DESC";
+        $sql .= " ORDER BY 
+                    CASE 
+                        WHEN a.status = 'active' AND a.expires_at IS NOT NULL AND a.expires_at < DATE_ADD(CURDATE(), INTERVAL 3 DAY) THEN 1
+                        WHEN a.status = 'expired' THEN 2
+                        WHEN a.status = 'paused' THEN 3
+                        ELSE 4
+                    END,
+                    a.created_at DESC";
         
         try {
             $stmt = $this->db->prepare($sql);
             $stmt->execute($params);
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Processar status calculado (computed_status)
+            foreach ($results as &$ad) {
+                $ad['computed_status'] = $this->computeAdStatus($ad);
+            }
+            
+            return $results;
         } catch (\Exception $e) {
             error_log("Erro listAll ads: " . $e->getMessage());
             return [];
+        }
+    }
+    
+    /**
+     * Calcula o status calculado de um anúncio
+     */
+    private function computeAdStatus($ad) {
+        $status = $ad['status'] ?? 'active';
+        $expiresAt = $ad['expires_at'] ?? null;
+        $daysUntil = $ad['days_until_expiry'] ?? null;
+        
+        if ($status === 'expired') {
+            return 'expired';
+        }
+        
+        if ($status === 'paused') {
+            return 'paused';
+        }
+        
+        if ($status === 'active' && $expiresAt) {
+            if ($daysUntil !== null && $daysUntil < 0) {
+                return 'expired'; // Ativo mas data passou
+            }
+            if ($daysUntil !== null && $daysUntil <= 3) {
+                return 'expiring_soon'; // Vence em 3 dias ou menos
+            }
+        }
+        
+        return $status;
+    }
+    
+    /**
+     * Renova um anúncio (estende a data de expiração)
+     */
+    public function renewAd($id, $days = 30) {
+        try {
+            $newExpiry = date('Y-m-d H:i:s', strtotime("+$days days"));
+            $stmt = $this->db->prepare("UPDATE ads SET status = 'active', expires_at = ? WHERE id = ?");
+            $stmt->execute([$newExpiry, $id]);
+            return true;
+        } catch (\Exception $e) {
+            error_log("Erro renewAd: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Pausa um anúncio
+     */
+    public function pauseAd($id) {
+        try {
+            $stmt = $this->db->prepare("UPDATE ads SET status = 'paused' WHERE id = ?");
+            $stmt->execute([$id]);
+            return true;
+        } catch (\Exception $e) {
+            error_log("Erro pauseAd: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Ativa um anúncio
+     */
+    public function activateAd($id) {
+        try {
+            $stmt = $this->db->prepare("UPDATE ads SET status = 'active' WHERE id = ?");
+            $stmt->execute([$id]);
+            return true;
+        } catch (\Exception $e) {
+            error_log("Erro activateAd: " . $e->getMessage());
+            return false;
         }
     }
 }

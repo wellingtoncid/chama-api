@@ -8,19 +8,29 @@ class MercadoPagoService {
     private $accessToken;
     private $baseUrl;
     private $paymentRepo;
+    private $webhookSecret;
 
     public function __construct($db) {
         $this->accessToken = $_ENV['MP_ACCESS_TOKEN'] ?? getenv('MP_ACCESS_TOKEN') ?: '';
         $this->baseUrl = $_ENV['BASE_URL'] ?? getenv('BASE_URL') ?: 'http://127.0.0.1:8000';
+        $this->frontendUrl = $_ENV['FRONTEND_URL'] ?? getenv('FRONTEND_URL') ?: 'http://127.0.0.1:5173';
         $this->paymentRepo = new PaymentRepository($db);
+        $this->webhookSecret = $_ENV['MP_WEBHOOK_SECRET'] ?? getenv('MP_WEBHOOK_SECRET') ?: '';
+    }
+
+    public function isWebhookSignatureValid($payload, $signature) {
+        if (empty($this->webhookSecret)) {
+            // Development mode: skip strict signature validation
+            return true;
+        }
+        $computed = hash_hmac('sha256', $payload, $this->webhookSecret);
+        return hash_equals($computed, $signature);
     }
 
     /**
      * Cria a preferência de pagamento (Checkout Pro)
-     * Suporta billing_cycle: monthly, quarterly, semiannual, yearly
      */
     public function createPreference($data, $userId) {
-        // 1. Registra a intenção de compra no nosso banco via Repository
         $billingCycle = $data['billing_cycle'] ?? 'monthly';
         $durationDays = $data['duration_days'] ?? 30;
         
@@ -28,32 +38,60 @@ class MercadoPagoService {
             $userId, 
             $data['plan_id'] ?? null, 
             $data['amount'], 
-            null, // ID Externo será atualizado depois
+            null,
             $billingCycle,
-            $durationDays
+            $durationDays,
+            $data['module_key'] ?? null,
+            $data['feature_key'] ?? null
         );
 
         if (!$transactionId) throw new Exception("Falha ao registrar transação local.");
 
-        // 2. Monta o Payload para o Mercado Pago
+        // Usa URLs do frontend para back_urls
+        $backUrlSuccess = $this->frontendUrl . "/payment/success";
+        $backUrlFailure = $this->frontendUrl . "/payment/failure";
+        $backUrlPending = $this->frontendUrl . "/payment/pending";
+        
+        // Só adiciona notification_url se for URL pública (não localhost)
+        $notificationUrl = null;
+        if (!preg_match('/localhost|127\.0\.0\.1/i', $this->baseUrl)) {
+            $notificationUrl = $this->baseUrl . "/api/webhook-mp";
+        }
+        
         $payload = [
             "items" => [[
-                "title" => $data['title'] ?? "Assinatura Chama Frete",
+                "title" => mb_convert_encoding($data['title'] ?? "Assinatura Chama Frete", 'UTF-8'),
                 "quantity" => 1,
                 "unit_price" => (float)$data['amount'],
                 "currency_id" => "BRL"
             ]],
-            "external_reference" => (string)$transactionId, // O ID da nossa tabela
-            "notification_url" => $this->baseUrl . "/api/payment-webhook",
+            "external_reference" => (string)$transactionId,
             "back_urls" => [
-                "success" => $this->baseUrl . "/dashboard?payment=success",
-                "failure" => $this->baseUrl . "/dashboard?payment=failure",
-                "pending" => $this->baseUrl . "/dashboard?payment=pending"
-            ],
-            "auto_return" => "approved"
+                "success" => $backUrlSuccess,
+                "failure" => $backUrlFailure,
+                "pending" => $backUrlPending
+            ]
         ];
 
+        if ($notificationUrl) {
+            $payload["notification_url"] = $notificationUrl;
+        }
+
+        // Só adiciona auto_return se for URL pública (não localhost)
+        if (!preg_match('/localhost|127\.0\.0\.1/i', $this->frontendUrl)) {
+            $payload["auto_return"] = "approved";
+        }
+
+        $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        error_log("MercadoPagoService: Enviando para MP - " . $jsonPayload);
+
         $response = $this->callAPI('POST', 'checkout/preferences', $payload);
+
+        error_log("MercadoPagoService: Resposta API - " . json_encode($response));
+
+        if (empty($response) || isset($response['error'])) {
+            throw new Exception("Erro do MercadoPago: " . ($response['error'] ?? 'Resposta vazia'));
+        }
 
         return [
             "init_point" => $response['init_point'] ?? null,
@@ -101,21 +139,93 @@ class MercadoPagoService {
 
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
-        if ($method === 'POST') {
+        $jsonBody = null;
+        if ($method === 'POST' && $payload !== null) {
             curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+            $jsonBody = json_encode($payload, JSON_UNESCAPED_UNICODE);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
+            error_log("MercadoPago API Request Body: " . $jsonBody);
         }
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
         curl_close($ch);
 
-        if ($httpCode >= 400) {
-            error_log("MercadoPago API Error: " . $response);
-            return [];
+        error_log("MercadoPago API: HTTP Code = {$httpCode}");
+
+        if ($httpCode >= 400 || $error) {
+            error_log("MercadoPago API Error: HTTP {$httpCode} - {$error}");
+            error_log("MercadoPago API Error Response: {$response}");
+            return ['error' => "HTTP {$httpCode}: {$error}", 'response' => $response];
         }
 
         return json_decode($response, true);
+    }
+
+    /**
+     * Cria preferência de pagamento para promoção de frete (destaque/urgente)
+     */
+    public function createFreightPromotionPreference($data, $userId) {
+        $promotionType = $data['type'] ?? 'featured';
+        
+        $transactionId = $this->paymentRepo->createTransaction(
+            $userId, 
+            null, 
+            $data['amount'], 
+            "FRET{$data['freight_id']}_{$promotionType}",
+            'one_time',
+            $data['duration_days'],
+            'freight',
+            'freight_promotion_' . $promotionType
+        );
+
+        if (!$transactionId) throw new Exception("Falha ao registrar transação local.");
+
+        $backUrlSuccess = $this->frontendUrl . "/payment/success?type=freight_promotion&promotion={$promotionType}&freight_id={$data['freight_id']}";
+        $backUrlFailure = $this->frontendUrl . "/payment/failure";
+        
+        $notificationUrl = null;
+        if (!preg_match('/localhost|127\.0\.0\.1/i', $this->baseUrl)) {
+            $notificationUrl = $this->baseUrl . "/api/webhook-mp";
+        }
+        
+        $payload = [
+            "items" => [[
+                "title" => mb_convert_encoding($data['title'] ?? "Impulsionar Frete", 'UTF-8'),
+                "description" => mb_convert_encoding($data['description'] ?? "Destaque/urgente para frete", 'UTF-8'),
+                "quantity" => 1,
+                "unit_price" => (float)$data['amount'],
+                "currency_id" => "BRL"
+            ]],
+            "external_reference" => (string)$transactionId,
+            "back_urls" => [
+                "success" => $backUrlSuccess,
+                "failure" => $backUrlFailure,
+                "pending" => $backUrlSuccess
+            ]
+        ];
+
+        if ($notificationUrl) {
+            $payload["notification_url"] = $notificationUrl;
+        }
+
+        if (!preg_match('/localhost|127\.0\.0\.1/i', $this->frontendUrl)) {
+            $payload["auto_return"] = "approved";
+        }
+
+        $response = $this->callAPI('POST', 'checkout/preferences', $payload);
+
+        if (empty($response) || isset($response['error'])) {
+            throw new Exception("Erro do MercadoPago: " . ($response['error'] ?? 'Resposta vazia'));
+        }
+
+        return [
+            "init_point" => $response['init_point'] ?? null,
+            "preference_id" => $response['id'] ?? null,
+            "transaction_id" => $transactionId
+        ];
     }
 }

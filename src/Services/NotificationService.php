@@ -11,7 +11,6 @@ class NotificationService {
 
     public function __construct($db) {
         $this->db = $db;
-        // Carrega tokens das variáveis de ambiente ou usa os padrões fornecidos
         $this->tgToken  = $_ENV['TELEGRAM_BOT_TOKEN'] ?? '8235245222:AAE_BXQHBo_3CfzgcZUV8rmqM71hgvGScqc';
         $this->tgChatId = $_ENV['TELEGRAM_CHAT_ID'] ?? '8231475214';
     }
@@ -21,18 +20,133 @@ class NotificationService {
      */
     public function send(int $userId, string $title, string $message, string $type = 'system', string $priority = 'medium', string $actionUrl = null, array $metadata = null): bool {
         
-        // 1. Persistência no Banco de Dados (Sininho In-App) - CUSTO ZERO
+        // 1. Persistência no Banco de Dados (Sininho In-App)
         $dbSuccess = $this->notifyInDatabase($userId, $title, $message, $type, $priority, $actionUrl, $metadata);
 
-        // 2. Alerta para o ADMIN via Telegram (Monitoramento em tempo real) - CUSTO ZERO
+        // 2. Alerta para o ADMIN via Telegram (Monitoramento em tempo real)
         if ($priority === 'high' || $type === 'match') {
             $this->sendTelegramAlert("<b>[NOTIFICAÇÃO]</b>\nTipo: {$type}\nPara User ID: {$userId}\n{$title}\n{$message}");
         }
 
-        // 3. Push Notification (Via OneSignal plano Free, por exemplo) - CUSTO ZERO
+        // 3. Push Notification
         $this->sendPushNotification($userId, $title, $message, $actionUrl);
 
         return $dbSuccess;
+    }
+
+    /**
+     * Notifica motorist sobre perfil incompleto
+     */
+    public function notifyProfileIncomplete(int $userId, array $missingFields = []): bool {
+        $missingLabels = [
+            'name' => 'nome completo',
+            'bio' => 'biografia',
+            'avatar' => 'foto de perfil',
+            'vehicle_type' => 'tipo de veículo',
+            'body_type' => 'tipo de carroceria',
+            'location' => 'localização',
+            'rntrc' => 'RNTRC',
+            'verification' => 'verificação de documentos'
+        ];
+
+        $missingText = array_map(fn($f) => $missingLabels[$f] ?? $f, $missingFields);
+        $count = count($missingText);
+        
+        $title = 'Complete seu perfil';
+        $message = "Seu perfil está {$count}% completo. ";
+        $message .= $count <= 3 
+            ? "Falta: " . implode(', ', $missingText) 
+            : "Adicione mais informações para ser encontrado por empresas.";
+
+        return $this->send(
+            $userId,
+            $title,
+            $message,
+            'profile_incomplete',
+            'normal',
+            '/dashboard/perfil',
+            ['missing_fields' => $missingFields]
+        );
+    }
+
+    /**
+     * Notifica empresa sobre novo match de motorista
+     */
+    public function notifyNewMatch(int $companyUserId, int $freightId, int $driverId, string $driverName, float $distanceKm): bool {
+        return $this->send(
+            $companyUserId,
+            'Novo motorista encontrado!',
+            "Encontramos o motorista {$driverName} a {$distanceKm}km do seu frete. Clique para ver o perfil.",
+            'new_match',
+            'normal',
+            '/dashboard/fretes',
+            ['freight_id' => $freightId, 'driver_id' => $driverId, 'distance_km' => $distanceKm]
+        );
+    }
+
+    /**
+     * Notifica motorista sobre convite de frete
+     */
+    public function notifyFreightInvite(int $driverId, int $freightId, string $companyName): bool {
+        return $this->send(
+            $driverId,
+            'Novo convite de frete!',
+            "A empresa {$companyName} está convidando você para um frete. Clique para ver os detalhes.",
+            'freight_invite',
+            'high',
+            '/dashboard',
+            ['freight_id' => $freightId]
+        );
+    }
+
+    /**
+     * Verifica e notifica automaticamente sobre perfil incompleto
+     */
+    public function checkAndNotifyIncompleteProfile(int $userId): bool {
+        try {
+            $stmt = $this->db->prepare("
+                SELECT u.name, p.bio, p.avatar_url, p.vehicle_type, p.body_type, 
+                       p.home_lat, p.home_lng, p.rntrc_number, p.verification_status,
+                       p.profile_completeness
+                FROM users u
+                INNER JOIN user_profiles p ON u.id = p.user_id
+                WHERE u.id = ? AND u.role = 'driver'
+            ");
+            $stmt->execute([$userId]);
+            $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$profile) return false;
+
+            $missing = [];
+            if (empty($profile['name'])) $missing[] = 'name';
+            if (empty($profile['bio'])) $missing[] = 'bio';
+            if (empty($profile['avatar_url'])) $missing[] = 'avatar';
+            if (empty($profile['vehicle_type'])) $missing[] = 'vehicle_type';
+            if (empty($profile['body_type'])) $missing[] = 'body_type';
+            if (empty($profile['home_lat']) || empty($profile['home_lng'])) $missing[] = 'location';
+            if (empty($profile['rntrc_number'])) $missing[] = 'rntrc';
+            if ($profile['verification_status'] !== 'verified') $missing[] = 'verification';
+
+            // Só notifica se tiver menos de 80%
+            if ($profile['profile_completeness'] < 80) {
+                // Verifica se já tem notificação similar não lida nas últimas 24h
+                $checkStmt = $this->db->prepare("
+                    SELECT id FROM notifications 
+                    WHERE user_id = ? AND type = 'profile_incomplete' AND is_read = 0 
+                    AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)
+                ");
+                $checkStmt->execute([$userId]);
+                
+                if (!$checkStmt->fetch()) {
+                    return $this->notifyProfileIncomplete($userId, $missing);
+                }
+            }
+            
+            return false;
+        } catch (Exception $e) {
+            error_log("Erro checkAndNotifyIncompleteProfile: " . $e->getMessage());
+            return false;
+        }
     }
 
     private function notifyInDatabase($userId, $title, $message, $type, $priority, $actionUrl, $metadata): bool {

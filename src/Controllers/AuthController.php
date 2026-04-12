@@ -100,7 +100,8 @@ class AuthController {
                     "company_name" => $profileData['company_name'] ?? null,
                     "document"    => $profileData['document'] ?? null,
                     "verification_status" => $profileData['verification_status'] ?? 'none',
-                    "user_type"   => $profileData['user_type'] ?? null
+                    "user_type"   => $profileData['user_type'] ?? null,
+                    "is_available" => $profileData['is_available'] ?? 1
                 ]
             ]);
 

@@ -12,13 +12,12 @@ class PaymentRepository {
 
     /**
      * Cria um registro inicial de transação (Status: Pending)
-     * Suporta billing_cycle e duration_days para planos com ciclos
      */
-    public function createTransaction($userId, $planId, $amount, $externalRef = null, $billingCycle = 'monthly', $durationDays = 30) {
-        $sql = "INSERT INTO transactions (user_id, plan_id, amount, status, external_reference, billing_cycle, duration_days, created_at) 
-                VALUES (?, ?, ?, 'pending', ?, ?, ?, NOW())";
+    public function createTransaction($userId, $planId, $amount, $externalRef = null, $billingCycle = 'monthly', $durationDays = 30, $moduleKey = null, $featureKey = null) {
+        $sql = "INSERT INTO transactions (user_id, plan_id, module_key, feature_key, amount, status, external_reference, billing_cycle, duration_days, created_at) 
+                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, NOW())";
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$userId, $planId, $amount, $externalRef, $billingCycle, $durationDays]);
+        $stmt->execute([$userId, $planId, $moduleKey, $featureKey, $amount, $externalRef, $billingCycle, $durationDays]);
         return $this->db->lastInsertId();
     }
 

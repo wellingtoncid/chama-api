@@ -9,13 +9,10 @@ use PDO;
 class SupportController {
     private $db;
     private $repo;
-    private $notif;
 
     public function __construct($db) {
         $this->db = $db;
         $this->repo = new AdminRepository($db);
-        require_once __DIR__ . '/NotificationController.php';
-        $this->notif = new \NotificationController($db);
     }
 
     /**
@@ -192,8 +189,13 @@ class SupportController {
                 "priority_level" => $priorityLevel
             ]);
         } catch (\Throwable $e) {
-            error_log("ERRO createTicket: " . $e->getMessage());
-            return Response::json(["success" => false, "message" => "Erro ao criar ticket"], 500);
+            return Response::json([
+                "success" => false, 
+                "message" => "Erro ao criar ticket",
+                "debug" => $e->getMessage(),
+                "file" => basename($e->getFile()),
+                "line" => $e->getLine()
+            ], 500);
         }
     }
 

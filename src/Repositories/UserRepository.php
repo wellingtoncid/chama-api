@@ -134,7 +134,7 @@ class UserRepository {
                     a.trade_name as account_trade_name,
                     a.corporate_name,
                     p.bio, p.avatar_url, p.cover_url, p.slug, p.vehicle_type, p.body_type,
-                    p.private_data as extended_attributes
+                    p.extended_attributes
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -342,12 +342,6 @@ class UserRepository {
                 'is_available'       => isset($data['is_available']) ? (int)$data['is_available'] : null
             ];
 
-            // 3.1 Disponibilidade (coluna dedicada na tabela user_profiles)
-            $availabilityStatus = null;
-            if (array_key_exists('is_available', $data)) {
-                $availabilityStatus = ((int)$data['is_available'] === 1) ? 'available' : 'unavailable';
-            }
-
             // 4. Atualiza Vitrine e Dados Técnicos (user_profiles)
             $sqlProfile = "UPDATE user_profiles SET 
                             bio = :bio, 
@@ -358,7 +352,6 @@ class UserRepository {
                             experience_years = :exp,
                             rntrc_number = :antt,
                             slug = :slug,
-                            availability_status = COALESCE(:availability_status, availability_status),
                             extended_attributes = :json,
                             updated_at = NOW()
                         WHERE user_id = :id";
@@ -372,7 +365,6 @@ class UserRepository {
                 ':exp'    => (int)($data['experience_years'] ?? 0),
                 ':antt'   => $data['antt'] ?? $data['rntrc_number'] ?? null,
                 ':slug'   => $data['slug'] ?? null,
-                ':availability_status' => $availabilityStatus,
                 ':json'   => json_encode($extraDetails, JSON_UNESCAPED_UNICODE),
                 ':id'     => $userId
             ]);
@@ -389,6 +381,24 @@ class UserRepository {
     }
 
     /**
+     * Toggle rápido de disponibilidade - atualiza apenas availability_status
+     */
+    public function toggleAvailability($userId, $isAvailable) {
+        $status = $isAvailable === 1 ? 'available' : 'offline';
+        
+        $sql = "UPDATE user_profiles SET 
+                    availability_status = :status,
+                    updated_at = NOW()
+                WHERE user_id = :user_id";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':status' => $status,
+            ':user_id' => $userId
+        ]);
+    }
+
+    /**
      * getProfileData atualizado para trazer os atributos JSON
      */
     public function getProfileData($userId) {
@@ -400,7 +410,7 @@ class UserRepository {
                     p.avatar_url, p.cover_url, p.bio, p.slug, 
                     u.city as profile_city, u.state as profile_state,
                     p.vehicle_type, p.body_type, p.verification_status, 
-                    p.extended_attributes 
+                    p.availability_status, p.extended_attributes 
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -472,6 +482,19 @@ class UserRepository {
 
         // Injeta as permissões
         $row['permissions'] = $this->resolvePermissions($row['user_type'], $row['details']['business_segment'] ?? 'general');
+
+        $row['is_available'] = ($row['availability_status'] ?? 'available') === 'available' ? 1 : 0;
+
+        // Verifica se o usuário tem identidade confirmada (módulo identity_verification ativo)
+        $stmt = $this->db->prepare("
+            SELECT 1 FROM user_modules 
+            WHERE user_id = :user_id 
+            AND module_key = 'identity_verification' 
+            AND status = 'active'
+            LIMIT 1
+        ");
+        $stmt->execute([':user_id' => $userId]);
+        $row['identity_confirmed'] = $stmt->fetch() ? 1 : 0;
 
         return $row;
     }
@@ -713,7 +736,7 @@ class UserRepository {
                     u.rating_avg, u.rating_count,
                     u.city as user_city, u.state as user_state,
                     p.bio, p.avatar_url, p.cover_url, p.vehicle_type, p.body_type,
-                    p.extended_attributes
+                    p.availability_status, p.extended_attributes
                 FROM user_profiles p
                 JOIN users u ON p.user_id = u.id
                 WHERE p.slug = :slug 
@@ -743,6 +766,9 @@ class UserRepository {
                 $decoded = json_decode($profile['extended_attributes'], true);
                 $profile['extras'] = is_array($decoded) ? $decoded : [];
             }
+
+            // 5. Disponibilidade do perfil
+            $profile['is_available'] = ($profile['availability_status'] ?? 'available') === 'available' ? 1 : 0;
 
             return $profile;
 
@@ -1050,9 +1076,13 @@ class UserRepository {
                     u.name as user_name, 
                     u.role,
                     u.user_type, 
+                    u.is_verified,
+                    u.verified_until,
+                    u.rating_avg,
+                    u.rating_count,
                     u.whatsapp, 
                     u.city as user_city, 
-                    u.state as user_state, 
+                    u.state as user_state,
                     u.created_at as member_since,
                     up.bio, 
                     up.avatar_url, 
@@ -1092,6 +1122,15 @@ class UserRepository {
                 ?? ($profile['trade_name'] 
                 ?? ($profile['corporate_name'] ?? $profile['user_name']));
 
+            // Mapeia name para compatibilidade com frontend
+            $profile['name'] = $profile['user_name'];
+            
+            // Mapeia banner_url para cover_url
+            $profile['banner_url'] = $profile['cover_url'];
+            
+            // Business type do JSON
+            $profile['business_type'] = $details['business_type'] ?? null;
+
             // Normalização de campos para o Front-end
             $profile['city'] = $profile['user_city'];
             $profile['state'] = $profile['user_state'];
@@ -1104,8 +1143,20 @@ class UserRepository {
             $profile['website'] = $profile['profile_website'] ?? ($details['website'] ?? null);
 
             // Disponibilidade pública
-            $profile['availability_status'] = $profile['availability_status'] ?: 'available';
+            $status = $profile['availability_status'] ?? '';
+            $profile['availability_status'] = in_array($status, ['available', 'busy', 'offline']) ? $status : 'available';
             $profile['is_available'] = $profile['availability_status'] === 'available' ? 1 : 0;
+
+            // Verifica se o usuário tem identidade confirmada
+            $stmt = $this->db->prepare("
+                SELECT 1 FROM user_modules 
+                WHERE user_id = :user_id 
+                AND module_key = 'identity_verification' 
+                AND status = 'active'
+                LIMIT 1
+            ");
+            $stmt->execute([':user_id' => $profile['id']]);
+            $profile['identity_confirmed'] = $stmt->fetch() ? 1 : 0;
 
             return $profile;
 
@@ -1145,6 +1196,21 @@ class UserRepository {
             'role' => $role,
             'search' => "%$search%"
         ]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function searchUsers(string $query, int $limit = 10): array {
+        $stmt = $this->db->prepare("
+            SELECT u.id, u.name, u.email, u.role, u.status, a.corporate_name, a.trade_name
+            FROM users u
+            LEFT JOIN accounts a ON u.account_id = a.id
+            WHERE (u.name LIKE :query OR u.email LIKE :query)
+            ORDER BY u.name ASC
+            LIMIT :limit
+        ");
+        $stmt->bindValue(':query', "%$query%", PDO::PARAM_STR);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 

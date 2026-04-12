@@ -41,7 +41,7 @@ $rules = [
     ['marketplace', 'verified_seller', 'Selo Vendedor Verificado', 'monthly', 0, 0.00, 39.90, 0.00],
     
     // Driver Pro (para motoristas)
-    ['driver', 'document_verification', 'Verificação de Documentos', 'monthly', 0, 0.00, 9.90, 0.00],
+    ['driver', 'document_verification', 'Verificação de Identidade', 'monthly', 0, 0.00, 9.90, 0.00],
     ['driver', 'featured_profile', 'Perfil em Destaque', 'monthly', 0, 0.00, 29.90, 0.00],
     ['driver', 'priority_support', 'Suporte Prioritário', 'monthly', 0, 0.00, 19.90, 0.00],
     ['driver', 'radar_highlight', 'Destaque no Radar', 'monthly', 0, 0.00, 19.90, 0.00],
@@ -49,6 +49,9 @@ $rules = [
     
     // Cotações (para empresas)
     ['quotes', 'request_quote', 'Solicitar Cotação', 'monthly', 5, 14.90, 89.90, 0.00],
+    
+    // Company Pro (para empresas)
+    ['company_pro', 'identity_verification', 'Verificação de Identidade', 'monthly', 0, 0.00, 19.90, 0.00],
     ['quotes', 'receive_quotes', 'Receber Cotações', 'monthly', 0, 9.90, 59.90, 0.00],
     ['quotes', 'unlimited_quotes', 'Cotações Ilimitadas', 'monthly', 0, 0.00, 149.90, 0.00],
 ];

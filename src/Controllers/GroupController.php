@@ -16,9 +16,33 @@ class GroupController {
         $this->loggedUser = $loggedUser;
     }
 
-    public function listGroups() {
+    /**
+     * Busca um grupo pelo ID (para página de detalhes)
+     */
+    public function getGroup($data, $loggedUser = null) {
+        $id = (int)($data['id'] ?? 0);
+        
+        error_log("getGroup called with data: " . json_encode($data) . ", id: $id");
+        
+        if (!$id) {
+            return Response::json(['success' => false, 'message' => 'ID não fornecido'], 400);
+        }
+        
+        $group = $this->groupRepo->findById($id);
+        
+        if (!$group) {
+            error_log("getGroup: group not found for id: $id");
+            return Response::json(['success' => false, 'message' => 'Grupo não encontrado'], 404);
+        }
+        
+        return Response::json(['success' => true, 'data' => $group]);
+    }
+
+    public function listGroups($data = [], $loggedUser = null) {
         $role = $this->loggedUser['role'] ?? 'all';
-        $groups = $this->groupRepo->listActive($role);
+        $homeOnly = !empty($data['home']);
+        
+        $groups = $this->groupRepo->listActive($role, $homeOnly);
 
         // Se não for admin, incrementa visualizações de forma otimizada
         if (!in_array(strtolower($role), ['admin', 'manager']) && !empty($groups)) {
@@ -117,6 +141,53 @@ class GroupController {
             return Response::json(["success" => true]);
         }
         return Response::json(["success" => false, "message" => "Erro ao remover ou ID inválido"], 400);
+    }
+
+    /**
+     * Upload de imagem do grupo
+     */
+    public function uploadImage($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+        
+        $role = strtolower($loggedUser['role'] ?? '');
+        if (!in_array($role, ['admin', 'manager'])) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 403);
+        }
+        
+        if (!isset($_FILES['image']) || $_FILES['image']['error'] !== UPLOAD_ERR_OK) {
+            return Response::json(["success" => false, "message" => "Nenhuma imagem enviada ou erro no upload"], 400);
+        }
+        
+        $file = $_FILES['image'];
+        
+        $allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+        if (!in_array($file['type'], $allowed)) {
+            return Response::json(["success" => false, "message" => "Tipo de arquivo não permitido. Use JPG, PNG ou WebP."], 400);
+        }
+        
+        $maxSize = 5 * 1024 * 1024;
+        if ($file['size'] > $maxSize) {
+            return Response::json(["success" => false, "message" => "Arquivo muito grande. Máximo 5MB."], 400);
+        }
+        
+        $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $fileName = 'group_' . time() . '_' . uniqid() . '.' . $extension;
+        $uploadDir = __DIR__ . "/../../public/uploads/groups/";
+        
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+        
+        $targetPath = $uploadDir . $fileName;
+        
+        if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+            $imageUrl = "uploads/groups/" . $fileName;
+            return Response::json(["success" => true, "url" => $imageUrl]);
+        }
+        
+        return Response::json(["success" => false, "message" => "Erro ao salvar imagem"], 500);
     }
 
     public function checkAuth() {

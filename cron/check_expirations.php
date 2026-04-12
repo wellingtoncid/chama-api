@@ -51,6 +51,16 @@ if (!empty($expiredAds)) {
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
     $db->prepare("UPDATE ads SET status = 'expired' WHERE id IN ($placeholders)")->execute($ids);
     echo "Expirados " . count($expiredAds) . " anúncios\n";
+    
+    // Notificar usuários quando seus anúncios expiram
+    foreach ($expiredAds as $ad) {
+        $notifier->send(
+            $ad['user_id'],
+            "Anúncio expirado: " . $ad['title'],
+            "Seu anúncio '" . $ad['title'] . "' expirou e não está mais sendo exibido. Renove para continuar alcançando clientes.",
+            'system', 'high'
+        );
+    }
 }
 
 // 0c. EXPIRAR DESTAQUES DE FRETES
@@ -83,6 +93,47 @@ if (!empty($expiredVerified)) {
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
     $db->prepare("UPDATE users SET is_verified = 0, verified_until = NULL WHERE id IN ($placeholders)")->execute($ids);
     echo "Expirados " . count($expiredVerified) . " perfis verificados\n";
+}
+
+// 0e. EXPIRAR LISTINGS (MARKETPLACE)
+$expiredListings = $db->query("
+    SELECT id, user_id, title 
+    FROM listings 
+    WHERE status = 'active' 
+    AND expires_at IS NOT NULL 
+    AND expires_at < NOW()
+")->fetchAll(PDO::FETCH_ASSOC);
+
+if (!empty($expiredListings)) {
+    $ids = array_column($expiredListings, 'id');
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $db->prepare("UPDATE listings SET status = 'expired', is_featured = 0 WHERE id IN ($placeholders)")->execute($ids);
+    echo "Expirados " . count($expiredListings) . " listings do marketplace\n";
+    
+    foreach ($expiredListings as $listing) {
+        $notifier->send(
+            $listing['user_id'],
+            "Anúncio expirado: " . $listing['title'],
+            "Seu anúncio '" . $listing['title'] . "' expirou e não está mais sendo exibido. Prorrogue para continuar vendendo!",
+            'system', 'high'
+        );
+    }
+}
+
+// 0f. REMOVER DESTAQUE DE LISTINGS (MARKETPLACE)
+$expiredFeaturedListings = $db->query("
+    SELECT id, user_id, title 
+    FROM listings 
+    WHERE is_featured = 1 
+    AND expires_at IS NOT NULL 
+    AND expires_at < NOW()
+")->fetchAll(PDO::FETCH_ASSOC);
+
+if (!empty($expiredFeaturedListings)) {
+    $ids = array_column($expiredFeaturedListings, 'id');
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $db->prepare("UPDATE listings SET is_featured = 0 WHERE id IN ($placeholders)")->execute($ids);
+    echo "Removido destaque de " . count($expiredFeaturedListings) . " listings\n";
 }
 
 // 1. Notificar Banners (Ads) vencendo em 3 dias
@@ -123,6 +174,34 @@ foreach ($users as $u) {
         $u['id'],
         "Seu Selo Pro vai expirar",
         "Sua verificação premium vence em 5 dias. Mantenha seu perfil com credibilidade máxima renovando seu plano.",
+        'system', 'medium'
+    );
+}
+
+// 4. Notificar Listings do Marketplace vencendo em 3 dias
+$sqlListings = "SELECT id, user_id, title, DATEDIFF(expires_at, NOW()) as days 
+                FROM listings WHERE status = 'active' AND expires_at IS NOT NULL AND DATEDIFF(expires_at, NOW()) = 3";
+$listings = $db->query($sqlListings)->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($listings as $listing) {
+    $notifier->send(
+        $listing['user_id'],
+        "Seu anúncio está vencendo!",
+        "O anúncio '" . $listing['title'] . "' expira em 3 dias. Prorrogue para continuar vendendo!",
+        'system', 'medium'
+    );
+}
+
+// 5. Notificar Listings destacados do Marketplace vencendo em 2 dias
+$sqlFeaturedListings = "SELECT id, user_id, title, DATEDIFF(expires_at, NOW()) as days 
+                        FROM listings WHERE is_featured = 1 AND expires_at IS NOT NULL AND DATEDIFF(expires_at, NOW()) = 2";
+$featuredListings = $db->query($sqlFeaturedListings)->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($featuredListings as $listing) {
+    $notifier->send(
+        $listing['user_id'],
+        "Destaque do seu anúncio está expirando!",
+        "O destaque do anúncio '" . $listing['title'] . "' expira em 48h. Renove para continuar no topo!",
         'system', 'medium'
     );
 }

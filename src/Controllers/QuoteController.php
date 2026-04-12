@@ -4,17 +4,20 @@ namespace App\Controllers;
 use App\Core\Response;
 use App\Repositories\QuoteRepository;
 use App\Repositories\UserRepository;
+use App\Services\CreditService;
 use Exception;
 
 class QuoteController {
     private QuoteRepository $quoteRepo;
     private ?UserRepository $userRepo;
     private $db;
+    private $creditService;
 
     public function __construct($db, $userRepo = null) {
         $this->db = $db;
         $this->quoteRepo = new QuoteRepository($db);
         $this->userRepo = $userRepo;
+        $this->creditService = new CreditService($db);
     }
 
     private function userHasModule(int $userId, string $moduleKey, string $featureKey = null): bool {
@@ -51,17 +54,48 @@ class QuoteController {
             return Response::json(['success' => false, 'message' => 'Tipo de cotação inválido'], 400);
         }
 
-        $hasModule = $this->userHasModule($loggedUser['id'], 'quotes', 'request_quote');
-        if (!$hasModule) {
-            return Response::json([
-                'success' => false, 
-                'message' => 'Você precisa do módulo Solicitar Cotação para criar cotações'
-            ], 403);
+        $userId = $loggedUser['id'];
+        $isPriority = !empty($data['is_priority']) && $data['is_priority'] == true;
+
+        $featureKey = 'request_quote';
+        $amount = 14.90;
+        $expiresDays = 7;
+
+        if ($isPriority) {
+            $featureKey = 'priority_quote';
+            $amount = 23.90; // 14.90 + 9.90
+        }
+
+        // Verificar se é admin (não paga)
+        $isAdmin = in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER']);
+        $paymentRequired = !$isAdmin;
+
+        // Verificar saldo e debitar
+        if ($paymentRequired) {
+            $balance = $this->creditService->getBalance($userId);
+            
+            if ($balance < $amount) {
+                return Response::json([
+                    'success' => false,
+                    'message' => "Saldo insuficiente. Você tem R$ " . number_format($balance, 2, ',', '.') . " na carteira. Custo: R$ " . number_format($amount, 2, ',', '.') . ".",
+                    "balance" => $balance,
+                    "required" => $amount,
+                    "code" => "INSUFFICIENT_BALANCE"
+                ], 402);
+            }
+
+            $debited = $this->creditService->debit($userId, $amount, 'quotes', $featureKey);
+            if (!$debited) {
+                return Response::json([
+                    'success' => false,
+                    'message' => "Erro ao debitar saldo. Tente novamente."
+                ], 500);
+            }
         }
 
         try {
             $quoteData = [
-                'shipper_id' => $loggedUser['id'],
+                'shipper_id' => $userId,
                 'type' => $data['type'],
                 'title' => trim($data['title']),
                 'origin_city' => $data['origin_city'] ?? null,
@@ -73,15 +107,21 @@ class QuoteController {
                 'volume' => $data['volume'] ?? null,
                 'period_days' => $data['period_days'] ?? null,
                 'pickup_date' => $data['pickup_date'] ?? null,
-                'description' => $data['description'] ?? null
+                'description' => $data['description'] ?? null,
+                'expires_at' => date('Y-m-d H:i:s', strtotime("+$expiresDays days")),
+                'is_priority' => $isPriority ? 1 : 0
             ];
 
             $quoteId = $this->quoteRepo->create($quoteData);
 
+            $newBalance = $paymentRequired ? $this->creditService->getBalance($userId) : null;
+
             return Response::json([
                 'success' => true,
                 'message' => 'Cotação criada com sucesso',
-                'data' => ['id' => $quoteId]
+                'data' => ['id' => $quoteId],
+                'cost' => $paymentRequired ? $amount : 0,
+                'balance' => $newBalance
             ], 201);
         } catch (Exception $e) {
             error_log("Erro ao criar cotação: " . $e->getMessage());

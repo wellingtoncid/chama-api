@@ -192,7 +192,7 @@ class AdminRepository {
         $confirmed = $this->db->query("
             SELECT IFNULL(SUM(amount), 0) as total 
             FROM transactions 
-            WHERE status IN ('approved', 'completed')
+            WHERE status = 'approved'
         ")->fetch(PDO::FETCH_ASSOC);
 
         $pending = $this->db->query("
@@ -201,9 +201,28 @@ class AdminRepository {
             WHERE status = 'pending'
         ")->fetch(PDO::FETCH_ASSOC);
 
+        $subscriberCount = $this->db->query("
+            SELECT COUNT(DISTINCT user_id) as total 
+            FROM transactions 
+            WHERE status = 'approved'
+            AND transaction_type IN ('subscription', 'monthly')
+        ")->fetch(PDO::FETCH_ASSOC);
+
+        $latestTransactions = $this->db->query("
+            SELECT t.id, t.user_id, t.amount, t.status, t.created_at, t.module_key, t.feature_key,
+                   u.name as user_name, p.name as plan_name
+            FROM transactions t
+            LEFT JOIN users u ON t.user_id = u.id
+            LEFT JOIN plans p ON t.plan_id = p.id
+            ORDER BY t.created_at DESC
+            LIMIT 10
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
         return [
             'total_revenue' => number_format((float)$confirmed['total'], 2, '.', ''),
-            'pending_revenue' => number_format((float)$pending['total'], 2, '.', '')
+            'pending_revenue' => number_format((float)$pending['total'], 2, '.', ''),
+            'subscriber_count' => (int)($subscriberCount['total'] ?? 0),
+            'latest_transactions' => $latestTransactions
         ];
     }
 
@@ -1010,5 +1029,20 @@ class AdminRepository {
                 ':module_key' => $moduleKey
             ]);
         }
+    }
+
+    public function searchUsers(string $query, int $limit = 10): array {
+        $stmt = $this->db->prepare("
+            SELECT u.id, u.name, u.email, u.role, u.status, a.corporate_name, a.trade_name
+            FROM users u
+            LEFT JOIN accounts a ON u.account_id = a.id
+            WHERE (u.name LIKE :query OR u.email LIKE :query)
+            ORDER BY u.name ASC
+            LIMIT :limit
+        ");
+        $stmt->bindValue(':query', "%$query%", PDO::PARAM_STR);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }

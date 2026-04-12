@@ -13,28 +13,37 @@ class GroupRepository {
     /**
      * Lista grupos para o site público (não logado)
      * Filtra por display_location = 'site' ou 'both'
+     * Se $homeOnly = true, filtra apenas grupos visíveis na home
      */
-    public function listActive($userRole = 'all') {
+    public function listActive($userRole = 'all', $homeOnly = false) {
         $userRole = strtolower($userRole);
         $isAdmin = in_array($userRole, ['admin', 'manager']);
 
-        // Filtro obrigatório: apenas grupos visíveis no site público
-        $sql = "SELECT * FROM whatsapp_groups WHERE is_deleted = 0";
-        $sql .= " AND (display_location = 'site' OR display_location = 'both')";
+        $sql = "SELECT g.*, 
+                       gc.name as category_name, 
+                       gc.color as category_color,
+                       gc.slug as category_slug
+                FROM whatsapp_groups g
+                LEFT JOIN group_categories gc ON g.category_id = gc.id
+                WHERE g.is_deleted = 0
+                AND (g.display_location = 'site' OR g.display_location = 'both')";
         
         if (!$isAdmin) {
-            $sql .= " AND status = 'active'";
+            $sql .= " AND g.status = 'active'";
         }
 
+        if ($homeOnly) {
+            $sql .= " AND g.is_visible_home = 1";
+        }
+        
         $params = [];
 
-        // Filtro de Role (apenas para não-admins ou quando não for 'all')
         if (!$isAdmin && $userRole !== 'all') {
-            $sql .= " AND (target_role = ? OR target_role = 'ALL')";
+            $sql .= " AND (g.target_role = ? OR g.target_role = 'ALL')";
             $params[] = strtoupper($userRole);
         }
 
-        $sql .= " ORDER BY is_visible_home DESC, is_premium DESC, priority_level DESC, region_name ASC";
+        $sql .= " ORDER BY g.is_visible_home DESC, g.is_premium DESC, g.priority_level DESC, g.region_name ASC";
         
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
@@ -49,23 +58,27 @@ class GroupRepository {
         $userRole = strtolower($userRole);
         $isAdmin = in_array($userRole, ['admin', 'manager']);
 
-        // Filtro obrigatório: apenas grupos visíveis na plataforma
-        $sql = "SELECT * FROM whatsapp_groups WHERE is_deleted = 0";
-        $sql .= " AND (display_location = 'platform' OR display_location = 'both')";
+        $sql = "SELECT g.*, 
+                       gc.name as category_name, 
+                       gc.color as category_color,
+                       gc.slug as category_slug
+                FROM whatsapp_groups g
+                LEFT JOIN group_categories gc ON g.category_id = gc.id
+                WHERE g.is_deleted = 0
+                AND (g.display_location = 'platform' OR g.display_location = 'both')";
         
         if (!$isAdmin) {
-            $sql .= " AND status = 'active'";
+            $sql .= " AND g.status = 'active'";
         }
 
         $params = [];
 
-        // Filtro de Role - aplica apenas para não-admins
         if (!$isAdmin && $userRole !== 'all') {
-            $sql .= " AND (target_role = ? OR target_role = 'ALL')";
+            $sql .= " AND (g.target_role = ? OR g.target_role = 'ALL')";
             $params[] = strtoupper($userRole);
         }
 
-        $sql .= " ORDER BY is_premium DESC, priority_level DESC, region_name ASC";
+        $sql .= " ORDER BY g.is_premium DESC, g.priority_level DESC, g.region_name ASC";
         
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
@@ -91,28 +104,77 @@ class GroupRepository {
      * Lista TODOS os grupos para admin (sem filtro de display_location)
      */
     public function listAll() {
-        $sql = "SELECT * FROM whatsapp_groups WHERE is_deleted = 0 ORDER BY priority_level DESC, region_name ASC";
+        $sql = "SELECT g.*, gc.name as category_name, gc.color as category_color 
+                FROM whatsapp_groups g 
+                LEFT JOIN group_categories gc ON g.category_id = gc.id 
+                WHERE g.is_deleted = 0 
+                ORDER BY g.priority_level DESC, g.region_name ASC";
         $stmt = $this->db->prepare($sql);
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Busca um grupo pelo ID com informações do admin
+     */
+    public function findById($id) {
+        $sql = "SELECT g.*, 
+                       gc.name as category_name, 
+                       gc.color as category_color, 
+                       gc.slug as category_slug,
+                       u.id as admin_user_id,
+                       u.name as admin_user_name,
+                       u.whatsapp as admin_user_whatsapp,
+                       u.is_verified as admin_user_verified,
+                       up.slug as admin_user_slug,
+                       up.avatar_url as admin_user_avatar,
+                       a.corporate_name as admin_company_name,
+                       (SELECT COUNT(*) FROM whatsapp_groups WHERE admin_user_id = u.id AND is_deleted = 0) as admin_total_groups
+                FROM whatsapp_groups g 
+                LEFT JOIN group_categories gc ON g.category_id = gc.id 
+                LEFT JOIN users u ON g.admin_user_id = u.id
+                LEFT JOIN user_profiles up ON u.id = up.user_id
+                LEFT JOIN accounts a ON u.account_id = a.id
+                WHERE g.id = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$id]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($result) {
+            if (!empty($result['other_admins'])) {
+                $decoded = json_decode($result['other_admins'], true);
+                $result['other_admins'] = is_array($decoded) ? $decoded : [];
+            }
+        }
+        
+        error_log("findById($id): " . ($result ? "found" : "not found"));
+        return $result;
     }
 
     public function save(array $data) {
         try {
             $id = !empty($data['id']) ? (int)$data['id'] : null;
             
-            // 1. Mapeamento e Higienização (Garante consistência com o DB)
+            $otherAdmins = null;
+            if (!empty($data['other_admins']) && is_array($data['other_admins'])) {
+                $otherAdmins = json_encode($data['other_admins'], JSON_UNESCAPED_UNICODE);
+            }
+            
             $fields = [
                 'region_name'      => strip_tags($data['region_name'] ?? ''),
                 'invite_link'      => trim($data['invite_link'] ?? ''),
+                'image_url'        => trim($data['image_url'] ?? ''),
+                'description'      => $data['description'] ?? null,
+                'admin_user_id'    => !empty($data['admin_user_id']) ? (int)$data['admin_user_id'] : null,
                 'member_count'     => (int)($data['member_count'] ?? 0),
                 'is_public'        => (int)($data['is_public'] ?? 0),
                 'is_visible_home'  => (int)($data['is_visible_home'] ?? 0),
-                'target_role'      => strtoupper($data['target_role'] ?? 'ALL'), // Compatível com Enum
-                'category'         => $data['category'] ?? 'Geral',
+                'target_role'      => strtoupper($data['target_role'] ?? 'ALL'),
+                'category_id'      => !empty($data['category_id']) ? (int)$data['category_id'] : null,
                 'priority_level'   => (int)($data['priority_level'] ?? 0),
                 'internal_notes'   => $data['internal_notes'] ?? null,
                 'group_admin_name' => $data['group_admin_name'] ?? null,
+                'other_admins'    => $otherAdmins,
                 'status'           => $data['status'] ?? 'active',
                 'is_verified'      => (int)($data['is_verified'] ?? 0),
                 'is_premium'       => (int)($data['is_premium'] ?? 0),
@@ -120,19 +182,22 @@ class GroupRepository {
                 'access_type'      => $data['access_type'] ?? 'public'
             ];
 
-            // 2. Lógica Dinâmica de SQL
             if ($id) {
                 $sql = "UPDATE whatsapp_groups SET 
                             region_name = :region_name, 
                             invite_link = :invite_link, 
+                            image_url = :image_url,
+                            description = :description,
+                            admin_user_id = :admin_user_id,
                             member_count = :member_count,
                             is_public = :is_public, 
                             is_visible_home = :is_visible_home, 
                             target_role = :target_role,
-                            category = :category, 
+                            category_id = :category_id, 
                             priority_level = :priority_level, 
                             internal_notes = :internal_notes,
                             group_admin_name = :group_admin_name, 
+                            other_admins = :other_admins,
                             status = :status, 
                             is_verified = :is_verified,
                             is_premium = :is_premium, 
@@ -142,12 +207,12 @@ class GroupRepository {
                 $fields['id'] = $id;
             } else {
                 $sql = "INSERT INTO whatsapp_groups 
-                            (region_name, invite_link, member_count, is_public, is_visible_home, target_role, 
-                            category, priority_level, internal_notes, group_admin_name, status, is_verified, 
+                            (region_name, invite_link, image_url, description, admin_user_id, member_count, is_public, is_visible_home, target_role, 
+                            category_id, priority_level, internal_notes, group_admin_name, other_admins, status, is_verified, 
                             is_premium, display_location, access_type) 
                         VALUES 
-                            (:region_name, :invite_link, :member_count, :is_public, :is_visible_home, :target_role, 
-                            :category, :priority_level, :internal_notes, :group_admin_name, :status, :is_verified, 
+                            (:region_name, :invite_link, :image_url, :description, :admin_user_id, :member_count, :is_public, :is_visible_home, :target_role, 
+                            :category_id, :priority_level, :internal_notes, :group_admin_name, :other_admins, :status, :is_verified, 
                             :is_premium, :display_location, :access_type)";
             }
 

@@ -900,11 +900,14 @@ class FreightRepository {
         $sql = "SELECT 
                     u.name as owner_user_name, 
                     u.whatsapp as owner_whatsapp,
+                    u.is_verified as owner_is_verified,
+                    u.created_at as owner_created_at,
                     p.avatar_url,
                     p.slug as owner_slug,
                     p.extended_attributes,
                     a.trade_name,
-                    a.corporate_name
+                    a.corporate_name,
+                    (SELECT COUNT(*) FROM freights f WHERE f.user_id = u.id AND f.status IN ('open', 'active')) as total_owner_freights
                 FROM users u
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 LEFT JOIN accounts a ON u.account_id = a.id
@@ -918,17 +921,19 @@ class FreightRepository {
             if ($owner) {
                 $details = json_decode($owner['extended_attributes'] ?? '{}', true);
 
-                // Define o nome da empresa ou dono seguindo a mesma prioridade
                 $displayName = $details['company_name'] 
                     ?? ($owner['trade_name'] 
                     ?? ($owner['corporate_name'] ?? $owner['owner_user_name']));
 
                 $freight['owner_name'] = $displayName;
-                $freight['company_name'] = $displayName; // Para compatibilidade com cards
+                $freight['company_name'] = $displayName;
                 
                 $freight['owner_whatsapp'] = $owner['owner_whatsapp'];
                 $freight['owner_avatar'] = $owner['avatar_url'];
                 $freight['owner_slug'] = $owner['owner_slug'];
+                $freight['owner_is_verified'] = (int)($owner['owner_is_verified'] ?? 0);
+                $freight['owner_created_at'] = $owner['owner_created_at'];
+                $freight['total_owner_freights'] = (int)($owner['total_owner_freights'] ?? 0);
             }
 
             return method_exists($this, 'formatFreightData') ? $this->formatFreightData($freight) : $freight;

@@ -5,15 +5,19 @@ use App\Core\Response;
 use App\Core\Auth;
 use App\Repositories\UserRepository;
 use App\Controllers\NotificationController;
+use App\Services\GeocodingService;
+use App\Services\ContentFilterService;
 use PDO;
 
 class UserController {
     private $userRepo;
     private $db;
+    private $geocoding;
 
     public function __construct($db) {
         $this->db = $db;
         $this->userRepo = new UserRepository($db);
+        $this->geocoding = new GeocodingService($db);
     }
 
     /**
@@ -82,6 +86,12 @@ class UserController {
     public function updateProfile($data, $loggedUser) {
         if (!$loggedUser) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
 
+        // Validar bio com ContentFilter
+        if (!empty($data['bio']) && !ContentFilterService::isClean($data['bio'])) {
+            $reason = ContentFilterService::getReason($data['bio']);
+            return Response::json(["success" => false, "message" => $reason ?: "Sua bio contém conteúdo não permitido."], 400);
+        }
+
         try {
             $userId = $loggedUser['id'];
             $userType = $loggedUser['user_type'] ?? 'DRIVER';
@@ -140,6 +150,36 @@ class UserController {
                 "success" => true,
                 "message" => "Perfil atualizado!",
                 "user" => $updatedUser
+            ]);
+
+        } catch (\Exception $e) {
+            return Response::json(["success" => false, "message" => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Toggle rápido de disponibilidade do driver
+     * Rota: POST /api/toggle-availability
+     */
+    public function toggleAvailability($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+
+        try {
+            $userId = $loggedUser['id'];
+            $newStatus = isset($data['is_available']) ? (int)$data['is_available'] : null;
+
+            if ($newStatus === null || ($newStatus !== 0 && $newStatus !== 1)) {
+                return Response::json(["success" => false, "message" => "Valor inválido"], 400);
+            }
+
+            $this->userRepo->toggleAvailability($userId, $newStatus);
+
+            return Response::json([
+                "success" => true,
+                "message" => $newStatus === 1 ? "Você está disponível" : "Você está indisponível",
+                "is_available" => $newStatus
             ]);
 
         } catch (\Exception $e) {
@@ -421,7 +461,12 @@ class UserController {
                 $allowedModules = ['driver', 'freights', 'marketplace', 'chat', 'groups', 'plans', 'support'];
             }
 
-            $stmt = $this->db->prepare("SELECT module_key, status, activated_at, expires_at FROM user_modules WHERE user_id = :user_id");
+            $stmt = $this->db->prepare("
+                SELECT module_key, status, activated_at, expires_at, 
+                       requires_approval, approval_status, requested_at, plan_id 
+                FROM user_modules WHERE user_id = :user_id
+                  AND (expires_at IS NULL OR expires_at > NOW())
+            ");
             $stmt->execute([':user_id' => $userId]);
             $userModules = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -430,50 +475,46 @@ class UserController {
                 $modulesMap[$m['module_key']] = $m;
             }
 
-            $modules = [];
-            foreach ($availableModules as $mod) {
-                $userMod = $modulesMap[$mod['key']] ?? null;
-                $modules[] = [
-                    'key' => $mod['key'],
-                    'name' => $mod['name'],
-                    'description' => $mod['description'],
-                    'status' => $userMod ? $userMod['status'] : 'inactive',
-                    'is_active' => $userMod && $userMod['status'] === 'active',
-                    'activated_at' => $userMod['activated_at'] ?? null,
-                    'expires_at' => $userMod['expires_at'] ?? null,
-                    'is_allowed' => in_array($mod['key'], $allowedModules)
-                ];
-            }
+            // Módulos que requerem aprovação do admin
+            $approvalRequiredModules = ['quotes', 'advertiser'];
 
-            // Para empresas, todos os módulos permitidos são ativos por padrão
+            // Para empresas, módulos permitidos são ativos por padrão
             $isCompanyDefault = $isCompany;
 
             $modules = [];
             foreach ($availableModules as $mod) {
                 $userMod = $modulesMap[$mod['key']] ?? null;
                 $isAllowed = in_array($mod['key'], $allowedModules);
+                $requiresApproval = in_array($mod['key'], $approvalRequiredModules);
                 
                 // Se não há registro do usuário, usa o padrão
-                // Empresas: módulos permitidos são ativos por padrão
-                // Motoristas: fretes é ativo, demais depende do registro
                 $isActive = false;
                 if ($userMod) {
                     $isActive = $userMod['status'] === 'active';
-                } elseif ($isAllowed) {
-                    // Para empresas, todos os módulos permitidos são ativos
+                } elseif ($isAllowed && !$requiresApproval) {
+                    // Para empresas, módulos permitidos são ativos por padrão (exceto os que requerem aprovação)
                     // Para motoristas, fretes é obrigatório e ativo
-                    $isActive = $isCompanyDefault || $mod['key'] === 'fretes';
+                    $isActive = $isCompanyDefault || $mod['key'] === 'freights';
+                }
+
+                // Determina status de aprovação
+                $approvalStatus = null;
+                if ($requiresApproval && $userMod) {
+                    $approvalStatus = $userMod['approval_status'] ?? ($isAllowed ? 'approved' : 'pending');
                 }
 
                 $modules[] = [
                     'key' => $mod['key'],
                     'name' => $mod['name'],
                     'description' => $mod['description'],
-                    'status' => $isActive ? 'active' : 'inactive',
+                    'status' => $isActive ? 'active' : ($userMod ? $userMod['status'] : 'inactive'),
                     'is_active' => $isActive,
                     'activated_at' => $userMod['activated_at'] ?? ($isActive ? date('Y-m-d H:i:s') : null),
                     'expires_at' => $userMod['expires_at'] ?? null,
-                    'is_allowed' => $isAllowed
+                    'is_allowed' => $isAllowed,
+                    'requires_approval' => $requiresApproval,
+                    'approval_status' => $approvalStatus,
+                    'requested_at' => $userMod['requested_at'] ?? null
                 ];
             }
 
@@ -509,17 +550,29 @@ class UserController {
         
         // Define módulos permitidos por tipo de usuário (chaves em inglês)
         if ($role === 'ADMIN') {
-            $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'financial', 'groups', 'plans', 'support'];
+            $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'financial', 'groups', 'plans', 'support', 'identity_verification'];
         } elseif ($isCompany) {
-            // Empresas podem ativar: freights, marketplace, quotes, advertiser, chat, groups
-            $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'groups'];
+            // Empresas podem ativar: freights, marketplace, chat, groups, identity_verification
+            // quotes e advertiser requerem aprovação
+            $allowedModules = ['freights', 'marketplace', 'chat', 'groups', 'identity_verification'];
+            $approvalRequiredModules = ['quotes', 'advertiser'];
         } else {
-            // Motoristas: freights (leitura), marketplace
-            $allowedModules = ['freights', 'marketplace'];
+            // Motoristas: freights (leitura), marketplace, identity_verification
+            $allowedModules = ['freights', 'marketplace', 'identity_verification'];
+            $approvalRequiredModules = [];
         }
         
-        if (!in_array($moduleKey, $allowedModules)) {
+        if (!in_array($moduleKey, $allowedModules) && !in_array($moduleKey, $approvalRequiredModules)) {
             return Response::json(["success" => false, "message" => "Módulo não disponível para seu perfil"], 400);
+        }
+
+        // Bloqueia ativação de módulos que requerem aprovação
+        if ($action === 'activate' && in_array($moduleKey, $approvalRequiredModules)) {
+            return Response::json([
+                "success" => false, 
+                "message" => "Este módulo requer aprovação. Use 'request_access' para solicitar.",
+                "requires_approval" => true
+            ], 400);
         }
 
         try {
@@ -544,6 +597,83 @@ class UserController {
         } catch (\Throwable $e) {
             error_log("ERRO toggleModule: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro ao processar"], 500);
+        }
+    }
+
+    /**
+     * Rota: POST /api/user/modules/request - Solicita acesso a módulo que requer aprovação
+     */
+    public function requestModuleAccess($data, $loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
+            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+        }
+
+        $moduleKey = $data['module_key'] ?? '';
+        $contactInfo = $data['contact_info'] ?? '';
+        $justification = $data['justification'] ?? '';
+        
+        $role = strtoupper($loggedUser['role'] ?? '');
+        $isCompany = ($role === 'COMPANY');
+        
+        // Apenas empresas podem solicitar módulos que requerem aprovação
+        if (!$isCompany) {
+            return Response::json(["success" => false, "message" => "Apenas empresas podem solicitar módulos"], 400);
+        }
+        
+        // Apenas quotes e advertiser requerem aprovação
+        $approvalRequiredModules = ['quotes', 'advertiser'];
+        if (!in_array($moduleKey, $approvalRequiredModules)) {
+            return Response::json(["success" => false, "message" => "Este módulo não requer aprovação"], 400);
+        }
+
+        try {
+            $userId = $loggedUser['id'];
+            $userName = $loggedUser['name'] ?? '';
+            $companyName = $loggedUser['company_name'] ?? '';
+            
+            // Verifica se já existe solicitação pendente
+            $stmt = $this->db->prepare("
+                SELECT id FROM portal_requests 
+                WHERE user_id = :user_id 
+                AND request_type = 'module_request' 
+                AND module_key = :module_key 
+                AND status = 'pending'
+            ");
+            $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+            if ($stmt->fetch()) {
+                return Response::json(["success" => false, "message" => "Você já possui uma solicitação pendente para este módulo"], 400);
+            }
+
+            // Cria solicitação usando a tabela portal_requests
+            $stmt = $this->db->prepare("
+                INSERT INTO portal_requests 
+                (user_id, request_type, module_key, title, contact_info, description, status, created_at)
+                VALUES (:user_id, 'module_request', :module_key, :title, :contact_info, :description, 'pending', NOW())
+            ");
+            $stmt->execute([
+                ':user_id' => $userId,
+                ':module_key' => $moduleKey,
+                ':title' => "Solicitação de Módulo: {$moduleKey} - {$companyName}",
+                ':contact_info' => $contactInfo,
+                ':description' => $justification ?: "Solicitação de acesso ao módulo {$moduleKey}"
+            ]);
+
+            // Atualiza status na user_modules
+            $stmt = $this->db->prepare("
+                INSERT INTO user_modules (user_id, module_key, status, requires_approval, approval_status, requested_at)
+                VALUES (:user_id, :module_key, 'pending', 1, 'pending', NOW())
+                ON DUPLICATE KEY UPDATE requires_approval = 1, approval_status = 'pending', requested_at = NOW()
+            ");
+            $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+
+            return Response::json([
+                "success" => true, 
+                "message" => "Solicitação enviada com sucesso! Nossa equipe analisará e entrará em contato."
+            ]);
+
+        } catch (\Throwable $e) {
+            error_log("ERRO requestModuleAccess: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao processar solicitação"], 500);
         }
     }
 
@@ -591,6 +721,32 @@ class UserController {
             return Response::json($result);
         } catch (\Throwable $e) {
             error_log("ERRO getSiteSettings: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+    
+    /**
+     * Rota: GET /api/public/site-settings - Retorna listas públicas do site
+     */
+    public function getPublicLists($data, $loggedUser) {
+        try {
+            $keys = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types'];
+            $placeholders = implode(',', array_fill(0, count($keys), '?'));
+            $stmt = $this->db->prepare("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ($placeholders)");
+            $stmt->execute($keys);
+            
+            $settings = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $result = [];
+            foreach ($settings as $s) {
+                $result[$s['setting_key']] = $s['setting_value'];
+            }
+            
+            return Response::json([
+                "success" => true,
+                "data" => $result
+            ]);
+        } catch (\Throwable $e) {
+            error_log("ERRO getPublicLists: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro interno"], 500);
         }
     }
@@ -679,17 +835,427 @@ class UserController {
 
         try {
             $stmt = $this->db->query("
-                SELECT id, name, price, duration_days, type, description, active 
+                SELECT id, name, slug, price, price_quarterly, price_semiannual, price_yearly, 
+                       duration_days, type, billing_type, description, features, active, 
+                       is_highlighted, category
                 FROM plans 
                 WHERE active = 1 
-                ORDER BY price ASC
+                ORDER BY sort_order ASC, price ASC
             ");
             $plans = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Parse features JSON
+            foreach ($plans as &$plan) {
+                if ($plan['features'] && is_string($plan['features'])) {
+                    $decoded = json_decode($plan['features'], true);
+                    if (is_array($decoded) && !empty($decoded) && isset($decoded[0])) {
+                        $plan['features'] = array_values($decoded);
+                    } elseif (is_array($decoded) && isset($decoded['features']) && is_array($decoded['features'])) {
+                        $plan['features'] = $decoded['features'];
+                    }
+                }
+                if (!isset($plan['features']) || !is_array($plan['features'])) {
+                    $plan['features'] = [];
+                }
+            }
             
             return Response::json(["success" => true, "plans" => $plans]);
         } catch (\Throwable $e) {
             error_log("ERRO getPlans: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
+     * Rota: POST /api/verify-cnpj - Verifica CNPJ na Receita Federal
+     */
+    public function verifyCnpj($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+
+        $cnpj = preg_replace('/\D/', '', $data['cnpj'] ?? '');
+
+        if (strlen($cnpj) !== 14) {
+            return Response::json(["success" => false, "message" => "CNPJ inválido. Deve ter 14 dígitos."], 400);
+        }
+
+        try {
+            // Consulta API ReceitaWS (free tier: 3 requests por minuto)
+            $ch = curl_init("https://www.receitaws.com.br/v1/cnpj/{$cnpj}");
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 10,
+                CURLOPT_HTTPHEADER => ['Accept: application/json']
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($httpCode !== 200 || !$response) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => "Não foi possível consultar a Receita Federal. Tente novamente em alguns minutos."
+                ], 500);
+            }
+
+            $result = json_decode($response, true);
+
+            if (isset($result['status']) && $result['status'] === 'ERROR') {
+                return Response::json([
+                    "success" => false, 
+                    "message" => $result['message'] ?? "CNPJ não encontrado"
+                ], 400);
+            }
+
+            // Extrai dados principais
+            $cnpjData = [
+                'cnpj' => $result['cnpj'] ?? $cnpj,
+                'razao_social' => $result['nome'] ?? '',
+                'nome_fantasia' => $result['fantasia'] ?? '',
+                'situacao' => $result['situacao'] ?? '',
+                'logradouro' => $result['logradouro'] ?? '',
+                'numero' => $result['numero'] ?? '',
+                'complemento' => $result['complemento'] ?? '',
+                'bairro' => $result['bairro'] ?? '',
+                'cidade' => $result['municipio'] ?? '',
+                'estado' => $result['uf'] ?? '',
+                'cep' => $result['cep'] ?? '',
+                'telefone' => $result['telefone'] ?? '',
+                'email' => $result['email'] ?? '',
+                'data_abertura' => $result['abertura'] ?? '',
+                'natureza_juridica' => $result['natureza_juridica'] ?? '',
+                'cnae' => $result['cnae'] ?? '',
+                'porte' => $result['porte'] ?? '',
+            ];
+
+            // Salva dados verificados no banco
+            $stmt = $this->db->prepare("
+                INSERT INTO verified_cnpj (user_id, cnpj, razao_social, nome_fantasia, situacao, 
+                    logradouro, numero, complemento, bairro, cidade, estado, cep, telefone, email, 
+                    data_abertura, natureza_juridica, cnae, porte, verified_at)
+                VALUES (:user_id, :cnpj, :razao_social, :nome_fantasia, :situacao,
+                    :logradouro, :numero, :complemento, :bairro, :cidade, :estado, :cep, :telefone, :email,
+                    :data_abertura, :natureza_juridica, :cnae, :porte, NOW())
+                ON DUPLICATE KEY UPDATE 
+                    cnpj = VALUES(cnpj),
+                    razao_social = VALUES(razao_social),
+                    nome_fantasia = VALUES(nome_fantasia),
+                    situacao = VALUES(situacao),
+                    logradouro = VALUES(logradouro),
+                    numero = VALUES(numero),
+                    complemento = VALUES(complemento),
+                    bairro = VALUES(bairro),
+                    cidade = VALUES(cidade),
+                    estado = VALUES(estado),
+                    cep = VALUES(cep),
+                    telefone = VALUES(telefone),
+                    email = VALUES(email),
+                    data_abertura = VALUES(data_abertura),
+                    natureza_juridica = VALUES(natureza_juridica),
+                    cnae = VALUES(cnae),
+                    porte = VALUES(porte),
+                    verified_at = NOW(),
+                    status = 'verified'
+            ");
+            $stmt->execute([
+                ':user_id' => $loggedUser['id'],
+                ':cnpj' => $cnpjData['cnpj'],
+                ':razao_social' => $cnpjData['razao_social'],
+                ':nome_fantasia' => $cnpjData['nome_fantasia'],
+                ':situacao' => $cnpjData['situacao'],
+                ':logradouro' => $cnpjData['logradouro'],
+                ':numero' => $cnpjData['numero'],
+                ':complemento' => $cnpjData['complemento'],
+                ':bairro' => $cnpjData['bairro'],
+                ':cidade' => $cnpjData['cidade'],
+                ':estado' => $cnpjData['estado'],
+                ':cep' => $cnpjData['cep'],
+                ':telefone' => $cnpjData['telefone'],
+                ':email' => $cnpjData['email'],
+                ':data_abertura' => $cnpjData['data_abertura'],
+                ':natureza_juridica' => $cnpjData['natureza_juridica'],
+                ':cnae' => $cnpjData['cnae'],
+                ':porte' => $cnpjData['porte'],
+            ]);
+
+            return Response::json([
+                "success" => true,
+                "message" => "CNPJ verificado com sucesso!",
+                "data" => $cnpjData,
+                "is_active" => strtoupper($cnpjData['situacao']) === 'ATIVA'
+            ]);
+
+        } catch (\Throwable $e) {
+            error_log("ERRO verifyCnpj: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao verificar CNPJ: " . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/get-cnpj-data - Retorna dados do CNPJ verificado do usuário
+     */
+    public function getCnpjData($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+
+        try {
+            $stmt = $this->db->prepare("
+                SELECT * FROM verified_cnpj 
+                WHERE user_id = :user_id 
+                ORDER BY verified_at DESC 
+                LIMIT 1
+            ");
+            $stmt->execute([':user_id' => $loggedUser['id']]);
+            $cnpjData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$cnpjData) {
+                return Response::json(["success" => true, "data" => null, "message" => "Nenhum CNPJ verificado"]);
+            }
+
+            return Response::json(["success" => true, "data" => $cnpjData]);
+
+        } catch (\Throwable $e) {
+            error_log("ERRO getCnpjData: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao buscar dados do CNPJ"], 500);
+        }
+    }
+    
+    /**
+     * Rota: GET /api/geocode/cep - Geocodifica CEP para lat/lng
+     */
+    public function geocodeCep($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+        
+        $cep = $data['cep'] ?? $_GET['cep'] ?? '';
+        
+        if (!$cep) {
+            return Response::json(["success" => false, "message" => "CEP não informado"], 400);
+        }
+        
+        try {
+            $result = $this->geocoding->geocodeFromCep($cep);
+            
+            if (!$result) {
+                return Response::json(["success" => false, "message" => "CEP não encontrado"], 404);
+            }
+            
+            return Response::json(["success" => true, "data" => $result]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO geocodeCep: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao geocodificar CEP"], 500);
+        }
+    }
+    
+    /**
+     * Rota: POST /api/driver/location - Atualiza localização do motorista
+     */
+    public function updateDriverLocation($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+        
+        $lat = (float)($data['lat'] ?? 0);
+        $lng = (float)($data['lng'] ?? 0);
+        $city = trim($data['city'] ?? '');
+        $state = trim($data['state'] ?? '');
+        $cep = trim($data['cep'] ?? '');
+        
+        if (!$lat || !$lng) {
+            return Response::json(["success" => false, "message" => "Coordenadas inválidas"], 400);
+        }
+        
+        try {
+            // Se tem CEP mas não tem cidade, tenta obter via CEP
+            if ($cep && (!$city || !$state)) {
+                $viaCep = $this->geocoding->geocodeFromCep($cep);
+                if ($viaCep && isset($viaCep['display_name'])) {
+                    // Extrair cidade e estado do display_name
+                    $parts = explode(',', $viaCep['display_name']);
+                    if (count($parts) >= 3) {
+                        $city = $city ?: trim($parts[count($parts) - 3]);
+                    }
+                }
+            }
+            
+            $this->geocoding->saveDriverLocation($loggedUser['id'], $lat, $lng, $city, $state);
+            $this->recalculateProfileCompleteness($loggedUser['id']);
+            
+            return Response::json(["success" => true, "message" => "Localização atualizada"]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO updateDriverLocation: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao atualizar localização"], 500);
+        }
+    }
+    
+    /**
+     * Rota: GET /api/profile/completeness - Retorna score de completude do perfil
+     */
+    public function getProfileCompleteness($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+        
+        try {
+            $stmt = $this->db->prepare("
+                SELECT 
+                    u.name, p.bio, p.avatar_url, p.vehicle_type, p.body_type, 
+                    p.home_lat, p.home_lng, p.rntrc_number, p.verification_status,
+                    p.profile_completeness, p.available_equipment, p.certifications
+                FROM users u
+                INNER JOIN user_profiles p ON u.id = p.user_id
+                WHERE u.id = ?
+            ");
+            $stmt->execute([$loggedUser['id']]);
+            $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$profile) {
+                return Response::json(["success" => false, "message" => "Perfil não encontrado"], 404);
+            }
+            
+            // Calcula score detalhado
+            $score = 0;
+            $missing = [];
+            $completed = [];
+            
+            if (!empty($profile['name'])) {
+                $score += 10;
+                $completed[] = 'name';
+            } else {
+                $missing[] = 'name';
+            }
+            
+            if (!empty($profile['bio'])) {
+                $score += 10;
+                $completed[] = 'bio';
+            } else {
+                $missing[] = 'bio';
+            }
+            
+            if (!empty($profile['avatar_url'])) {
+                $score += 10;
+                $completed[] = 'avatar';
+            } else {
+                $missing[] = 'avatar';
+            }
+            
+            if (!empty($profile['vehicle_type'])) {
+                $score += 15;
+                $completed[] = 'vehicle_type';
+            } else {
+                $missing[] = 'vehicle_type';
+            }
+            
+            if (!empty($profile['body_type'])) {
+                $score += 15;
+                $completed[] = 'body_type';
+            } else {
+                $missing[] = 'body_type';
+            }
+            
+            if (!empty($profile['home_lat']) && !empty($profile['home_lng'])) {
+                $score += 15;
+                $completed[] = 'location';
+            } else {
+                $missing[] = 'location';
+            }
+            
+            if (!empty($profile['rntrc_number'])) {
+                $score += 10;
+                $completed[] = 'rntrc';
+            } else {
+                $missing[] = 'rntrc';
+            }
+            
+            if ($profile['verification_status'] === 'verified') {
+                $score += 15;
+                $completed[] = 'verification';
+            } else {
+                $missing[] = 'verification';
+            }
+            
+            // Atualiza no banco
+            if ($score !== (int)$profile['profile_completeness']) {
+                $update = $this->db->prepare("UPDATE user_profiles SET profile_completeness = ? WHERE user_id = ?");
+                $update->execute([$score, $loggedUser['id']]);
+            }
+            
+            return Response::json([
+                "success" => true,
+                "data" => [
+                    "score" => $score,
+                    "completed" => $completed,
+                    "missing" => $missing,
+                    "is_complete" => $score >= 80
+                ]
+            ]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO getProfileCompleteness: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao calcular completude"], 500);
+        }
+    }
+    
+    /**
+     * Rota: POST /api/driver/equipment - Atualiza equipamentos do motorista
+     */
+    public function updateDriverEquipment($data, $loggedUser) {
+        if (!$loggedUser) {
+            return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+        }
+        
+        $equipment = $data['equipment'] ?? [];
+        
+        if (!is_array($equipment)) {
+            $equipment = [];
+        }
+        
+        try {
+            $stmt = $this->db->prepare("UPDATE user_profiles SET available_equipment = ? WHERE user_id = ?");
+            $stmt->execute([json_encode($equipment), $loggedUser['id']]);
+            
+            return Response::json(["success" => true, "message" => "Equipamentos atualizados"]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO updateDriverEquipment: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro ao atualizar"], 500);
+        }
+    }
+    
+    private function recalculateProfileCompleteness(int $userId): void {
+        try {
+            $stmt = $this->db->prepare("
+                SELECT u.name, p.bio, p.avatar_url, p.vehicle_type, p.body_type, 
+                       p.home_lat, p.home_lng, p.rntrc_number, p.verification_status
+                FROM users u
+                INNER JOIN user_profiles p ON u.id = p.user_id
+                WHERE u.id = ?
+            ");
+            $stmt->execute([$userId]);
+            $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$profile) return;
+            
+            $score = 0;
+            if (!empty($profile['name'])) $score += 10;
+            if (!empty($profile['bio'])) $score += 10;
+            if (!empty($profile['avatar_url'])) $score += 10;
+            if (!empty($profile['vehicle_type'])) $score += 15;
+            if (!empty($profile['body_type'])) $score += 15;
+            if (!empty($profile['home_lat']) && !empty($profile['home_lng'])) $score += 15;
+            if (!empty($profile['rntrc_number'])) $score += 10;
+            if ($profile['verification_status'] === 'verified') $score += 15;
+            
+            $update = $this->db->prepare("UPDATE user_profiles SET profile_completeness = ? WHERE user_id = ?");
+            $update->execute([$score, $userId]);
+            
+        } catch (\Throwable $e) {
+            error_log("ERRO recalculateProfileCompleteness: " . $e->getMessage());
         }
     }
 

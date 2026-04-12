@@ -3,6 +3,7 @@ namespace App\Controllers;
 
 use App\Core\Response;
 use App\Repositories\AdRepository;
+use App\Services\ContentFilterService;
 use PDO;
 
 class AdController {
@@ -86,6 +87,16 @@ class AdController {
      * Salva ou Atualiza Anúncio (Admin/Empresa)
      */
     public function store($data, $loggedUser = null) {
+        // Validar conteúdo com ContentFilter
+        if (!empty($data['title']) && !ContentFilterService::isClean($data['title'])) {
+            $reason = ContentFilterService::getReason($data['title']);
+            return Response::json(["success" => false, "message" => $reason ?: "O título contém conteúdo não permitido."], 400);
+        }
+        if (!empty($data['description']) && !ContentFilterService::isClean($data['description'])) {
+            $reason = ContentFilterService::getReason($data['description']);
+            return Response::json(["success" => false, "message" => $reason ?: "A descrição contém conteúdo não permitido."], 400);
+        }
+
         $action = $data['action'] ?? '';
         
         if ($action === 'delete') {
