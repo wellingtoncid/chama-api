@@ -7,18 +7,21 @@ use App\Repositories\ListingRepository;
 use App\Services\CreditService;
 use App\Services\GeocodingService;
 use App\Services\ContentFilterService;
+use App\Services\MercadoPagoService;
 
 class ListingController {
     private $repository;
     private $creditService;
     private $geocodingService;
     private $db;
+    private $mpService;
 
     public function __construct($db) {
         $this->db = $db;
         $this->repository = new ListingRepository($db);
         $this->creditService = new CreditService($db);
         $this->geocodingService = new GeocodingService($db);
+        $this->mpService = new MercadoPagoService($db);
     }
 
     private function uploadFile($file) {
@@ -618,6 +621,8 @@ class ListingController {
         }
 
         $listingId = (int)($data['listing_id'] ?? 0);
+        $type = $data['type'] ?? 'featured';
+        
         if (!$listingId) {
             return Response::json(['success' => false, 'message' => 'ID do anúncio não informado'], 400);
         }
@@ -631,7 +636,10 @@ class ListingController {
             return Response::json(['success' => false, 'message' => 'Você não tem permissão para impulsionar este anúncio'], 403);
         }
 
-        $isAdmin = in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER']);
+        $validTypes = ['featured', 'bump', 'sponsored'];
+        if (!in_array($type, $validTypes)) {
+            $type = 'featured';
+        }
         
         $pricePerUse = 9.90;
         $durationDays = 7;
@@ -640,10 +648,10 @@ class ListingController {
             $stmt = $this->db->prepare("
                 SELECT * FROM pricing_rules 
                 WHERE module_key = 'marketplace' 
-                AND feature_key = 'featured_listing' 
+                AND feature_key = :key 
                 AND is_active = 1
             ");
-            $stmt->execute();
+            $stmt->execute([':key' => $type]);
             $rule = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($rule) {
                 $pricePerUse = floatval($rule['price_per_use'] ?? 9.90);
@@ -651,35 +659,46 @@ class ListingController {
             }
         } catch (\Exception $e) {}
 
-        $amount = $pricePerUse;
-        $paymentRequired = !$isAdmin;
-
-        if ($paymentRequired) {
-            $balance = $this->creditService->getBalance($loggedUser['id']);
-            if ($balance < $amount) {
-                return Response::json([
-                    'success' => false,
-                    'message' => 'Saldo insuficiente',
-                    'balance' => $balance,
-                    'required' => $amount
-                ], 402);
-            }
-            $debited = $this->creditService->debit($loggedUser['id'], $amount, 'marketplace', 'featured_listing');
-            if (!$debited) {
-                return Response::json(['success' => false, 'message' => 'Erro ao debitar saldo'], 500);
+        if ($type === 'featured') {
+            if (!empty($listing['is_featured']) && !empty($listing['featured_until']) && 
+                strtotime($listing['featured_until']) > time()) {
+                return Response::json(['success' => false, 'message' => 'Anúncio já possui destaque ativo'], 400);
             }
         }
 
-        $expiresAt = date('Y-m-d H:i:s', strtotime("+{$durationDays} days"));
-        $this->repository->setFeatured($listingId, true, $expiresAt);
+        $typeNames = [
+            'featured' => 'Destaque Anúncio',
+            'bump' => 'Prorrogar Anúncio',
+            'sponsored' => 'Anúncio Patrocinado'
+        ];
 
-        return Response::json([
-            'success' => true,
-            'message' => "Anúncio impulsionado por {$durationDays} dia(s)!",
-            'expires_at' => $expiresAt,
+        $paymentData = [
+            'listing_id' => $listingId,
+            'type' => $type,
+            'amount' => $pricePerUse,
+            'title' => "Impulsionar Anúncio #{$listingId} - {$typeNames[$type]}",
             'duration_days' => $durationDays,
-            'cost' => $paymentRequired ? $amount : 0
-        ]);
+            'description' => "{$durationDays} dias de visibilidade para {$listing['title']}"
+        ];
+
+        try {
+            $result = $this->mpService->createListingPromotionPreference($paymentData, $loggedUser['id']);
+            
+            if (!empty($result['init_point'])) {
+                return Response::json([
+                    'success' => true,
+                    'checkout_url' => $result['init_point'],
+                    'transaction_id' => $result['transaction_id'],
+                    'amount' => $pricePerUse,
+                    'type' => $type,
+                    'duration_days' => $durationDays
+                ]);
+            }
+        } catch (\Exception $e) {
+            return Response::json(['success' => false, 'message' => 'Erro ao gerar pagamento: ' . $e->getMessage()], 500);
+        }
+
+        return Response::json(['success' => false, 'message' => 'Erro ao gerar link de pagamento'], 500);
     }
 
     public function extend($data, $loggedUser) {

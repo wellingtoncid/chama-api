@@ -135,21 +135,11 @@ class AdRepository {
     }
 
     /**
-     * Converte posição para feature_key (igual ao AdController)
+     * Converte position para feature_key (usado em verificações de preço)
+     * Agora position e feature_key são iguais
      */
     private function getFeatureKeyFromPosition($position) {
-        $map = [
-            'sidebar' => 'sidebar_banner',
-            'home_hero' => 'home_banner',
-            'popup' => 'video_ad',
-            'freight_list' => 'sponsored',
-            'footer' => 'footer_banner',
-            'header' => 'header_banner',
-            'spotlight' => 'spotlight_ad',
-            'in-feed' => 'infeed_ad',
-            'details_page' => 'details_ad'
-        ];
-        return $map[$position] ?? 'publish_ad';
+        return $position;
     }
 
     /**
@@ -339,22 +329,11 @@ class AdRepository {
     }
 
     /**
-     * Mapeia feature_key de publicidade para posição no banco
+     * Mapeia feature_key para position (mantido para compatibilidade)
+     * Agora ambos usam o mesmo valor, mapeamento direto
      */
     private function getPositionFromFeature($featureKey) {
-        $map = [
-            'sidebar_banner' => 'sidebar',
-            'home_banner' => 'home_hero',
-            'video_ad' => 'popup',
-            'sponsored' => 'freight_list',
-            'footer_banner' => 'footer',
-            'header_banner' => 'header',
-            'spotlight_ad' => 'spotlight',
-            'popup_ad' => 'popup',
-            'infeed_ad' => 'in-feed',
-            'details_ad' => 'details_page'
-        ];
-        return $map[$featureKey] ?? $featureKey;
+        return $featureKey;
     }
 
     /**
@@ -374,13 +353,13 @@ class AdRepository {
         $stmt->execute([':feature_key' => $featureKey]);
         $rule = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        // Se não houver regra, permite criar (sem custo)
         if (!$rule) {
             return ['allowed' => true, 'reason' => 'Sem restrição de preço definida', 'requires_payment' => false];
         }
 
-        // 1. Verifica se é free_limit (tem limite grátis)
+        // Se a regra é free_limit com limite disponível, permite
         if ($rule['pricing_type'] === 'free_limit' && $rule['free_limit'] > 0) {
-            // Conta anúncios publicados este mês
             $stmt = $this->db->prepare("
                 SELECT COUNT(*) as total FROM ads 
                 WHERE user_id = :user_id 
@@ -397,7 +376,9 @@ class AdRepository {
             }
         }
 
-        // 2. Verifica assinatura mensal ativa
+        // --- VERIFICAÇÕES OBRIGATÓRIAS PARA QUALQUER TIPO DE PREÇO ---
+        
+        // 1. Verifica assinatura mensal ativa do módulo advertiser
         $stmt = $this->db->prepare("
             SELECT * FROM user_modules 
             WHERE user_id = :user_id 
@@ -409,13 +390,13 @@ class AdRepository {
         $subscription = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($subscription) {
-            // VERIFICAÇÃO 1: Verificar limite de anúncios ativos do plano
+            // Verificar limite de anúncios ativos do plano
             $planCheck = $this->checkPlanAdLimit($userId, $position);
             if (!$planCheck['allowed']) {
                 return $planCheck;
             }
             
-            // VERIFICAÇÃO 2: Verificar se posição é permitida pelo tipo do plano
+            // Verificar se posição é permitida pelo tipo do plano
             $positionCheck = $this->checkPlanPositionAllowed($userId, $position);
             if (!$positionCheck['allowed']) {
                 return $positionCheck;
@@ -424,7 +405,7 @@ class AdRepository {
             return ['allowed' => true, 'reason' => 'Assinatura mensal ativa', 'requires_payment' => false];
         }
 
-        // 3. Verifica se tem transação aprovada para este recurso
+        // 2. Verifica se tem transação aprovada para este recurso nos últimos 30 dias
         $stmt = $this->db->prepare("
             SELECT * FROM transactions 
             WHERE user_id = :user_id 
@@ -442,14 +423,15 @@ class AdRepository {
             return ['allowed' => true, 'reason' => 'Pagamento avulso confirmado', 'requires_payment' => false];
         }
 
-        // Precisa pagar
+        // --- NENHUMA CONDIÇÃO ATENDIDA: EXIGE PAGAMENTO ---
         $price = $rule['price_monthly'] > 0 ? $rule['price_monthly'] : $rule['price_per_use'];
         return [
             'allowed' => false, 
-            'reason' => 'Limite grátis esgotado. Assine o plano mensal ou compre avulso.',
+            'reason' => 'Você precisa de um plano ativo ou pagamento avulso para criar anúncios nesta posição.',
             'requires_payment' => true,
             'price_monthly' => $rule['price_monthly'],
-            'price_per_use' => $rule['price_per_use']
+            'price_per_use' => $rule['price_per_use'],
+            'feature_name' => $rule['feature_name'] ?? ''
         ];
     }
 
@@ -559,8 +541,8 @@ class AdRepository {
         // Mapeamento de posições permitidas por tipo de plano
         $allowedPositions = [
             'sidebar' => ['sidebar'],
-            'freight_list' => ['sidebar', 'freight_list', 'in-feed'],
-            'total' => ['sidebar', 'freight_list', 'in-feed', 'footer', 'header', 'home_hero', 'spotlight', 'popup', 'details_page', 'strategic_partners', 'media_network']
+            'freight_list' => ['sidebar', 'freight_list', 'infeed'],
+            'total' => ['sidebar', 'freight_list', 'infeed', 'footer', 'header', 'spotlight', 'popup', 'strategic_partners', 'media_network']
         ];
         
         $allowed = $allowedPositions[$planType] ?? ['sidebar'];
@@ -585,25 +567,10 @@ class AdRepository {
 
     /**
      * Verifica se usuário tem acesso a uma posição específica (para display)
+     * Agora position e feature_key são o mesmo valor
      */
     public function userCanUsePosition($userId, $position) {
-        // Mapeia posição para feature_key
-        $reverseMap = [
-            'sidebar' => 'sidebar_banner',
-            'home_hero' => 'home_banner',
-            'popup' => 'video_ad',
-            'freight_list' => 'sponsored',
-            'footer' => 'footer_banner',
-            'header' => 'header_banner',
-            'spotlight' => 'spotlight_ad',
-            'in-feed' => 'infeed_ad',
-            'details_page' => 'details_ad'
-        ];
-        
-        $featureKey = $reverseMap[$position] ?? null;
-        if (!$featureKey) return true; // Posição desconhecida, permite
-        
-        $result = $this->checkAdPositionEligibility($userId, $featureKey);
+        $result = $this->checkAdPositionEligibility($userId, $position);
         return $result['allowed'];
     }
 

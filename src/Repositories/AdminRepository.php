@@ -54,7 +54,81 @@ class AdminRepository {
         }
     }
 
-    // --- DASHBOARD STATS ---
+    // ============================================
+    // ESTATÍSTICAS POR PERÍODO
+    // ============================================
+
+    public function getFreightsCountByDateRange(string $startDate, string $endDate): int {
+        $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM freights WHERE deleted_at IS NULL AND created_at BETWEEN ? AND ?");
+        $stmt->execute([$startDate, $endDate . ' 23:59:59']);
+        return (int)$stmt->fetch()['total'];
+    }
+
+    public function getUsersCountByDateRange(string $startDate, string $endDate): int {
+        $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM users WHERE deleted_at IS NULL AND created_at BETWEEN ? AND ?");
+        $stmt->execute([$startDate, $endDate . ' 23:59:59']);
+        return (int)$stmt->fetch()['total'];
+    }
+
+    public function getCompaniesCountByDateRange(string $startDate, string $endDate): int {
+        $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM users WHERE deleted_at IS NULL AND role = 'company' AND created_at BETWEEN ? AND ?");
+        $stmt->execute([$startDate, $endDate . ' 23:59:59']);
+        return (int)$stmt->fetch()['total'];
+    }
+
+    public function getRevenueByDateRange(string $startDate, string $endDate): float {
+        $stmt = $this->db->prepare("SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE status = 'approved' AND created_at BETWEEN ? AND ?");
+        $stmt->execute([$startDate, $endDate . ' 23:59:59']);
+        return (float)$stmt->fetch()['total'];
+    }
+
+    public function getActiveSubscriptionsCount(string $startDate, string $endDate): int {
+        $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM transactions WHERE status = 'approved' AND DATE_ADD(created_at, INTERVAL COALESCE(duration_days, 30) DAY) > NOW() AND created_at BETWEEN ? AND ?");
+        $stmt->execute([$startDate, $endDate . ' 23:59:59']);
+        return (int)$stmt->fetch()['total'];
+    }
+
+    public function getTopOrigins(string $startDate, string $endDate, int $limit = 10): array {
+        $stmt = $this->db->prepare("SELECT origin_city, COUNT(*) as total FROM freights WHERE deleted_at IS NULL AND created_at BETWEEN ? AND ? AND origin_city IS NOT NULL AND origin_city != '' GROUP BY origin_city ORDER BY total DESC LIMIT ?");
+        $stmt->execute([$startDate, $endDate . ' 23:59:59', $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function getDateSeries(string $table, string $dateColumn, string $startDate, string $endDate): array {
+        $stmt = $this->db->prepare("SELECT DATE(created_at) as date, COUNT(*) as total FROM {$table} WHERE deleted_at IS NULL AND {$dateColumn} BETWEEN ? AND ? GROUP BY DATE({$dateColumn}) ORDER BY date");
+        $stmt->execute([$startDate, $endDate . ' 23:59:59']);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // ============================================
+    // SETTINGS
+    // ============================================
+
+    public function getSetting(string $key): ?string {
+        $stmt = $this->db->prepare("SELECT setting_value FROM site_settings WHERE setting_key = ?");
+        $stmt->execute([$key]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $result ? $result['setting_value'] : null;
+    }
+
+    public function setSetting(string $key, string $value): bool {
+        $stmt = $this->db->prepare("INSERT INTO site_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?");
+        return $stmt->execute([$key, $value, $value]);
+    }
+
+    public function getAllSettings(): array {
+        $stmt = $this->db->query("SELECT * FROM site_settings");
+        $settings = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $settings[$row['setting_key']] = $row['setting_value'];
+        }
+        return $settings;
+    }
+
+    // ============================================
+    // DASHBOARD STATS
+    // ============================================
+
     public function getDashboardStats() {
         // 1. Contadores Gerais
         // Mudança: Contamos ACCOUNTs únicas para saber o número real de empresas/anunciantes

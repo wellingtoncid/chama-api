@@ -228,4 +228,68 @@ class MercadoPagoService {
             "transaction_id" => $transactionId
         ];
     }
+
+    /**
+     * Cria preferência de pagamento para promoção de anúncio (destaque/bump/patrocinado)
+     */
+    public function createListingPromotionPreference($data, $userId) {
+        $promotionType = $data['type'] ?? 'featured';
+        
+        $transactionId = $this->paymentRepo->createTransaction(
+            $userId, 
+            null, 
+            $data['amount'], 
+            "LIST{$data['listing_id']}_{$promotionType}",
+            'one_time',
+            $data['duration_days'],
+            'marketplace',
+            'listing_promotion_' . $promotionType
+        );
+
+        if (!$transactionId) throw new Exception("Falha ao registrar transação local.");
+
+        $backUrlSuccess = $this->frontendUrl . "/payment/success?type=listing_promotion&promotion={$promotionType}&listing_id={$data['listing_id']}";
+        $backUrlFailure = $this->frontendUrl . "/payment/failure";
+        
+        $notificationUrl = null;
+        if (!preg_match('/localhost|127\.0\.0\.1/i', $this->baseUrl)) {
+            $notificationUrl = $this->baseUrl . "/api/webhook-mp";
+        }
+        
+        $payload = [
+            "items" => [[
+                "title" => mb_convert_encoding($data['title'] ?? "Impulsionar Anúncio", 'UTF-8'),
+                "description" => mb_convert_encoding($data['description'] ?? "Destaque para anúncio", 'UTF-8'),
+                "quantity" => 1,
+                "unit_price" => (float)$data['amount'],
+                "currency_id" => "BRL"
+            ]],
+            "external_reference" => (string)$transactionId,
+            "back_urls" => [
+                "success" => $backUrlSuccess,
+                "failure" => $backUrlFailure,
+                "pending" => $backUrlSuccess
+            ]
+        ];
+
+        if ($notificationUrl) {
+            $payload["notification_url"] = $notificationUrl;
+        }
+
+        if (!preg_match('/localhost|127\.0\.0\.1/i', $this->frontendUrl)) {
+            $payload["auto_return"] = "approved";
+        }
+
+        $response = $this->callAPI('POST', 'checkout/preferences', $payload);
+
+        if (empty($response) || isset($response['error'])) {
+            throw new Exception("Erro do MercadoPago: " . ($response['error'] ?? 'Resposta vazia'));
+        }
+
+        return [
+            "init_point" => $response['init_point'] ?? null,
+            "preference_id" => $response['id'] ?? null,
+            "transaction_id" => $transactionId
+        ];
+    }
 }

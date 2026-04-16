@@ -169,21 +169,10 @@ class AdController {
     }
 
     /**
-     * Converte posição para feature_key
+     * Converte posição para feature_key (agora são iguais)
      */
     private function getFeatureKeyFromPosition($position) {
-        $map = [
-            'sidebar' => 'sidebar_banner',
-            'home_hero' => 'home_banner',
-            'popup' => 'video_ad',
-            'freight_list' => 'sponsored',
-            'footer' => 'footer_banner',
-            'header' => 'header_banner',
-            'spotlight' => 'spotlight_ad',
-            'in-feed' => 'infeed_ad',
-            'details_page' => 'details_ad'
-        ];
-        return $map[$position] ?? 'publish_ad';
+        return $position;
     }
 
     private function uploadFile($file) {

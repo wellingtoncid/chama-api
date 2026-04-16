@@ -27,7 +27,7 @@ class AdminController {
 
     public function __construct($db, $adminRepo = null, $loggedUser = null) {
         $this->db = $db;
-        $this->adminRepo = $adminRepo ?: new AdminRepository($db);
+        $this->adminRepo = $adminRepo ?? new AdminRepository($db);
         $this->repo = new AdminRepository($db);
         $this->groupRepo = new GroupRepository($db);
         $this->freightRepo = new FreightRepository($db);
@@ -268,17 +268,12 @@ class AdminController {
         }
 
         try {
-            // Current period stats
+            // Current period stats via repository
             $stats = [];
 
-            // Fretes
-            $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM freights WHERE deleted_at IS NULL AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$startDate, $endDate . ' 23:59:59']);
-            $currentFreights = (int)$stmt->fetch()['total'];
-
-            $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM freights WHERE deleted_at IS NULL AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$prevStart, $prevEnd . ' 23:59:59']);
-            $prevFreights = (int)$stmt->fetch()['total'];
+            // Fretes via repository
+            $currentFreights = $this->adminRepo->getFreightsCountByDateRange($startDate, $endDate . ' 23:59:59');
+            $prevFreights = $this->adminRepo->getFreightsCountByDateRange($prevStart, $prevEnd . ' 23:59:59');
             
             $stats['freights'] = [
                 'current' => $currentFreights,
@@ -286,14 +281,9 @@ class AdminController {
                 'growth' => $prevFreights > 0 ? round(($currentFreights - $prevFreights) / $prevFreights * 100, 1) : 0
             ];
 
-            // Usuários
-            $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM users WHERE deleted_at IS NULL AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$startDate, $endDate . ' 23:59:59']);
-            $currentUsers = (int)$stmt->fetch()['total'];
-
-            $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM users WHERE deleted_at IS NULL AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$prevStart, $prevEnd . ' 23:59:59']);
-            $prevUsers = (int)$stmt->fetch()['total'];
+            // Usuários via repository
+            $currentUsers = $this->adminRepo->getUsersCountByDateRange($startDate, $endDate . ' 23:59:59');
+            $prevUsers = $this->adminRepo->getUsersCountByDateRange($prevStart, $prevEnd . ' 23:59:59');
 
             $stats['users'] = [
                 'current' => $currentUsers,
@@ -322,14 +312,9 @@ class AdminController {
                 'growth' => $prevQuotes > 0 ? round(((int)$quoteStats['total'] - $prevQuotes) / $prevQuotes * 100, 1) : 0
             ];
 
-            // Receita
-            $stmt = $this->db->prepare("SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE status = 'approved' AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$startDate, $endDate . ' 23:59:59']);
-            $currentRevenue = (float)$stmt->fetch()['total'];
-
-            $stmt = $this->db->prepare("SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE status = 'approved' AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$prevStart, $prevEnd . ' 23:59:59']);
-            $prevRevenue = (float)$stmt->fetch()['total'];
+// Receita via repository
+            $currentRevenue = $this->adminRepo->getRevenueByDateRange($startDate, $endDate . ' 23:59:59');
+            $prevRevenue = $this->adminRepo->getRevenueByDateRange($prevStart, $prevEnd . ' 23:59:59');
 
             $stats['revenue'] = [
                 'current' => $currentRevenue,
@@ -337,14 +322,9 @@ class AdminController {
                 'growth' => $prevRevenue > 0 ? round(($currentRevenue - $prevRevenue) / $prevRevenue * 100, 1) : 0
             ];
 
-            // Empresas
-            $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM users WHERE deleted_at IS NULL AND role = 'company' AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$startDate, $endDate . ' 23:59:59']);
-            $currentCompanies = (int)$stmt->fetch()['total'];
-
-            $stmt = $this->db->prepare("SELECT COUNT(*) as total FROM users WHERE deleted_at IS NULL AND role = 'company' AND created_at BETWEEN ? AND ?");
-            $stmt->execute([$prevStart, $prevEnd . ' 23:59:59']);
-            $prevCompanies = (int)$stmt->fetch()['total'];
+            // Empresas via repository
+            $currentCompanies = $this->adminRepo->getCompaniesCountByDateRange($startDate, $endDate . ' 23:59:59');
+            $prevCompanies = $this->adminRepo->getCompaniesCountByDateRange($prevStart, $prevEnd . ' 23:59:59');
 
             $stats['companies'] = [
                 'current' => $currentCompanies,

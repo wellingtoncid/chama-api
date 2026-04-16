@@ -697,6 +697,34 @@ class UserController {
     }
 
     /**
+     * Rota: GET /api/ad-positions - Lista posições de publicidade (público)
+     */
+    public function getAdPositions($data, $loggedUser) {
+        try {
+            $stmt = $this->db->query("
+                SELECT 
+                    feature_key, 
+                    feature_name, 
+                    description,
+                    ad_size,
+                    icon_key,
+                    price_monthly, 
+                    duration_days
+                FROM pricing_rules 
+                WHERE module_key = 'advertiser' 
+                AND is_active = 1
+                ORDER BY price_monthly ASC
+            ");
+            $positions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            return Response::json(["success" => true, "data" => $positions]);
+        } catch (\Throwable $e) {
+            error_log("ERRO getAdPositions: " . $e->getMessage());
+            return Response::json(["success" => false, "message" => "Erro interno"], 500);
+        }
+    }
+
+    /**
      * Rota: GET /api/site-settings - Retorna configurações do site
      */
     public function getSiteSettings($data, $loggedUser) {

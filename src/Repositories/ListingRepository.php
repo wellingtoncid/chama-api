@@ -157,7 +157,8 @@ class ListingRepository {
 
     public function findByUser($userId) {
         $stmt = $this->db->prepare("
-            SELECT l.* 
+            SELECT l.*, 
+            (SELECT image_url FROM listing_images WHERE listing_id = l.id ORDER BY sort_order ASC LIMIT 1) as main_image
             FROM listings l 
             WHERE l.user_id = ? 
             ORDER BY l.created_at DESC
@@ -196,7 +197,10 @@ class ListingRepository {
 
     public function findById($id) {
         $stmt = $this->db->prepare("
-            SELECT l.*, u.name as seller_name, u.whatsapp as seller_phone 
+            SELECT l.*, 
+            u.name as seller_name, 
+            u.whatsapp as seller_phone,
+            (SELECT image_url FROM listing_images WHERE listing_id = l.id ORDER BY sort_order ASC LIMIT 1) as main_image
             FROM listings l 
             JOIN users u ON l.user_id = u.id 
             WHERE l.id = ? AND l.status != 'deleted'
@@ -207,10 +211,13 @@ class ListingRepository {
 
     public function findBySlug($slug) {
         $stmt = $this->db->prepare("
-            SELECT l.*, u.name as seller_name, u.whatsapp as seller_phone,
-                   u.is_verified as seller_verified, 
-                   u.created_at as seller_since, u.city as seller_city, u.state as seller_state,
-                   p.slug as seller_slug, p.avatar_url as seller_avatar
+            SELECT l.*, 
+            u.name as seller_name, 
+            u.whatsapp as seller_phone,
+            u.is_verified as seller_verified, 
+            u.created_at as seller_since, u.city as seller_city, u.state as seller_state,
+            p.slug as seller_slug, p.avatar_url as seller_avatar,
+            (SELECT image_url FROM listing_images WHERE listing_id = l.id ORDER BY sort_order ASC LIMIT 1) as main_image
             FROM listings l 
             JOIN users u ON l.user_id = u.id 
             LEFT JOIN user_profiles p ON u.id = p.user_id

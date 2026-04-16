@@ -13,11 +13,11 @@ class PaymentController {
     private $db;
     private $paymentRepo;
 
-    public function __construct($db) {
+    public function __construct($db, PaymentRepository $paymentRepo = null) {
         $this->db = $db;
         $this->mpService = new MercadoPagoService($db);
         $this->creditService = new CreditService($db);
-        $this->paymentRepo = new PaymentRepository($db);
+        $this->paymentRepo = $paymentRepo ?? new PaymentRepository($db);
     }
 
     // Convenience: alias to start a payment flow via /api/payments/create
@@ -39,10 +39,8 @@ class PaymentController {
         $billingCycle = $data['billing_cycle'] ?? 'monthly';
         
         try {
-            // Busca o plano para obter o preço correto conforme o ciclo
-            $stmt = $this->db->prepare("SELECT * FROM plans WHERE id = :id AND active = 1");
-            $stmt->execute([':id' => $data['plan_id']]);
-            $plan = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Busca o plano via repository
+            $plan = $this->paymentRepo->findPlanById($data['plan_id']);
 
             if (!$plan) {
                 return Response::json(["success" => false, "message" => "Plano não encontrado"], 404);
@@ -149,13 +147,8 @@ class PaymentController {
             // Módulos ativos por padrão
             $defaultActiveModules = ['freights', 'marketplace'];
             
-            // Verificar se o módulo está ativo para o usuário
-            $stmt = $this->db->prepare("
-                SELECT * FROM user_modules 
-                WHERE user_id = :user_id AND module_key = :module_key AND status = 'active'
-            ");
-            $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
-            $moduleAccess = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Verificar se o módulo está ativo para o usuário via repository
+            $moduleAccess = $this->paymentRepo->findActiveModuleForUser($userId, $moduleKey);
 
             if (!$moduleAccess && !in_array($moduleKey, $defaultActiveModules)) {
                 return Response::json([
@@ -168,21 +161,11 @@ class PaymentController {
 
             // Se é módulo ativo por padrão mas não tem registro, cria um
             if (!$moduleAccess && in_array($moduleKey, $defaultActiveModules)) {
-                $stmt = $this->db->prepare("
-                    INSERT INTO user_modules (user_id, module_key, status, activated_at) 
-                    VALUES (:user_id, :module_key, 'active', NOW())
-                    ON DUPLICATE KEY UPDATE status = 'active', activated_at = NOW()
-                ");
-                $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+                $this->paymentRepo->activateModule($userId, $moduleKey);
             }
 
-            // Busca preço
-            $stmt = $this->db->prepare("
-                SELECT * FROM pricing_rules 
-                WHERE module_key = :module_key AND feature_key = :feature_key AND is_active = 1
-            ");
-            $stmt->execute([':module_key' => $moduleKey, ':feature_key' => $featureKey]);
-            $rule = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Busca preço via repository
+            $rule = $this->paymentRepo->findPricingRule($moduleKey, $featureKey);
 
             if (!$rule || $rule['price_per_use'] <= 0) {
                 return Response::json(["success" => false, "message" => "Preço não configurado para este recurso"], 400);
@@ -295,13 +278,8 @@ class PaymentController {
                 ], 400);
             }
 
-            // Busca preço do recurso
-            $stmt = $this->db->prepare("
-                SELECT * FROM pricing_rules 
-                WHERE module_key = :module_key AND feature_key = :feature_key AND is_active = 1
-            ");
-            $stmt->execute([':module_key' => $moduleKey, ':feature_key' => $featureKey]);
-            $rule = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Busca preço do recurso via repository
+            $rule = $this->paymentRepo->findPricingRule($moduleKey, $featureKey);
 
             if (!$rule || $rule['price_per_use'] <= 0) {
                 return Response::json(["success" => false, "message" => "Preço não configurado para este recurso"], 400);
@@ -393,13 +371,8 @@ class PaymentController {
             // Módulos ativos por padrão
             $defaultActiveModules = ['freights', 'marketplace'];
             
-            // Verificar se o módulo está ativo para o usuário
-            $stmt = $this->db->prepare("
-                SELECT * FROM user_modules 
-                WHERE user_id = :user_id AND module_key = :module_key AND status = 'active'
-            ");
-            $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
-            $moduleAccess = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Verificar se o módulo está ativo para o usuário via repository
+            $moduleAccess = $this->paymentRepo->findActiveModuleForUser($userId, $moduleKey);
 
             if (!$moduleAccess && !in_array($moduleKey, $defaultActiveModules)) {
                 return Response::json([
@@ -412,23 +385,18 @@ class PaymentController {
 
             // Se é módulo ativo por padrão mas não tem registro, cria um
             if (!$moduleAccess && in_array($moduleKey, $defaultActiveModules)) {
-                $stmt = $this->db->prepare("
-                    INSERT INTO user_modules (user_id, module_key, status, activated_at) 
-                    VALUES (:user_id, :module_key, 'active', NOW())
-                    ON DUPLICATE KEY UPDATE status = 'active', activated_at = NOW()
-                ");
-                $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+                $this->paymentRepo->activateModule($userId, $moduleKey);
             }
 
-            // Busca preço mensal
-            $stmt = $this->db->prepare("
-                SELECT * FROM pricing_rules 
-                WHERE module_key = :module_key AND is_active = 1
-                ORDER BY price_monthly ASC
-                LIMIT 1
-            ");
-            $stmt->execute([':module_key' => $moduleKey]);
-            $rule = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Busca preço mensal via repository
+            $rules = $this->paymentRepo->findRulesByModule($moduleKey);
+            $rule = null;
+            foreach ($rules as $r) {
+                if ($r['price_monthly'] > 0) {
+                    $rule = $r;
+                    break;
+                }
+            }
 
             if (!$rule) {
                 return Response::json(["success" => false, "message" => "Nenhuma regra de preço encontrada para: $moduleKey"], 400);
@@ -472,19 +440,31 @@ class PaymentController {
             $mpData = [
                 'title' => "Plano Mensal {$rule['feature_name']} - Chama Frete",
                 'amount' => $amount,
-                'plan_id' => null
+                'plan_id' => null,
+                'module_key' => $moduleKey,
+                'feature_key' => $featureKey ?: 'subscription'
             ];
 
             $result = $this->mpService->createPreference($mpData, $userId);
 
-            // Atualiza external_reference com o ID da transação
-            $stmt = $this->db->prepare("UPDATE transactions SET external_reference = :ext_ref WHERE id = :id");
-            $stmt->execute([':ext_ref' => (string)$transactionId, ':id' => $transactionId]);
+            if (empty($result['init_point'])) {
+                // Remove transação pendente
+                $this->db->prepare("DELETE FROM transactions WHERE id = ?")->execute([$transactionId]);
+                return Response::json(["success" => false, "message" => "Erro ao gerar pagamento. Tente novamente."], 500);
+            }
+
+            // Atualiza a transação com o transaction_id correto do MP service e URL do checkout
+            $stmt = $this->db->prepare("UPDATE transactions SET external_reference = :ext_ref, gateway_preference_id = :pref_id WHERE id = :id");
+            $stmt->execute([
+                ':ext_ref' => (string)$result['transaction_id'],
+                ':pref_id' => $result['preference_id'] ?? null,
+                ':id' => $transactionId
+            ]);
 
             return Response::json([
                 "success" => true,
                 "url" => $result['init_point'],
-                "transaction_id" => $transactionId,
+                "transaction_id" => $result['transaction_id'],
                 "amount" => $amount,
                 "expires_at" => date('Y-m-d H:i:s', strtotime('+30 days'))
             ]);
@@ -511,10 +491,8 @@ class PaymentController {
         $userId = $loggedUser['id'];
 
         try {
-            // Busca o plano
-            $stmt = $this->db->prepare("SELECT * FROM plans WHERE id = :id AND active = 1");
-            $stmt->execute([':id' => $planId]);
-            $plan = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Busca o plano via repository
+            $plan = $this->paymentRepo->findPlanById($planId);
 
             if (!$plan) {
                 return Response::json(["success" => false, "message" => "Plano não encontrado"], 404);
@@ -916,16 +894,8 @@ class PaymentController {
         try {
             $userId = $loggedUser['id'];
             
-            $stmt = $this->db->prepare("
-                SELECT id, plan_id, module_key, feature_key, transaction_type, 
-                       amount, status, created_at, approved_at
-                FROM transactions 
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-                LIMIT 100
-            ");
-            $stmt->execute([$userId]);
-            $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            // Busca transações via repository
+            $transactions = $this->paymentRepo->findTransactionsByUser($userId, 100);
 
             // Mapas para exibição
             $categoryMap = [
@@ -1504,23 +1474,21 @@ class PaymentController {
         $userId = $user['id'];
         
         $freightId = $data['freight_id'] ?? null;
-        $type = $data['type'] ?? null; // 'featured' ou 'urgent'
+        $type = $data['type'] ?? null;
         
-        if (!$freightId || !$type || !in_array($type, ['boost', 'urgent'])) {
-            return Response::json(["success" => false, "message" => "Tipo inválido. Use 'boost' ou 'urgent'"], 400);
+        $validTypes = ['boost', 'urgent', 'renew', 'sponsored'];
+        if (!$freightId || !$type || !in_array($type, $validTypes)) {
+            return Response::json(["success" => false, "message" => "Tipo inválido. Use: " . implode(', ', $validTypes)], 400);
         }
         
-        // Busca preço e duração do pricing_rules
-        $featureKey = $type; // 'boost' ou 'urgent'
+        $featureKey = $type;
         $stmt = $this->db->prepare("SELECT * FROM pricing_rules WHERE module_key = 'freights' AND feature_key = :key");
         $stmt->execute([':key' => $featureKey]);
         $rule = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        // Fallback com valores padrão se não encontrar
-        $finalPrice = $rule ? floatval($rule['price_per_use']) : ($type === 'boost' ? 9.90 : 14.90);
+        $finalPrice = $rule ? floatval($rule['price_per_use']) : 9.90;
         $durationDays = $rule ? intval($rule['duration_days'] ?? 7) : 7;
         
-        // Verifica se o frete pertence ao usuário
         $stmt = $this->db->prepare("SELECT * FROM freights WHERE id = :id AND user_id = :user_id");
         $stmt->execute([':id' => $freightId, ':user_id' => $userId]);
         $freight = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -1529,13 +1497,12 @@ class PaymentController {
             return Response::json(["success" => false, "message" => "Frete não encontrado"], 404);
         }
         
-        // Verifica se já tem destaque/urgente ativo
         if ($type === 'boost') {
             if (!empty($freight['is_featured']) && !empty($freight['featured_until']) && 
                 strtotime($freight['featured_until']) > time()) {
                 return Response::json(["success" => false, "message" => "Frete já possui destaque ativo"], 400);
             }
-        } else {
+        } elseif ($type === 'urgent') {
             if (!empty($freight['is_urgent']) && !empty($freight['urgent_until']) && 
                 strtotime($freight['urgent_until']) > time()) {
                 return Response::json(["success" => false, "message" => "Frete já possui marcação urgente ativa"], 400);
@@ -1544,7 +1511,9 @@ class PaymentController {
         
         $typeNames = [
             'boost' => 'Destaque Frete',
-            'urgent' => 'Frete Urgente'
+            'urgent' => 'Frete Urgente',
+            'renew' => 'Prorrogar Frete',
+            'sponsored' => 'Frete Patrocinado'
         ];
         
         $paymentData = [
