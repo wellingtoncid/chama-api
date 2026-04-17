@@ -71,7 +71,7 @@ try {
     $router->post('/api/user/modules', 'UserController@toggleModule');
     $router->post('/api/user/modules/request', 'UserController@requestModuleAccess');
     $router->get('/api/pricing/rules', 'UserController@getPricingRules');
-    $router->get('/api/ad-positions', 'UserController@getAdPositions');
+        $router->get('/api/ad-positions', 'UserController@getAdPositions');
     $router->get('/api/site-settings', 'UserController@getSiteSettings');
     $router->get('/api/public/site-settings', 'UserController@getPublicLists');
     $router->get('/api/user/usage', 'UserController@getUserUsage');

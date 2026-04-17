@@ -17,8 +17,11 @@ class AdRepository {
     public function findAds($position = '', $state = '', $search = '', $city = '', $limit = 10) {
         $params = [];
         
-        $sql = "SELECT a.*, COALESCE(a.destination_url, '') as link_url, 
-                COALESCE(u.ad_credits, 0) as ad_credits
+        $sql = "SELECT a.*, 
+                COALESCE(a.destination_url, '') as link_url, 
+                COALESCE(u.ad_credits, 0) as ad_credits,
+                u.name as advertiser_name,
+                u.is_verified as advertiser_verified
                 FROM ads a
                 LEFT JOIN users u ON a.user_id = u.id
                 WHERE a.status = 'active'
@@ -296,6 +299,9 @@ class AdRepository {
                     a.image_url, 
                     a.category, 
                     a.destination_url, 
+                    a.link_whatsapp, 
+                    a.location_city, 
+                    a.location_state, 
                     a.created_at, 
                     a.status,
                     a.position,
@@ -541,8 +547,8 @@ class AdRepository {
         // Mapeamento de posições permitidas por tipo de plano
         $allowedPositions = [
             'sidebar' => ['sidebar'],
-            'freight_list' => ['sidebar', 'freight_list', 'infeed'],
-            'total' => ['sidebar', 'freight_list', 'infeed', 'footer', 'header', 'spotlight', 'popup', 'strategic_partners', 'media_network']
+            'freight_list' => ['sidebar', 'freight_list', 'infeed_wide', 'infeed_compact'],
+            'total' => ['sidebar', 'freight_list', 'infeed_wide', 'infeed_compact', 'footer', 'spotlight']
         ];
         
         $allowed = $allowedPositions[$planType] ?? ['sidebar'];
