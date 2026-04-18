@@ -134,8 +134,9 @@ class AuthController {
                 'password'      => password_hash($data['password'], PASSWORD_BCRYPT),
                 'role'          => $data['role'] ?? 'driver',
                 'user_type'     => ($data['role'] === 'company' ? 'empresa' : 'motorista'),
-                'document'      => $document, // PASSA O DOCUMENTO REAL
-                'document_type' => (strlen($document) > 11) ? 'CNPJ' : 'CPF'
+                'document'      => $document,
+                'document_type' => (strlen($document) > 11) ? 'CNPJ' : 'CPF',
+                'register_type' => $data['register_type'] ?? 'normal'
             ];
 
             // Chama o create do repositório (aquele que ajustamos com rand e UUID)

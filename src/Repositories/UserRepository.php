@@ -76,10 +76,11 @@ class UserRepository {
                 ':user_type'  => strtoupper($data['user_type'] ?? ($roleSlug === 'driver' ? 'DRIVER' : 'COMPANY'))
             ]);
 
-            $userId = $this->db->lastInsertId();
+$userId = $this->db->lastInsertId();
 
             // 8. Popular user_modules com módulos padrão baseado no cargo
-            $this->populateUserModules((int)$userId, $roleSlug);
+            $registerType = $data['register_type'] ?? 'normal';
+            $this->populateUserModules((int)$userId, $roleSlug, $registerType);
 
             // 7. Criar Perfil Público (user_profiles)
             // Geramos o slug e já inicializamos o JSON private_data
@@ -1214,23 +1215,46 @@ class UserRepository {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    private function populateUserModules(int $userId, string $roleSlug): void {
-        $stmt = $this->db->prepare("
-            SELECT module_key FROM modules 
-            WHERE JSON_CONTAINS(default_for, :role)
-            OR is_required = 1
-        ");
-        $stmt->execute([':role' => '"' . $roleSlug . '"']);
-        $modules = $stmt->fetchAll(PDO::FETCH_COLUMN);
-        
-        foreach ($modules as $moduleKey) {
-            $this->db->prepare("
-                INSERT IGNORE INTO user_modules (user_id, module_key, status, activated_at)
-                VALUES (:user_id, :module_key, 'active', NOW())
-            ")->execute([
-                ':user_id' => $userId,
-                ':module_key' => $moduleKey
-            ]);
+private function populateUserModules(int $userId, string $roleSlug, string $registerType = 'normal'): void {
+        // Para cadastrosnormais, usa módulos padrão baseado no cargo
+        if ($registerType !== 'advertiser') {
+            $stmt = $this->db->prepare("
+                SELECT module_key FROM modules 
+                WHERE JSON_CONTAINS(default_for, :role)
+                OR is_required = 1
+            ");
+            $stmt->execute([':role' => '"' . $roleSlug . '"']);
+            $modules = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            foreach ($modules as $moduleKey) {
+                $this->db->prepare("
+                    INSERT IGNORE INTO user_modules (user_id, module_key, status, activated_at)
+                    VALUES (:user_id, :module_key, 'active', NOW())
+                ")->execute([
+                    ':user_id' => $userId,
+                    ':module_key' => $moduleKey
+                ]);
+            }
+            return;
         }
+        
+        // Para cadastros de advertiser (publicidade)
+        // Publicidade: ativa
+        $this->db->prepare("
+            INSERT IGNORE INTO user_modules (user_id, module_key, status, activated_at)
+            VALUES (:user_id, 'publicidade', 'active', NOW())
+        ")->execute([':user_id' => $userId]);
+
+        // Marketplace: opcional (ativa mas não requer aprovação)
+        $this->db->prepare("
+            INSERT IGNORE INTO user_modules (user_id, module_key, status, requires_approval, approval_status, requested_at)
+            VALUES (:user_id, 'marketplace', 'active', 0, 'auto', NOW())
+        ")->execute([':user_id' => $userId]);
+
+        // Fretes: requer aprovação (solicitação para admin)
+        $this->db->prepare("
+            INSERT IGNORE INTO user_modules (user_id, module_key, status, requires_approval, approval_status, requested_at)
+            VALUES (:user_id, 'fretes', 'inactive', 1, 'pending', NOW())
+        ")->execute([':user_id' => $userId]);
     }
 }
