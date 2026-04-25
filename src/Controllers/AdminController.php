@@ -49,7 +49,7 @@ class AdminController {
     /**
      * Middleware de Segurança
      */
-    private function authorize($loggedUser = null, $minRole = 'MANAGER') {
+private function authorize($loggedUser = null, $minRole = 'MANAGER') {
         $user = $loggedUser ?? $this->loggedUser;
         
         if (!$user) {
@@ -59,24 +59,33 @@ class AdminController {
         $userRole = strtolower($user['role'] ?? '');
         $requiredRole = strtolower($minRole);
 
-        $isUserAdmin = ($userRole === 'admin');
+        // Admin sempre tem acesso
+        if ($userRole === 'admin') {
+            return;
+        }
+
+        // Se requer permissão específica, verificar via Auth::hasPermission
+        if ($minRole === 'users.manage' || $minRole === 'users.view') {
+            if (\App\Core\Auth::hasPermission($minRole, $user['id'] ?? null)) {
+                return;
+            }
+            throw new Exception("Acesso negado: Permissão insuficiente.", 403);
+        }
+
+        // Verificações originais por role
         $isUserManager = ($userRole === 'manager');
 
         if ($requiredRole === 'admin') {
-            if (!$isUserAdmin) {
-                throw new Exception("Acesso negado: Requer nível ADMINISTRADOR.", 403);
-            }
+            throw new Exception("Acesso negado: Requer nível ADMINISTRADOR.", 403);
         } elseif ($requiredRole === 'manager') {
-            if (!$isUserAdmin && !$isUserManager) {
+            if (!$isUserManager) {
                 throw new Exception("Acesso negado: Requer nível GERENTE ou superior.", 403);
             }
         } else {
-            if (!$isUserAdmin && !$isUserManager && $userRole !== $requiredRole) {
+            if (!$isUserManager && $userRole !== $requiredRole) {
                 throw new Exception("Acesso negado: Permissão insuficiente.", 403);
             }
-        }
-
-        return true; 
+}
     }
 
     public function getDashboardData($data = [], $loggedUser = null) {
@@ -442,22 +451,47 @@ class AdminController {
         return Response::json(["success" => true, "data" => $this->repo->getFinancialStats()]);
     }
 
-    public function listLogs($data, $loggedUser) {
+public function listLogs($data, $loggedUser) {
         if (!$this->adminRepo) {
              $this->adminRepo = $this->repo; 
         }
 
         $role = strtolower($loggedUser['role'] ?? '');
-        if (!$loggedUser || $role !== 'admin') {
+        $allowedRoles = ['admin', 'gerente', 'suporte'];
+        if (!$loggedUser || !in_array($role, $allowedRoles)) {
             return Response::json(["success" => false, "message" => "Não autorizado"], 403);
         }
 
-        $limit = isset($data['limit']) ? (int)$data['limit'] : 50;
-        $logs = $this->adminRepo->getAuditLogs($limit); 
+        $filters = [
+            'page' => isset($data['page']) ? (int)$data['page'] : 1,
+            'per_page' => isset($data['per_page']) ? (int)$data['per_page'] : 50,
+            'user_id' => $data['user_id'] ?? null,
+            'target_type' => $data['target_type'] ?? null,
+            'action_type' => $data['action_type'] ?? null,
+            'search' => $data['search'] ?? null,
+            'date_from' => $data['date_from'] ?? null,
+            'date_to' => $data['date_to'] ?? null,
+        ];
+
+        $result = $this->adminRepo->getAuditLogs($filters);
+        $stats = $this->adminRepo->getAuditLogsStats();
+        $targetTypes = $this->adminRepo->getAuditLogsDistinctTypes();
+        $actionTypes = $this->adminRepo->getAuditLogsDistinctActions();
 
         return Response::json([
             "success" => true, 
-            "data" => $logs
+            "data" => $result['logs'],
+            "pagination" => [
+                "page" => $result['page'],
+                "per_page" => $result['per_page'],
+                "total" => $result['total'],
+                "total_pages" => $result['total_pages']
+            ],
+            "stats" => $stats,
+            "filters" => [
+                "target_types" => $targetTypes,
+                "action_types" => $actionTypes
+            ]
         ]);
     }
 
@@ -537,8 +571,8 @@ class AdminController {
                 $roleId = $stmtRole->fetchColumn() ?: 2;
 
                 $stmtInsert = $this->db->prepare("INSERT INTO users (
-                    name, email, password, whatsapp, role, role_id, user_type, account_id, status, plan_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'OPERATOR', 1, 'active', 1, NOW())");
+                    name, email, password, whatsapp, role, role_id, user_type, account_id, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'OPERATOR', 1, 'active', NOW())");
                 
                 $stmtInsert->execute([
                     $input['name'],
@@ -704,6 +738,27 @@ class AdminController {
                 "success" => false,
                 "message" => $e->getMessage()
             ], $code);
+        }
+    }
+
+    /**
+     * GET /api/admin-team - Lista usuários internos (equipe Chama Frete)
+     */
+    public function getTeamUsers($data, $loggedUser) {
+        try {
+            $this->authorize($loggedUser, 'ADMIN');
+            
+            $users = $this->repo->getTeamUsers();
+            
+            return Response::json([
+                "success" => true,
+                "data" => $users
+            ]);
+        } catch (Exception $e) {
+            return Response::json([
+                "success" => false,
+                "message" => $e->getMessage()
+            ], 500);
         }
     }
 

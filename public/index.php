@@ -5,6 +5,7 @@ use App\Core\Database;
 use App\Core\Router;
 use App\Core\Response;
 use App\Core\Auth;
+use App\Services\AuditLoggerService;
 
 // 1. Setup Ambiental
 $envFile = file_exists(__DIR__ . '/../.env.production') 
@@ -48,9 +49,14 @@ try {
     $data = array_merge($_GET, $_POST, $jsonData);
 
     // 5. Autenticação JWT 
-    // Certifique-se que a classe App\Core\Auth usa o seu AuthMiddleware internamente
     $loggedUser = Auth::getAuthenticatedUser() ?: null;
     $role = $loggedUser ? strtoupper($loggedUser['role'] ?? '') : '';
+
+    // 5.1. Auditoria Global - Preparar dados (será executado após a requisição)
+    $requestUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+    $requestMethod = $_SERVER['REQUEST_METHOD'];
+    $auditLogger = new AuditLoggerService($db);
+    $auditData = $auditLogger->prepareAuditData($requestMethod, $requestUri, $loggedUser, $data);
 
     // 6. Inicialização do Router
     $router = new Router($_SERVER['REQUEST_URI'], $_SERVER['REQUEST_METHOD']);
@@ -63,6 +69,7 @@ try {
     $router->post('/api/login', 'AuthController@login');
     $router->post('/api/register', 'AuthController@register');
     $router->post('/api/reset-password', 'AuthController@resetPassword');
+    $router->put('/api/change-password', 'AuthController@changePassword');
 
     // --- PERFIL DO USUÁRIO & SLUGS ---
     $router->get('/api/get-my-profile', 'UserController@getProfile');
@@ -71,7 +78,7 @@ try {
     $router->post('/api/user/modules', 'UserController@toggleModule');
     $router->post('/api/user/modules/request', 'UserController@requestModuleAccess');
     $router->get('/api/pricing/rules', 'UserController@getPricingRules');
-        $router->get('/api/ad-positions', 'UserController@getAdPositions');
+    $router->get('/api/ad-positions', 'UserController@getAdPositions');
     $router->get('/api/site-settings', 'UserController@getSiteSettings');
     $router->get('/api/public/site-settings', 'UserController@getPublicLists');
     $router->get('/api/user/usage', 'UserController@getUserUsage');
@@ -198,6 +205,37 @@ try {
     $router->get('/api/get-user-reviews', 'ReviewController@list');
     $router->get('/api/review-stats', 'ReviewController@getStats');
 
+    // --- ARTIGOS ---
+    $router->get('/api/articles', 'ArticleController@index');
+    $router->get('/api/articles/:slug', 'ArticleController@show');
+    
+    if ($loggedUser) {
+        $router->get('/api/articles/me', 'ArticleController@myArticles');
+        
+        if (Auth::hasPermission('articles.create')) {
+            $router->post('/api/articles', 'ArticleController@store');
+            $router->put('/api/articles/:id', 'ArticleController@update');
+            $router->delete('/api/articles/:id', 'ArticleController@destroy');
+        }
+        
+        if (Auth::hasPermission('articles.approve')) {
+            $router->put('/api/articles/:id/approve', 'ArticleController@approve');
+            $router->put('/api/articles/:id/reject', 'ArticleController@reject');
+            $router->get('/api/articles/admin/all', 'ArticleController@getAllAdmin');
+            $router->get('/api/articles/admin/pending', 'ArticleController@getPending');
+        }
+        
+        $router->get('/api/articles/:id/stats', 'ArticleController@stats');
+    }
+
+    // --- ARTIGOS - CATEGORIAS ---
+    $router->get('/api/article-categories', 'ArticleCategoryController@getAll');
+    $router->get('/api/article-categories/active', 'ArticleCategoryController@getActive');
+
+    // --- ARTIGOS - SOLICITAÇÃO DE AUTOR ---
+    $router->get('/api/article-author-status', 'ArticleAuthorRequestController@status');
+    $router->post('/api/article-author-request', 'ArticleAuthorRequestController@store');
+
     // --- GRUPOS & COMUNIDADES ---
     $router->get('/api/list-groups', 'GroupController@listGroups');
     $router->get('/api/platform-groups', 'GroupController@listPlatformGroups');
@@ -211,8 +249,7 @@ try {
     $router->get('/api/group-categories', 'GroupCategoryController@getAll');
     $router->get('/api/group-categories/active', 'GroupCategoryController@getActive');
 
-    // --- BUSCA DE USUÁRIOS (disponível para usuários logados) ---
-    $router->get('/api/users/search', 'AdminController@searchUsers');
+
 
 
     // --- PAGAMENTOS & MEMBRESIA ---
@@ -300,29 +337,60 @@ try {
     // --- BLOCO ADMINISTRATIVO / GESTÃO (RESTRITO) ---
     $role = strtoupper($loggedUser['role'] ?? '');
     
-    // Rotas acessíveis por ADMIN, MANAGER e SUPPORT
-    if ($loggedUser && in_array($role, ['ADMIN', 'MANAGER', 'SUPPORT'])) {
+    // Suporte - permissões: support.view, support.respond, support.manage
+    if ($loggedUser && Auth::hasPermission('support.view')) {
         $router->get('/api/support/tickets', 'SupportController@listAllTickets');
+        $router->get('/api/support/tickets/:id/messages', 'SupportController@getTicketMessagesAdmin');
+    }
+    if ($loggedUser && Auth::hasPermission('support.respond')) {
         $router->post('/api/support/reply', 'SupportController@reply');
+    }
+    if ($loggedUser && Auth::hasPermission('support.manage')) {
         $router->post('/api/support/close-ticket', 'SupportController@closeTicket');
         $router->post('/api/support/update-ticket', 'SupportController@updateTicket');
-        $router->get('/api/support/tickets/:id/messages', 'SupportController@getTicketMessagesAdmin');
-        
-        // CRM / Notas Internas
+    }
+    
+    // CRM / Notas Internas - permissão: users.view
+    if ($loggedUser && Auth::hasPermission('users.view')) {
         $router->post('/api/admin/user-notes', 'AdminController@addUserNote');
         $router->get('/api/admin/user-notes', 'AdminController@getUserNotes');
     }
     
-    // Rotas acessíveis por ADMIN e MANAGER
-    if ($loggedUser && in_array($role, ['ADMIN', 'MANAGER'])) {
-        // Dashboard e Logs
+    // Dashboard BI - permissão: bi.view
+    if ($loggedUser && Auth::hasPermission('bi.view')) {
         $router->get('/api/admin-dashboard-data', 'AdminController@getDashboardData');
         $router->get('/api/admin/home-stats', 'AdminController@getHomeStats');
         $router->get('/api/admin/bi-stats', 'AdminController@getBIStats');
+        
+        // Novo BI com dados reais
+        $router->get('/api/admin/bi', 'BIController@summary');
+        $router->get('/api/admin/bi/freights', 'BIController@freights');
+        $router->get('/api/admin/bi/users', 'BIController@users');
+        $router->get('/api/admin/bi/finance', 'BIController@finance');
+        $router->get('/api/admin/bi/quotes', 'BIController@quotes');
+        $router->get('/api/admin/bi/support', 'BIController@support');
+        $router->get('/api/admin/bi/groups', 'BIController@groups');
+        $router->get('/api/admin/bi/marketplace', 'BIController@marketplace');
+    }
 
-        // Usuários
+    // Dashboard Widgets - qualquer usuário logado (owns)
+    if ($loggedUser) {
+        $router->get('/api/admin/dashboard/widgets', 'DashboardController@getWidgets');
+        $router->put('/api/admin/dashboard/widgets', 'DashboardController@saveWidgets');
+        $router->get('/api/admin/dashboard/widgets/available', 'DashboardController@getAvailableWidgets');
+        $router->post('/api/admin/dashboard/widgets/reset', 'DashboardController@resetWidgets');
+    }
+
+    // Gestão de Usuários - permissão: users.view, users.manage
+    if ($loggedUser && Auth::hasPermission('users.view')) {
         $router->get('/api/admin-user-details', 'AdminController@getUserDetails');
         $router->get('/api/admin-company-members', 'AdminController@listCompanyMembers');
+        $router->get('/api/users/search', 'AdminController@searchUsers');
+        $router->get('/api/list-all-users', 'AdminController@listUsers');
+        $router->get('/api/admin/users/search', 'AdminController@searchUsers');
+        $router->get('/api/admin-team', 'AdminController@getTeamUsers');
+    }
+    if ($loggedUser && Auth::hasPermission('users.manage')) {
         $router->post('/api/admin-create-user', 'AdminController@createUser');
         $router->post('/api/admin-create-internal-user', 'AdminController@createInternalUser');
         $router->post('/api/admin-add-note', 'AdminController@addUserNote');
@@ -330,127 +398,162 @@ try {
         $router->post('/api/admin-manage-user', 'AdminController@manageUsers');
         $router->post('/api/admin-verify-user', 'AdminController@verifyUser');
         $router->post('/api/admin-delete-user', 'AdminController@deleteUser');
+    }
 
-        // Gestão de Fretes
+    // Gestão de Fretes - permissão: freight.view, freight.edit
+    if ($loggedUser && Auth::hasPermission('freight.view')) {
         $router->get('/api/admin-list-freights', 'AdminController@listAllFreights');
+    }
+    if ($loggedUser && Auth::hasPermission('freight.edit')) {
         $router->post('/api/admin-update-freight', 'AdminController@updateFreightStatus');
         $router->post('/api/manage-freights', 'AdminController@manageFreights');
+        $router->get('/api/admin/freight-matching', 'AdminController@findMatchingDrivers');
+        $router->post('/api/admin/driver-location', 'AdminController@updateDriverLocation');
+    }
 
-        // Gestão de Leads (Novo Sistema CRM)
+    // Gestão de Leads (CRM) - permissão: users.view
+    if ($loggedUser && Auth::hasPermission('users.view')) {
         $router->post('/api/admin-portal-requests', 'LeadController@createRequest');
         $router->get('/api/admin-portal-requests', 'LeadController@listLeads');
         $router->post('/api/admin-update-lead', 'LeadController@handleAction');
         $router->get('/api/admin-lead-history', 'LeadController@getHistory');
+    }
 
-        // Gestão de Cotações (Admin)
+    // Gestão de Cotações - permissão: quotes.view, quotes.edit
+    if ($loggedUser && Auth::hasPermission('quotes.view')) {
         $router->get('/api/admin/quotes', 'QuoteController@adminList');
-        $router->post('/api/admin/quotes', 'QuoteController@adminCreate');
         $router->get('/api/admin/quotes/:id', 'QuoteController@adminGetQuote');
+    }
+    if ($loggedUser && Auth::hasPermission('quotes.edit')) {
+        $router->post('/api/admin/quotes', 'QuoteController@adminCreate');
         $router->put('/api/admin/quotes/:id', 'QuoteController@adminUpdateQuote');
         $router->delete('/api/admin/quotes/:id', 'QuoteController@adminDeleteQuote');
         $router->post('/api/admin/quotes/:id/respond', 'QuoteController@adminRespondQuote');
+    }
 
-        // Gestão de Marketplaces (Admin)
+    // Gestão de Marketplace - permissão: marketplace.view, marketplace.create, marketplace.delete
+    if ($loggedUser && Auth::hasPermission('marketplace.view')) {
         $router->get('/api/admin/marketplace', 'ListingController@adminList');
-        $router->post('/api/admin/marketplace', 'ListingController@adminCreate');
         $router->get('/api/admin/marketplace/:id', 'ListingController@adminGet');
+    }
+    if ($loggedUser && Auth::hasPermission('marketplace.create')) {
+        $router->post('/api/admin/marketplace', 'ListingController@adminCreate');
+    }
+    if ($loggedUser && Auth::hasPermission('marketplace.delete')) {
         $router->put('/api/admin/marketplace/:id', 'ListingController@adminUpdate');
         $router->delete('/api/admin/marketplace/:id', 'ListingController@adminDelete');
+    }
 
-        $router->post('/api/admin-manage-ads', 'AdminController@manageAds');
-
-        // Créditos e Planos
-        $router->post('/api/admin/add-credits', 'AdminController@manualAddCredits');
-        $router->get('/api/manage-plans', 'AdminController@managePlans');
-        $router->post('/api/admin-manage-plans', 'AdminController@managePlans');
-        
-        // Gestão de Usuários
-        $router->get('/api/list-all-users', 'AdminController@listUsers');
-        $router->get('/api/admin/users/search', 'AdminController@searchUsers');
-        
-        // Gestão de Anúncios
+    // Gestão de Ads/Anúncios - permissão: ads.view, ads.manage
+    if ($loggedUser && Auth::hasPermission('ads.view')) {
         $router->get('/api/admin-manage-ads', 'AdminController@manageAds');
         $router->get('/api/admin-ads', 'AdminController@manageAds');
-        
-        // Gestão de Grupos
+    }
+    if ($loggedUser && Auth::hasPermission('ads.manage')) {
+        $router->post('/api/admin-manage-ads', 'AdminController@manageAds');
+    }
+
+    // Gestão de Grupos - permissão: grupos.view, grupos.edit
+    if ($loggedUser && Auth::hasPermission('grupos.view')) {
         $router->get('/api/admin-groups', 'AdminController@listAllGroups');
+    }
+    if ($loggedUser && Auth::hasPermission('grupos.edit')) {
         $router->post('/api/admin-groups', 'AdminController@manageGroups');
-        
-        // Gestão de Categorias de Grupos
         $router->get('/api/admin/group-categories', 'GroupCategoryController@getAll');
         $router->post('/api/admin/group-categories', 'GroupCategoryController@create');
         $router->put('/api/admin/group-categories/:id', 'GroupCategoryController@update');
         $router->delete('/api/admin/group-categories/:id', 'GroupCategoryController@delete');
         $router->post('/api/admin/group-categories/:id/toggle', 'GroupCategoryController@toggle');
         $router->post('/api/admin/group-categories/reorder', 'GroupCategoryController@reorder');
-        
-        // Gestão de Configurações
-        $router->get('/api/admin-settings', 'AdminController@getSettings');
-        $router->post('/api/admin-settings', 'AdminController@updateSettings');
-        
-        // Gestão de Atividades
-        $router->get('/api/admin-activity', 'AdminController@getActivityLogs');
-        
-        // Precificação
-        $router->get('/api/admin-pricing', 'AdminController@managePricing');
-        $router->post('/api/admin-pricing', 'AdminController@managePricing');
+    }
 
-        // Documentos e Verificações
-        $router->get('/api/admin-pending-docs', 'AdminController@listPendingDocuments');
-        $router->post('/api/admin-review-doc', 'AdminController@reviewDocument');
-        
-        // Driver Verifications
+    // Gestão de Artigos - permissão: marketplace.view
+    if ($loggedUser && Auth::hasPermission('marketplace.view')) {
+        $router->get('/api/admin/article-categories', 'ArticleCategoryController@getAll');
+        $router->get('/api/admin/article-categories/:id', 'ArticleCategoryController@get');
+        $router->post('/api/admin/article-categories', 'ArticleCategoryController@create');
+        $router->put('/api/admin/article-categories/:id', 'ArticleCategoryController@update');
+        $router->delete('/api/admin/article-categories/:id', 'ArticleCategoryController@delete');
+        $router->get('/api/admin/article-author-requests', 'ArticleAuthorRequestController@getAll');
+        $router->get('/api/admin/article-author-requests/pending', 'ArticleAuthorRequestController@getPending');
+        $router->put('/api/admin/article-author-requests/:id/approve', 'ArticleAuthorRequestController@approve');
+        $router->put('/api/admin/article-author-requests/:id/reject', 'ArticleAuthorRequestController@reject');
+    }
+
+    // Gestão de Verificações - permissão: driver.view
+    if ($loggedUser && Auth::hasPermission('driver.view')) {
         $router->get('/api/admin/driver-verifications', 'AdminController@listDriverVerifications');
         $router->post('/api/admin/driver-verification/approve', 'AdminController@approveDriverVerification');
         $router->post('/api/admin/driver-verification/reject', 'AdminController@rejectDriverVerification');
-        
-        // Unified Verifications (Drivers + Companies)
         $router->get('/api/admin/verifications', 'AdminController@getAllVerifications');
         $router->post('/api/admin/verification/approve', 'AdminController@approveVerification');
         $router->post('/api/admin/verification/reject', 'AdminController@rejectVerification');
-        
-        // Reviews / Avaliações
+    }
+
+    // Gestão de Documentos - permissão: users.view
+    if ($loggedUser && Auth::hasPermission('users.view')) {
+        $router->get('/api/admin-pending-docs', 'AdminController@listPendingDocuments');
+        $router->post('/api/admin-review-doc', 'AdminController@reviewDocument');
+    }
+
+    // Plans e Créditos - permissão: wallet.manage
+    if ($loggedUser && Auth::hasPermission('wallet.manage')) {
+        $router->post('/api/admin/add-credits', 'AdminController@manualAddCredits');
+        $router->get('/api/manage-plans', 'AdminController@managePlans');
+        $router->post('/api/admin-manage-plans', 'AdminController@managePlans');
+    }
+
+    // Precificação - permissão: roles.manage
+    if ($loggedUser && Auth::hasPermission('roles.manage')) {
+        $router->get('/api/admin-pricing', 'AdminController@managePricing');
+        $router->post('/api/admin-pricing', 'AdminController@managePricing');
+    }
+
+    // Reviews - permissão: users.view
+    if ($loggedUser && Auth::hasPermission('users.view')) {
         $router->get('/api/admin-reviews', 'AdminController@getReviews');
         $router->post('/api/admin-review/approve', 'AdminController@approveReview');
         $router->post('/api/admin-review/reject', 'AdminController@rejectReview');
         $router->post('/api/admin-review/delete', 'AdminController@deleteReview');
         $router->post('/api/review/reply', 'ReviewController@replyReview');
         $router->post('/api/review/delete-reply', 'ReviewController@deleteReply');
-        
-        // Reports / Denúncias (usuários)
-        $router->post('/api/reports', 'ReportController@create');
-        $router->get('/api/my-reports', 'ReportController@listMine');
-        
-        // Affiliate / Afiliados (Marketplace)
-        $router->get('/api/affiliate/scrape', 'AffiliateController@scrapeProduct');
-        $router->post('/api/affiliate/scrape', 'AffiliateController@scrapeProduct');
-        $router->post('/api/affiliate/generate-url', 'AffiliateController@generateAffiliateUrl');
-        $router->post('/api/affiliate/interest', 'AffiliateController@submitInterest');
-        $router->get('/api/affiliate/my-interest', 'AffiliateController@getMyInterest');
-        $router->get('/api/affiliate/access', 'AffiliateController@checkAccess');
-        $router->get('/api/affiliate/redirect/:id', 'AffiliateController@redirect');
-        
-        // Affiliate Admin
-        $router->get('/api/admin/affiliate/interests', 'AdminAffiliateController@listInterests');
-        $router->get('/api/admin/affiliate/stats', 'AdminAffiliateController@getStats');
-        $router->post('/api/admin/affiliate/interests/:id/approve', 'AdminAffiliateController@approveInterest');
-        $router->post('/api/admin/affiliate/interests/:id/reject', 'AdminAffiliateController@rejectInterest');
-        $router->post('/api/admin/affiliate/interests/:id/revoke', 'AdminAffiliateController@revokeAccess');
-        
-        // Reports / Denúncias (admin)
-        $router->get('/api/admin/reports', 'ReportController@getAll');
-        $router->get('/api/admin/reports/:id', 'ReportController@get');
-        $router->post('/api/admin/reports/:id/assign', 'ReportController@assign');
-        $router->post('/api/admin/reports/:id/resolve', 'ReportController@resolve');
-        $router->post('/api/admin/reports/:id/dismiss', 'ReportController@dismiss');
-        $router->post('/api/admin/reports/:id/delete', 'ReportController@delete');
-        
-        // Configurações e Estatísticas (Outros)
-        $router->get('/api/admin-stats', 'AdminController@getStats');
-        $router->get('/api/get-advertising-plans', 'AdminController@getAdvertisingPlans');
-        
-        // Rotas exclusivas de ADMIN
-        if ($role === 'ADMIN') {
+    }
+
+    // Reports / Denúncias (usuários)
+    $router->post('/api/reports', 'ReportController@create');
+    $router->get('/api/my-reports', 'ReportController@listMine');
+    
+    // Affiliate / Afiliados (Marketplace)
+    $router->get('/api/affiliate/scrape', 'AffiliateController@scrapeProduct');
+    $router->post('/api/affiliate/scrape', 'AffiliateController@scrapeProduct');
+    $router->post('/api/affiliate/generate-url', 'AffiliateController@generateAffiliateUrl');
+    $router->post('/api/affiliate/interest', 'AffiliateController@submitInterest');
+    $router->get('/api/affiliate/my-interest', 'AffiliateController@getMyInterest');
+    $router->get('/api/affiliate/access', 'AffiliateController@checkAccess');
+    $router->get('/api/affiliate/redirect/:id', 'AffiliateController@redirect');
+    
+    // Rotas exclusivas de ADMIN MASTER - permissão: roles.manage
+    if ($loggedUser && Auth::hasPermission('roles.manage')) {
+            // Affiliate Admin
+            $router->get('/api/admin/affiliate/interests', 'AdminAffiliateController@listInterests');
+            $router->get('/api/admin/affiliate/stats', 'AdminAffiliateController@getStats');
+            $router->post('/api/admin/affiliate/interests/:id/approve', 'AdminAffiliateController@approveInterest');
+            $router->post('/api/admin/affiliate/interests/:id/reject', 'AdminAffiliateController@rejectInterest');
+            $router->post('/api/admin/affiliate/interests/:id/revoke', 'AdminAffiliateController@revokeAccess');
+            
+            // Reports / Denúncias (admin)
+            $router->get('/api/admin/reports', 'ReportController@getAll');
+            $router->get('/api/admin/reports/:id', 'ReportController@get');
+            $router->post('/api/admin/reports/:id/assign', 'ReportController@assign');
+            $router->post('/api/admin/reports/:id/resolve', 'ReportController@resolve');
+            $router->post('/api/admin/reports/:id/dismiss', 'ReportController@dismiss');
+            $router->post('/api/admin/reports/:id/delete', 'ReportController@delete');
+            
+            // Configurações e Estatísticas (Outros)
+            $router->get('/api/admin-stats', 'AdminController@getStats');
+            $router->get('/api/get-advertising-plans', 'AdminController@getAdvertisingPlans');
+            
+            // Revenue e Financial
             $router->get('/api/admin-revenue-report', 'AdminController@getRevenueReport');
             $router->get('/api/admin-financial-stats', 'AdminController@getFinancialStats');
             $router->get('/api/admin-audit-logs', 'AdminController@listLogs');
@@ -500,10 +603,34 @@ try {
             
             $router->post('/api/delete-group', 'GroupController@deleteGroup');
         }
-    }
 
     // 7. Execução
     $response = $router->run($db, $loggedUser, $data);
+
+// 7.1. Registrar auditoria após ação bem-sucedida
+    $userId = $loggedUser['id'] ?? null;
+    
+    // FORÇAR para TODAS as requisições (desabilitar depois)
+    if ($userId && in_array($requestMethod, ['POST', 'PUT', 'DELETE'])) {
+        $desc = "{$requestMethod} {$requestUri}";
+        $forcedAuditData = [
+            'user_id' => $userId,
+            'user_name' => $loggedUser['name'] ?? ($loggedUser['email'] ?? 'Unknown'),
+            'action_type' => 'API_CALL',
+            'description' => $desc,
+            'target_type' => 'DEBUG',
+            'target_id' => null,
+            'ip_address' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'action_url' => $requestUri,
+            'new_values' => json_encode(['method' => $requestMethod, 'uri' => $requestUri]),
+        ];
+        $auditLogger->log($forcedAuditData);
+    }
+
+    if ($auditData && isset($response['success']) && $response['success'] === true) {
+        $auditLogger->log($auditData);
+    }
 
    if ($response !== null) {
         // Só limpamos o buffer se houver lixo (espaços, warnings) antes do JSON

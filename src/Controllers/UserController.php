@@ -1129,14 +1129,21 @@ class UserController {
             return Response::json(["success" => false, "message" => "Não autorizado"], 401);
         }
         
-        try {
+try {
             $stmt = $this->db->prepare("
                 SELECT 
-                    u.name, p.bio, p.avatar_url, p.vehicle_type, p.body_type, 
-                    p.home_lat, p.home_lng, p.rntrc_number, p.verification_status,
-                    p.profile_completeness, p.available_equipment, p.certifications
+                    COALESCE(u.name, '') as name, 
+                    COALESCE(p.bio, '') as bio, 
+                    COALESCE(p.avatar_url, '') as avatar_url, 
+                    COALESCE(p.vehicle_type, '') as vehicle_type, 
+                    COALESCE(p.body_type, '') as body_type, 
+                    COALESCE(p.home_lat, 0) as home_lat, 
+                    COALESCE(p.home_lng, 0) as home_lng, 
+                    COALESCE(p.rntrc_number, '') as rntrc_number, 
+                    COALESCE(p.verification_status, '') as verification_status,
+                    COALESCE(p.profile_completeness, 0) as profile_completeness
                 FROM users u
-                INNER JOIN user_profiles p ON u.id = p.user_id
+                LEFT JOIN user_profiles p ON u.id = p.user_id
                 WHERE u.id = ?
             ");
             $stmt->execute([$loggedUser['id']]);

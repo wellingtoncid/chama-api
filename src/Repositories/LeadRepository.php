@@ -39,13 +39,48 @@ class LeadRepository {
     }
 
     /**
-     * Atualiza status e notas administrativas
+     * Atualiza status e notas administrativas + campos CRM
      */
-    public function updateLead($id, $status, $adminNotes) {
-        $sql = "UPDATE portal_requests 
-                SET status = ?, admin_notes = ?, last_contact = NOW() 
-                WHERE id = ?";
-        return $this->db->prepare($sql)->execute([$status, $adminNotes, $id]);
+    public function updateLead($id, $data = []) {
+        $fields = [];
+        $values = [];
+        
+        if (isset($data['status'])) {
+            $fields[] = 'status = ?';
+            $values[] = $data['status'];
+        }
+        if (isset($data['admin_notes'])) {
+            $fields[] = 'admin_notes = ?';
+            $values[] = $data['admin_notes'];
+        }
+        if (isset($data['pipeline_stage'])) {
+            $fields[] = 'pipeline_stage = ?';
+            $values[] = $data['pipeline_stage'];
+        }
+        if (isset($data['deal_value'])) {
+            $fields[] = 'deal_value = ?';
+            $values[] = $data['deal_value'];
+        }
+        if (isset($data['score'])) {
+            $fields[] = 'score = ?';
+            $values[] = $data['score'];
+        }
+        if (isset($data['assigned_to'])) {
+            $fields[] = 'assigned_to = ?';
+            $values[] = $data['assigned_to'];
+        }
+        if (isset($data['priority'])) {
+            $fields[] = 'priority = ?';
+            $values[] = $data['priority'];
+        }
+        
+        if (empty($fields)) return false;
+        
+        $fields[] = 'last_contact = NOW()';
+        $values[] = $id;
+        
+        $sql = "UPDATE portal_requests SET " . implode(', ', $fields) . " WHERE id = ?";
+        return $this->db->prepare($sql)->execute($values);
     }
 
     /**

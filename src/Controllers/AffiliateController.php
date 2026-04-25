@@ -193,11 +193,12 @@ class AffiliateController
 
     public function checkAccess($loggedUser)
     {
-        if (!$loggedUser) {
+        if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json([
-                'success' => false,
-                'has_access' => false
-            ], 401);
+                'success' => true,
+                'has_access' => false,
+                'message' => 'Usuário não logado'
+            ]);
         }
 
         $userId = (int)$loggedUser['id'];

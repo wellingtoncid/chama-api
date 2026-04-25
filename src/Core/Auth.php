@@ -46,6 +46,7 @@ class Auth {
             return self::$user;
             
         } catch (Exception $e) {
+            error_log("JWT Error: " . $e->getMessage());
             return null;
         }
     }

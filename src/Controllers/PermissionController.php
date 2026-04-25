@@ -3,16 +3,19 @@
 namespace App\Controllers;
 
 use App\Core\Response;
+use App\Repositories\AdminRepository;
 use Exception;
 use PDO;
 
 class PermissionController {
     private $db;
     private $loggedUser;
+    private $adminRepo;
 
     public function __construct($db, $loggedUser = null) {
         $this->db = $db;
         $this->loggedUser = $loggedUser;
+        $this->adminRepo = new AdminRepository($db);
     }
 
     private function authorize($roles = ['ADMIN', 'MANAGER']) {
@@ -153,6 +156,7 @@ class PermissionController {
         try {
             $roleId = $data['role_id'] ?? null;
             $permissionIds = $data['permission_ids'] ?? [];
+            $syncModules = $data['sync_modules'] ?? true;
             
             if (!$roleId) {
                 return Response::json(["success" => false, "message" => "role_id é obrigatório"], 400);
@@ -169,9 +173,16 @@ class PermissionController {
             
             $this->db->commit();
             
+            $syncResult = ['success' => true, 'users_updated' => 0, 'modules_added' => [], 'modules_removed' => []];
+            
+            if ($syncModules) {
+                $syncResult = $this->adminRepo->syncUserModulesByRolePermissions($roleId, $permissionIds);
+            }
+            
             return Response::json([
                 "success" => true,
-                "message" => "Permissões atualizadas com sucesso"
+                "message" => "Permissões atualizadas com sucesso",
+                "sync_result" => $syncResult
             ]);
         } catch (\Throwable $e) {
             $this->db->rollBack();

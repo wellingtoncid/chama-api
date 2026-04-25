@@ -77,34 +77,43 @@ class LeadController {
           }
       }
 
-      // 3. Dados vindos do Front
-      $status = $data['status'] ?? 'pending';
-      $notes = $data['admin_notes'] ?? '';
-      $newNote = $data['new_note'] ?? '';
+      // 3. Dados vindos do Front (suporta novos campos CRM)
+      $updateData = [
+        'status' => $data['status'] ?? 'pending',
+        'admin_notes' => $data['admin_notes'] ?? '',
+      ];
+      
+      // Novos campos CRM
+      if (isset($data['pipeline_stage'])) $updateData['pipeline_stage'] = $data['pipeline_stage'];
+      if (isset($data['deal_value'])) $updateData['deal_value'] = $data['deal_value'];
+      if (isset($data['score'])) $updateData['score'] = $data['score'];
+      if (isset($data['assigned_to'])) $updateData['assigned_to'] = $data['assigned_to'];
+      if (isset($data['priority'])) $updateData['priority'] = $data['priority'];
 
-      if ($this->leadRepo->updateLead($id, $status, $notes)) {
+      if ($this->leadRepo->updateLead($id, $updateData)) {
           
           $logDesc = "Atualizou dados do lead #$id"; // Descrição padrão
 
           // --- LÓGICA DE NOTAS NA TIMELINE ---
+          $newNote = $data['new_note'] ?? '';
           if (!empty($newNote)) {
               // Se o front enviou nota (manual ou clique no WhatsApp)
               $this->leadRepo->addNote($id, $authorId, $authorName, $newNote);
               $logDesc = "Adicionou nota ao lead #$id: " . mb_substr($newNote, 0, 50) . "...";
           } 
-          else if ($currentLead && $currentLead['status'] !== $status) {
+          else if ($currentLead && isset($data['status']) && $currentLead['status'] !== $data['status']) {
               // Se não tem nota manual, mas o STATUS mudou, gera nota automática
               $statusLabels = [
                   'pending' => 'Pendente', 
-                  'in_negotiation' => 'Em Negociação', 
-                  'analyzed' => 'Finalizado'
+                  'in_progress' => 'Em Andamento',
+                  'completed' => 'Concluído'
               ];
               $oldStatus = $statusLabels[$currentLead['status']] ?? $currentLead['status'];
-              $newStatusLabel = $statusLabels[$status] ?? $status;
+              $newStatusLabel = $statusLabels[$data['status']] ?? $data['status'];
               
-              $msg = "Alterou o status de [{$oldStatus}] para [{$newStatusLabel}]";
+              $msg = "Alterou status de [{$oldStatus}] para [{$newStatusLabel}]";
               $this->leadRepo->addNote($id, $authorId, $authorName, $msg);
-              $logDesc = "Alterou status do lead #$id para $status";
+              $logDesc = "Alterou status do lead #$id para " . ($data['status']);
           }
 
           // 4. Log de auditoria (Na tabela logs_auditoria)

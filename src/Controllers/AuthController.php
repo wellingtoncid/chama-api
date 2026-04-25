@@ -256,6 +256,54 @@ class AuthController {
     }
 
     /**
+     * PUT /api/change-password - Trocar senha do usuário logado
+     */
+    public function changePassword($data) {
+        $user = Auth::requireAuth();
+        
+        $currentPassword = $data['current_password'] ?? '';
+        $newPassword = $data['new_password'] ?? '';
+        $confirmPassword = $data['confirm_password'] ?? '';
+
+        if (empty($currentPassword) || empty($newPassword) || empty($confirmPassword)) {
+            return Response::json(["success" => false, "message" => "Todos os campos são obrigatórios"], 400);
+        }
+
+        if ($newPassword !== $confirmPassword) {
+            return Response::json(["success" => false, "message" => "A nova senha e a confirmação não coincidem"], 400);
+        }
+
+        if (strlen($newPassword) < 6) {
+            return Response::json(["success" => false, "message" => "A nova senha deve ter no mínimo 6 caracteres"], 400);
+        }
+
+        // Busca usuário completo para verificar senha atual
+        $userFull = $this->userRepo->findById($user['id']);
+        
+        if (!$userFull) {
+            return Response::json(["success" => false, "message" => "Usuário não encontrado"], 404);
+        }
+
+        // Verifica senha atual
+        if (!password_verify($currentPassword, $userFull['password'])) {
+            return Response::json(["success" => false, "message" => "Senha atual incorreta"], 401);
+        }
+
+        // Atualiza senha
+        $hashedPassword = password_hash($newPassword, PASSWORD_BCRYPT);
+        $success = $this->userRepo->updatePassword($user['id'], $hashedPassword);
+
+        if ($success) {
+            return Response::json([
+                "success" => true, 
+                "message" => "Senha alterada com sucesso!"
+            ]);
+        }
+
+        return Response::json(["success" => false, "message" => "Erro ao alterar senha. Tente novamente."], 500);
+    }
+
+    /**
      * Configuração PHPMailer Centralizada
      */
     private function getMailer() {

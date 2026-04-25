@@ -3,16 +3,19 @@
 namespace App\Controllers;
 
 use App\Core\Response;
+use App\Repositories\AdminRepository;
 use Exception;
 use PDO;
 
 class RoleController {
     private $db;
     private $loggedUser;
+    private $adminRepo;
 
     public function __construct($db, $loggedUser = null) {
         $this->db = $db;
         $this->loggedUser = $loggedUser;
+        $this->adminRepo = new AdminRepository($db);
     }
 
     private function authorize($roles = ['ADMIN']) {
@@ -135,11 +138,14 @@ class RoleController {
                     ->execute([$id, $permId]);
             }
             
+            $syncResult = $this->adminRepo->syncUserModulesByRolePermissions($id, $permissionIds);
+            
             $this->db->commit();
             
             return Response::json([
                 "success" => true,
-                "message" => "Cargo atualizado com sucesso"
+                "message" => "Cargo atualizado com sucesso",
+                "sync_result" => $syncResult
             ]);
         } catch (\Throwable $e) {
             $this->db->rollBack();

@@ -233,16 +233,135 @@ class AdminRepository {
         return $this->db->prepare($sql)->execute([$featured, $id]);
     }
     
-    public function getAuditLogs($limit = 50) {
-        $sql = "SELECT * FROM logs_auditoria ORDER BY created_at DESC LIMIT :limit";
+    public function getAuditLogs(array $filters = []) {
+        error_log("getAuditLogs: called with filters=" . json_encode($filters));
+        
+        $page = $filters['page'] ?? 1;
+        $perPage = $filters['per_page'] ?? 50;
+        $userId = $filters['user_id'] ?? null;
+        $targetType = $filters['target_type'] ?? null;
+        $actionType = $filters['action_type'] ?? null;
+        $search = $filters['search'] ?? null;
+        $dateFrom = $filters['date_from'] ?? null;
+        $dateTo = $filters['date_to'] ?? null;
+        
+        $where = [];
+        $params = [];
+        
+        if ($userId) {
+            $where[] = "user_id = :user_id";
+            $params[':user_id'] = (int)$userId;
+        }
+        
+        if ($targetType) {
+            $where[] = "target_type = :target_type";
+            $params[':target_type'] = $targetType;
+        }
+        
+        if ($actionType) {
+            $where[] = "action_type = :action_type";
+            $params[':action_type'] = $actionType;
+        }
+        
+        if ($search) {
+            $where[] = "(description LIKE :search OR user_name LIKE :search)";
+            $params[':search'] = "%{$search}%";
+        }
+        
+        if ($dateFrom) {
+            $where[] = "created_at >= :date_from";
+            $params[':date_from'] = $dateFrom . " 00:00:00";
+        }
+        
+        if ($dateTo) {
+            $where[] = "created_at <= :date_to";
+            $params[':date_to'] = $dateTo . " 23:59:59";
+        }
+        
+        $whereClause = count($where) > 0 ? "WHERE " . implode(" AND ", $where) : "";
+        
+        $offset = ($page - 1) * $perPage;
+        
+        $sql = "SELECT * FROM logs_auditoria {$whereClause} ORDER BY created_at DESC LIMIT :limit OFFSET :offset";
+        $countSql = "SELECT COUNT(*) as total FROM logs_auditoria {$whereClause}";
         
         try {
             $stmt = $this->db->prepare($sql);
-            $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+            $countStmt = $this->db->prepare($countSql);
+            
+            foreach ($params as $key => $value) {
+                $stmt->bindValue($key, $value);
+                $countStmt->bindValue($key, $value);
+            }
+            
+            $stmt->bindValue(':limit', (int)$perPage, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', (int)$offset, PDO::PARAM_INT);
+            
             $stmt->execute();
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $countStmt->execute();
+            
+            $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
+            
+            return [
+                'logs' => $logs,
+                'total' => (int)$total,
+                'page' => (int)$page,
+                'per_page' => (int)$perPage,
+                'total_pages' => ceil($total / $perPage)
+            ];
         } catch (\Exception $e) {
             error_log("Erro ao buscar logs: " . $e->getMessage());
+            return ['logs' => [], 'total' => 0, 'page' => 1, 'per_page' => $perPage, 'total_pages' => 0];
+        }
+    }
+    
+    public function getAuditLogsStats() {
+        try {
+            $today = date('Y-m-d');
+            $weekAgo = date('Y-m-d', strtotime('-7 days'));
+            $monthAgo = date('Y-m-d', strtotime('-30 days'));
+            
+            $stmt = $this->db->prepare("
+                SELECT 
+                    COUNT(CASE WHEN DATE(created_at) = :today THEN 1 END) as today,
+                    COUNT(CASE WHEN DATE(created_at) >= :weekAgo THEN 1 END) as this_week,
+                    COUNT(CASE WHEN DATE(created_at) >= :monthAgo THEN 1 END) as this_month,
+                    COUNT(*) as total
+                FROM logs_auditoria
+            ");
+            $stmt->execute([':today' => $today, ':weekAgo' => $weekAgo, ':monthAgo' => $monthAgo]);
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            error_log("Erro ao buscar stats de audit: " . $e->getMessage());
+            return ['today' => 0, 'this_week' => 0, 'this_month' => 0, 'total' => 0];
+        }
+    }
+    
+    public function getAuditLogsDistinctTypes() {
+        try {
+            $stmt = $this->db->query("
+                SELECT DISTINCT target_type as value, target_type as label 
+                FROM logs_auditoria 
+                WHERE target_type IS NOT NULL AND target_type != ''
+                ORDER BY target_type
+            ");
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+    
+    public function getAuditLogsDistinctActions() {
+        try {
+            $stmt = $this->db->query("
+                SELECT DISTINCT action_type as value, action_type as label 
+                FROM logs_auditoria 
+                WHERE action_type IS NOT NULL AND action_type != ''
+                ORDER BY action_type
+            ");
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
             return [];
         }
     }
@@ -289,7 +408,7 @@ class AdminRepository {
             LEFT JOIN users u ON t.user_id = u.id
             LEFT JOIN plans p ON t.plan_id = p.id
             ORDER BY t.created_at DESC
-            LIMIT 10
+            LIMIT 1000
         ")->fetchAll(PDO::FETCH_ASSOC);
 
         return [
@@ -1083,7 +1202,7 @@ class AdminRepository {
         }
     }
 
-    private function syncUserModulesByRole(int $userId, string $newRole): void {
+private function syncUserModulesByRole(int $userId, string $newRole): void {
         $this->db->prepare("DELETE FROM user_modules WHERE user_id = ?")->execute([$userId]);
         
         $stmt = $this->db->prepare("
@@ -1105,6 +1224,170 @@ class AdminRepository {
         }
     }
 
+    public function syncUserModulesByRolePermissions(int $roleId, array $newPermissionIds): array {
+        // Mapeamento de permissões para módulos
+        $permissionToModule = [
+            // Freight
+            'freight.view' => 'freights',
+            'freight.create' => 'freights',
+            'freight.edit' => 'freights',
+            'freight.delete' => 'freights',
+            
+            // Marketplace
+            'marketplace.view' => 'marketplace',
+            'marketplace.create' => 'marketplace',
+            'marketplace.edit' => 'marketplace',
+            'marketplace.delete' => 'marketplace',
+            
+            // Cotações (doubled - old and new naming)
+            'cotacoes.view' => 'quotes',
+            'cotacoes.edit' => 'quotes',
+            'quotes.view' => 'quotes',
+            'quotes.create' => 'quotes',
+            'quotes.manage' => 'quotes',
+            'quotes.respond' => 'quotes',
+            
+            // Publicidade
+            'ads.view' => 'advertiser',
+            'ads.create' => 'advertiser',
+            'ads.edit' => 'advertiser',
+            'ads.manage' => 'advertiser',
+            'ads.delete' => 'advertiser',
+            
+            // Financeiro
+            'financeiro.view' => 'financial',
+            'financeiro.manage' => 'financial',
+            'wallet.view' => 'financial',
+            'wallet.manage' => 'financial',
+            
+            // Grupos
+            'grupos.view' => 'groups',
+            'grupos.create' => 'groups',
+            'grupos.edit' => 'groups',
+            'grupos.delete' => 'groups',
+            
+            // Suporte
+            'support.view' => 'support',
+            'support.create' => 'support',
+            'support.respond' => 'support',
+            'support.manage' => 'support',
+            
+            // Chat
+            'chat.view' => 'chat',
+            'chat.send' => 'chat',
+            'chat.manage' => 'chat',
+            'chat.delete' => 'chat',
+            
+            // Planos
+            'planos.view' => 'plans',
+            'planos.manage' => 'plans',
+            
+            // Artigos
+            'articles.view' => 'articles',
+            'articles.create' => 'articles',
+            'articles.edit' => 'articles',
+            'articles.delete' => 'articles',
+            'articles.approve' => 'articles',
+            'articles.manage' => 'articles',
+        ];
+        
+        // Buscar role atual
+        $stmt = $this->db->prepare("SELECT slug FROM roles WHERE id = ?");
+        $stmt->execute([$roleId]);
+        $role = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$role) {
+            return ['success' => false, 'message' => 'Cargo não encontrado'];
+        }
+        
+        $roleSlug = $role['slug'];
+        
+        // Buscar permissões ANTIGAS do cargo (para identificar o que foi removido)
+        $stmt = $this->db->prepare("
+            SELECT p.slug 
+            FROM role_permissions rp
+            JOIN permissions p ON rp.permission_id = p.id
+            WHERE rp.role_id = ?
+        ");
+        $stmt->execute([$roleId]);
+        $oldPermissions = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        // Buscar novas permissões pelo ID
+        $placeholders = implode(',', array_fill(0, count($newPermissionIds), '?'));
+        $stmt = $this->db->prepare("SELECT slug FROM permissions WHERE id IN ($placeholders)");
+        $stmt->execute($newPermissionIds);
+        $newPermissions = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        // Identificar módulos a adicionar e remover
+        $oldModules = [];
+        $newModules = [];
+        
+        foreach ($oldPermissions as $perm) {
+            if (isset($permissionToModule[$perm])) {
+                $oldModules[] = $permissionToModule[$perm];
+            }
+        }
+        
+        foreach ($newPermissions as $perm) {
+            if (isset($permissionToModule[$perm])) {
+                $newModules[] = $permissionToModule[$perm];
+            }
+        }
+        
+        $modulesToAdd = array_diff($newModules, $oldModules);
+        $modulesToRemove = array_diff($oldModules, $newModules);
+        $modulesToAdd = array_unique($modulesToAdd);
+        $modulesToRemove = array_unique($modulesToRemove);
+        
+        // Buscar usuários com esse cargo
+        $stmt = $this->db->prepare("SELECT id FROM users WHERE role = ? AND deleted_at IS NULL");
+        $stmt->execute([$roleSlug]);
+        $users = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        $usersUpdated = 0;
+        
+        foreach ($users as $userId) {
+            $changed = false;
+            
+            // Adicionar módulos das novas permissões
+            foreach ($modulesToAdd as $moduleKey) {
+                $checkStmt = $this->db->prepare("
+                    SELECT 1 FROM user_modules 
+                    WHERE user_id = ? AND module_key = ?
+                ");
+                $checkStmt->execute([$userId, $moduleKey]);
+                
+                if (!$checkStmt->fetch()) {
+                    $this->db->prepare("
+                        INSERT INTO user_modules (user_id, module_key, status, activated_at)
+                        VALUES (?, ?, 'active', NOW())
+                    ")->execute([$userId, $moduleKey]);
+                    $changed = true;
+                }
+            }
+            
+            // Remover módulos das permissões removidas
+            foreach ($modulesToRemove as $moduleKey) {
+                $this->db->prepare("
+                    DELETE FROM user_modules 
+                    WHERE user_id = ? AND module_key = ?
+                ")->execute([$userId, $moduleKey]);
+                $changed = true;
+            }
+            
+            if ($changed) {
+                $usersUpdated++;
+            }
+        }
+        
+        return [
+            'success' => true,
+            'users_updated' => $usersUpdated,
+            'modules_added' => array_values($modulesToAdd),
+            'modules_removed' => array_values($modulesToRemove)
+        ];
+    }
+
     public function searchUsers(string $query, int $limit = 10): array {
         $stmt = $this->db->prepare("
             SELECT u.id, u.name, u.email, u.role, u.status, a.corporate_name, a.trade_name
@@ -1117,6 +1400,17 @@ class AdminRepository {
         $stmt->bindValue(':query', "%$query%", PDO::PARAM_STR);
         $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
         $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function getTeamUsers(): array {
+        $stmt = $this->db->query("
+            SELECT id, name, email, role, status
+            FROM users
+            WHERE role NOT IN ('driver', 'company')
+            AND deleted_at IS NULL
+            ORDER BY name ASC
+        ");
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }
