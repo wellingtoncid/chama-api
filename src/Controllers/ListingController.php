@@ -8,13 +8,15 @@ use App\Services\CreditService;
 use App\Services\GeocodingService;
 use App\Services\ContentFilterService;
 use App\Services\MercadoPagoService;
+use App\Services\AccessControlService;
 
 class ListingController {
     private $repository;
     private $creditService;
     private $geocodingService;
-    private $db;
+private $db;
     private $mpService;
+    private $accessControlService;
 
     public function __construct($db) {
         $this->db = $db;
@@ -22,6 +24,7 @@ class ListingController {
         $this->creditService = new CreditService($db);
         $this->geocodingService = new GeocodingService($db);
         $this->mpService = new MercadoPagoService($db);
+        $this->accessControlService = new AccessControlService($db);
     }
 
     private function uploadFile($file) {
@@ -47,7 +50,22 @@ class ListingController {
         return null;
     }
 
-    public function create($data, $loggedUser = null) {
+public function create($data, $loggedUser = null) {
+        // 0. Verificar limite de publicações (Access Control)
+        if ($this->accessControlService && !empty($data['user_id'])) {
+            $canPublish = $this->accessControlService->canPublish((int)$data['user_id'], 'marketplace');
+            if (!$canPublish['allowed']) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => $canPublish['reason'],
+                    "code" => "LIMIT_EXCEEDED",
+                    "used" => $canPublish['used'],
+                    "limit" => $canPublish['limit'],
+                    "remaining" => $canPublish['remaining']
+                ], 402);
+            }
+        }
+
         // Validação básica
         if (empty($data['title']) || empty($data['user_id'])) {
             return Response::json(["success" => false, "message" => "Dados insuficientes"], 400);
@@ -210,9 +228,14 @@ class ListingController {
         }
         
         // Definir main_image como primeira imagem
-        $data['main_image'] = $imageUrls[0] ?? null;
+$data['main_image'] = $imageUrls[0] ?? null;
         
         $listingId = $this->repository->save($data);
+
+        // Registrar uso para controle de limite
+        if ($this->accessControlService && $listingId && $userId) {
+            $this->accessControlService->recordUsage($userId, 'marketplace', $listingId, 'listing');
+        }
         
         if (!$listingId) {
             return Response::json(["success" => false, "message" => "Erro ao salvar anúncio"], 500);

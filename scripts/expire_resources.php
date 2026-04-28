@@ -5,7 +5,8 @@
  * Recomendado: Executar a cada 5 minutos ou 1 vez ao dia
  * 
  * No CRON do servidor (cPanel/Linux):
- * */5 * * * * php /path/to/api/scripts/expire_resources.php
+ * Exemplo a cada 5 minutos:
+ * 5 * * * * php /path/to/api/scripts/expire_resources.php
  * Ou diariamente:
  * 0 0 * * * php /path/to/api/scripts/expire_resources.php
  */

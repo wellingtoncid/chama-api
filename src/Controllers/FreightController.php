@@ -5,6 +5,7 @@ use App\Core\Response;
 use App\Repositories\FreightRepository;
 use App\Services\NotificationService;
 use App\Services\CreditService;
+use App\Services\AccessControlService;
 use Exception;
 
 class FreightController {
@@ -13,8 +14,9 @@ class FreightController {
     private $repo;
     private $notificationService;
     private $chatRepo;
-    private $auditRepo;
+private $auditRepo;
     private $creditService;
+    private $accessControlService;
 
     public function __construct(
     $freightRepo, 
@@ -30,8 +32,9 @@ class FreightController {
     $this->db = $db;
     $this->chatRepo = $chatRepo;
     $this->auditRepo = $auditRepo;
-    $this->creditService = $db ? new CreditService($db) : null;
-}
+$this->creditService = $db ? new CreditService($db) : null;
+        $this->accessControlService = $db ? new AccessControlService($db) : null;
+    }
 
     public function listAll($data, $loggedUser) {
         // 1. Limpeza de inputs
@@ -107,7 +110,22 @@ class FreightController {
         }
     }
 
-    public function createFreight($data, $user) {
+public function createFreight($data, $user) {
+        // 0. Verificar limite de publicações (Access Control)
+        if ($this->accessControlService) {
+            $canPublish = $this->accessControlService->canPublish((int)$user['id'], 'freights');
+            if (!$canPublish['allowed']) {
+                return Response::json([
+                    "success" => false, 
+                    "message" => $canPublish['reason'],
+                    "code" => "LIMIT_EXCEEDED",
+                    "used" => $canPublish['used'],
+                    "limit" => $canPublish['limit'],
+                    "remaining" => $canPublish['remaining']
+                ], 402);
+            }
+        }
+
         // 1. Anti-spam: 1 minuto entre postagens
         $lastFreight = $this->repo->getLastFreightTime((int)$user['id']);
         if ($lastFreight && (time() - strtotime($lastFreight)) < 60) {
@@ -214,7 +232,12 @@ class FreightController {
                 'is_urgent'    => $isUrgent ? 1 : 0
             ];
 
-            $id = $this->repo->save($payload);
+$id = $this->repo->save($payload);
+
+            // 10. Registrar uso para controle de limite
+            if ($this->accessControlService && $id) {
+                $this->accessControlService->recordUsage((int)$user['id'], 'freights', (int)$id, 'freight');
+            }
 
             $newBalance = $paymentRequired && $this->creditService ? $this->creditService->getBalance($userId) : null;
 

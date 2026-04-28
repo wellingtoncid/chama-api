@@ -489,7 +489,7 @@ class AdRepository {
             return ['allowed' => true, 'reason' => 'Sem plano específico, usa regras padrão'];
         }
         
-        $limit = (int)$plan['limit_ads_active'];
+        $limit = (int)$plan['limit_monthly'];
         
         // 0 = ilimitado (nossa convenção: limite > 500 = ilimitado na prática)
         if ($limit === 0 || $limit > 500) {

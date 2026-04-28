@@ -746,7 +746,9 @@ public function listLogs($data, $loggedUser) {
      */
     public function getTeamUsers($data, $loggedUser) {
         try {
-            $this->authorize($loggedUser, 'ADMIN');
+            if (!$loggedUser) {
+                return Response::json(["success" => false, "message" => "Não autorizado"], 403);
+            }
             
             $users = $this->repo->getTeamUsers();
             
@@ -1045,7 +1047,7 @@ public function listLogs($data, $loggedUser) {
                         'yearly' => (int)$plan['discount_yearly']
                     ],
                     'duration_days' => (int)$plan['duration_days'],
-                    'limit_ads_active' => (int)$plan['limit_ads_active'],
+                    'limit_monthly' => (int)$plan['limit_monthly'],
                     'has_verification_badge' => (bool)$plan['has_verification_badge'],
                     'priority_support' => (bool)$plan['priority_support']
                 ];

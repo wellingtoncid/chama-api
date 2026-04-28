@@ -7,17 +7,20 @@ use App\Repositories\UserRepository;
 use App\Controllers\NotificationController;
 use App\Services\GeocodingService;
 use App\Services\ContentFilterService;
+use App\Services\AccessControlService;
 use PDO;
 
 class UserController {
-    private $userRepo;
+private $userRepo;
     private $db;
     private $geocoding;
+    private $accessControlService;
 
-    public function __construct($db) {
+public function __construct($db) {
         $this->db = $db;
         $this->userRepo = new UserRepository($db);
         $this->geocoding = new GeocodingService($db);
+        $this->accessControlService = new AccessControlService($db);
     }
 
     /**
@@ -790,40 +793,31 @@ class UserController {
         try {
             $userId = $loggedUser['id'];
             
-            // Busca módulos ativos do usuário
-            $stmt = $this->db->prepare("
-                SELECT module_key, status FROM user_modules 
-                WHERE user_id = :user_id AND status = 'active'
-            ");
-            $stmt->execute([':user_id' => $userId]);
-            $activeModules = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            // Conta uso por módulo (exemplo para freights)
-            $usage = [];
-            
-            // Freights publicados este mês
-            $stmt = $this->db->prepare("
-                SELECT COUNT(*) as total FROM freights 
-                WHERE user_id = :user_id 
-                AND MONTH(created_at) = MONTH(CURRENT_DATE())
-                AND YEAR(created_at) = YEAR(CURRENT_DATE())
-            ");
-            $stmt->execute([':user_id' => $userId]);
-            $usage['freights_published'] = (int)$stmt->fetch()['total'];
-            
-            // Anúncios marketplace ativos
-            $stmt = $this->db->prepare("
-                SELECT COUNT(*) as total FROM listings 
-                WHERE user_id = :user_id AND status = 'active'
-            ");
-            $stmt->execute([':user_id' => $userId]);
-            $usage['marketplace_listings'] = (int)$stmt->fetch()['total'];
-            
+            // Usa AccessControlService para stats
+            $freightsStats = $this->accessControlService->getUsageStats($userId, 'freights');
+            $marketplaceStats = $this->accessControlService->getUsageStats($userId, 'marketplace');
+
             return Response::json([
                 "success" => true, 
                 "data" => [
-                    'active_modules' => array_column($activeModules, 'module_key'),
-                    'usage' => $usage
+                    'freights_published' => $freightsStats['used'],
+                    'marketplace_listings' => $marketplaceStats['used'],
+                    'freights' => [
+                        'used' => $freightsStats['used'],
+                        'limit' => $freightsStats['limit'],
+                        'remaining' => $freightsStats['remaining'],
+                        'plan_name' => $freightsStats['plan_name'],
+                        'month' => $freightsStats['month'],
+                        'year' => $freightsStats['year']
+                    ],
+                    'marketplace' => [
+                        'used' => $marketplaceStats['used'],
+                        'limit' => $marketplaceStats['limit'],
+                        'remaining' => $marketplaceStats['remaining'],
+                        'plan_name' => $marketplaceStats['plan_name'],
+                        'month' => $marketplaceStats['month'],
+                        'year' => $marketplaceStats['year']
+                    ]
                 ]
             ]);
         } catch (\Throwable $e) {

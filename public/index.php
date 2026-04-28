@@ -390,6 +390,10 @@ try {
         $router->get('/api/admin/users/search', 'AdminController@searchUsers');
         $router->get('/api/admin-team', 'AdminController@getTeamUsers');
     }
+    // Rota pública para responsáveis no CRM (qualquer usuário logado)
+    if ($loggedUser) {
+        $router->get('/api/internal-users', 'AdminController@getTeamUsers');
+    }
     if ($loggedUser && Auth::hasPermission('users.manage')) {
         $router->post('/api/admin-create-user', 'AdminController@createUser');
         $router->post('/api/admin-create-internal-user', 'AdminController@createInternalUser');
