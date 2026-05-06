@@ -355,6 +355,16 @@ class ListingRepository {
             $params[':is_affiliate'] = ($filters['is_affiliate'] === 'yes') ? 1 : 0;
         }
 
+        if (!empty($filters['date_from'])) {
+            $sql .= " AND l.created_at >= :date_from";
+            $params[':date_from'] = $filters['date_from'] . ' 00:00:00';
+        }
+
+        if (!empty($filters['date_to'])) {
+            $sql .= " AND l.created_at <= :date_to";
+            $params[':date_to'] = $filters['date_to'] . ' 23:59:59';
+        }
+
         $sql .= " ORDER BY l.created_at DESC";
 
         $stmt = $this->db->prepare($sql);
