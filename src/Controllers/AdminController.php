@@ -217,6 +217,16 @@ private function authorize($loggedUser = null, $minRole = 'MANAGER') {
             $revenueStats = $stmt->fetch(PDO::FETCH_ASSOC);
             $stats['revenue'] = ['month' => isset($revenueStats['total']) ? (float)$revenueStats['total'] : 0.0];
 
+            // Denúncias pendentes
+            $stmt = $this->db->query("SELECT COUNT(*) as total FROM reports WHERE status = 'pending'");
+            $reportStats = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stats['reports'] = ['pending' => (int)($reportStats['total'] ?? 0)];
+
+            // Leads (solicitações de portal/parceria)
+            $stmt = $this->db->query("SELECT COUNT(*) as total FROM portal_requests WHERE deleted_at IS NULL");
+            $leadStats = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stats['leads'] = ['total' => (int)($leadStats['total'] ?? 0)];
+
             return Response::json([
                 'success' => true,
                 'data' => $stats,
@@ -746,11 +756,7 @@ public function listLogs($data, $loggedUser) {
      */
     public function getTeamUsers($data, $loggedUser) {
         try {
-            if (!$loggedUser) {
-                return Response::json(["success" => false, "message" => "Não autorizado"], 403);
-            }
-            
-            $users = $this->repo->getTeamUsers();
+            $users = $loggedUser ? $this->repo->getTeamUsers() : [];
             
             return Response::json([
                 "success" => true,

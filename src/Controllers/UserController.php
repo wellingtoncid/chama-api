@@ -851,10 +851,6 @@ public function __construct($db) {
      * Rota: GET /api/plans - Lista planos disponíveis (público para usuários logados)
      */
     public function getPlans($data, $loggedUser) {
-        if (!$loggedUser) {
-            return Response::json(["success" => false, "message" => "Login necessário"], 401);
-        }
-
         try {
             $stmt = $this->db->query("
                 SELECT id, name, slug, price, price_quarterly, price_semiannual, price_yearly, 
