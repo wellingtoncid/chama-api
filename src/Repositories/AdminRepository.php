@@ -442,7 +442,11 @@ class AdminRepository {
                     a.document_type as company_document_type,
                     p.name as parent_name,
                     COALESCE(a.trade_name, a.corporate_name, u.name) as display_name,
-                    up.extended_attributes as profile_details
+                    up.extended_attributes as profile_details,
+                    COALESCE(
+                        (SELECT pl.name FROM user_modules um JOIN plans pl ON um.plan_id = pl.id WHERE um.user_id = u.id AND um.status = 'active' LIMIT 1),
+                        (SELECT pl2.name FROM plans pl2 WHERE pl2.id = u.plan_id)
+                    ) as plan_name
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles up ON u.id = up.user_id 

@@ -135,12 +135,14 @@ private function authorize($loggedUser = null, $minRole = 'MANAGER') {
             // Usuários - verificando se a tabela existe e tem dados
             $stmt = $this->db->query("SELECT 
                 COUNT(*) as total,
-                SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as new_30d
+                SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as new_30d,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending
                 FROM users WHERE deleted_at IS NULL");
             $userStats = $stmt->fetch(PDO::FETCH_ASSOC);
             $stats['users'] = [
                 'total' => isset($userStats['total']) ? (int)$userStats['total'] : 0,
-                'new_30d' => isset($userStats['new_30d']) ? (int)$userStats['new_30d'] : 0
+                'new_30d' => isset($userStats['new_30d']) ? (int)$userStats['new_30d'] : 0,
+                'pending' => isset($userStats['pending']) ? (int)$userStats['pending'] : 0
             ];
 
             // Empresas

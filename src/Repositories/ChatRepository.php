@@ -73,4 +73,21 @@ class ChatRepository {
         $stmt->execute([$userId, $userId, $userId, $userId]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
+
+    public function getRoom($roomId, $userId) {
+        $sql = "SELECT 
+                    r.id as room_id,
+                    r.freight_id,
+                    f.product as freight_product,
+                    CASE WHEN r.buyer_id = ? THEN r.seller_id ELSE r.buyer_id END as contact_id,
+                    CASE WHEN r.buyer_id = ? THEN u_seller.name ELSE u_buyer.name END as contact_name
+                FROM chat_rooms r
+                JOIN freights f ON r.freight_id = f.id
+                JOIN users u_seller ON r.seller_id = u_seller.id
+                JOIN users u_buyer ON r.buyer_id = u_buyer.id
+                WHERE r.id = ? AND (r.buyer_id = ? OR r.seller_id = ?)";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId, $userId, $roomId, $userId, $userId]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC);
+    }
 }

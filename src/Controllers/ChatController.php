@@ -86,6 +86,25 @@ class ChatController {
     }
 
     /**
+     * Retorna informações de uma sala específica
+     */
+    public function getRoom($data, $user) {
+        if (!$user) return Response::json(["success" => false], 401);
+
+        $roomId = $data['id'] ?? null;
+        if (!$roomId) {
+            return Response::json(["success" => false, "message" => "Sala não informada"], 400);
+        }
+
+        $room = $this->repo->getRoom($roomId, $user['id']);
+        if (!$room) {
+            return Response::json(["success" => false, "message" => "Sala não encontrada"], 404);
+        }
+
+        return Response::json(["success" => true, "data" => $room]);
+    }
+
+    /**
      * Permite ocultar conversas da lista principal
      */
     public function archiveRoom($data, $user) {

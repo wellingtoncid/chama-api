@@ -308,8 +308,9 @@ try {
 
     // --- CHAT ---
     $router->post('/api/chat/send', 'ChatController@sendMessage');
-    $router->get('/api/chat/messages', 'ChatController@getMessages');
+    $router->get('/api/chat/messages/:id', 'ChatController@getMessages');
     $router->get('/api/chat/rooms', 'ChatController@listRooms');
+    $router->get('/api/chat/room/:id', 'ChatController@getRoom');
     $router->post('/api/chat/init', 'ChatController@initChat');
 
     // --- SUPORTE (USUÁRIOS) ---
