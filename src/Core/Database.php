@@ -13,7 +13,7 @@ class Database {
                 $host = $_ENV['DB_HOST'] ?? '127.0.0.1';
                 $db   = $_ENV['DB_NAME'] ?? 'chama_frete_dev';
                 $user = $_ENV['DB_USER'] ?? 'root';
-                $pass = $_ENV['DB_PASS'] ?? 'Root@Chama123#';
+                $pass = $_ENV['DB_PASS'] ?? '';
 
                 // Suporte a cópia de BD para debug/teste sem tocar no código central
                 $useCopyDb = isset($_ENV['DB_USE_COPY']) ? $_ENV['DB_USE_COPY'] : '0';

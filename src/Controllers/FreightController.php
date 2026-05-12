@@ -1026,7 +1026,7 @@ $id = $this->repo->save($payload);
 
     public function getSuggestions($query) {
         $query = trim($query);
-        if (strlen($query) < 2) return Response::json([]);
+        if (strlen($query) < 2) return Response::json(["success" => true, "data" => []]);
 
         // Busca termos populares que começam com o que o usuário digitou
         $sql = "SELECT term, COUNT(*) as popularity 
@@ -1040,7 +1040,7 @@ $id = $this->repo->save($payload);
         $stmt->execute([':q' => $query . '%']);
         $suggestions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        return Response::json($suggestions);
+        return Response::json(["success" => true, "data" => $suggestions]);
     }
 
     public function confirmMatch($freightId, $driverId, $companyId, $agreedAmount) {

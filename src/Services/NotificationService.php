@@ -11,8 +11,8 @@ class NotificationService {
 
     public function __construct($db) {
         $this->db = $db;
-        $this->tgToken  = $_ENV['TELEGRAM_BOT_TOKEN'] ?? '8235245222:AAE_BXQHBo_3CfzgcZUV8rmqM71hgvGScqc';
-        $this->tgChatId = $_ENV['TELEGRAM_CHAT_ID'] ?? '8231475214';
+        $this->tgToken  = $_ENV['TELEGRAM_BOT_TOKEN'] ?? '';
+        $this->tgChatId = $_ENV['TELEGRAM_CHAT_ID'] ?? '';
     }
 
     /**
@@ -227,7 +227,22 @@ class NotificationService {
         return $stmt->execute([$userId]);
     }
 
+    /**
+     * Adapter para AdminController (mantém compatibilidade com chamadas existentes)
+     */
+    public function notify(int $userId, string $title, string $message): bool {
+        return $this->send($userId, $title, $message);
+    }
+
+    /**
+     * Adapter para AdminController (mantém compatibilidade com chamadas existentes)
+     */
+    public function createNotification(int $userId, string $title, string $message, string $type = 'system', ?int $targetId = null): bool {
+        return $this->send($userId, $title, $message, $type, 'normal', null, $targetId ? ['target_id' => $targetId] : null);
+    }
+
     public function sendTelegramAlert(string $message): bool {
+        if (empty($this->tgToken) || empty($this->tgChatId)) return false;
         $url = "https://api.telegram.org/bot{$this->tgToken}/sendMessage";
         $data = [
             'chat_id'    => $this->tgChatId,
@@ -266,6 +281,7 @@ class NotificationService {
     }
 
     public function notifyCompanyQuote(int $accountId, string $quoteData) {
+        if (empty($this->tgToken)) return false;
         // 1. Procura o telegram_chat_id de todos os usuários vinculados a esta ACCOUNT
         // Isso garante que se a empresa tiver 2 atendentes, ambos recebam a cotação
         $sql = "SELECT p.telegram_chat_id 

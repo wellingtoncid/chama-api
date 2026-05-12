@@ -113,6 +113,14 @@ class Router {
                 );
                 break;
 
+            case 'AdminUserController':
+            case 'AdminDashboardController':
+            case 'AdminPlanController':
+            case 'AdminReviewController':
+            case 'AdminVerificationController':
+                $controller = new $controllerClass($db, $loggedUser);
+                break;
+
             case 'AdminController':
                 $controller = new $controllerClass(
                     $db, 

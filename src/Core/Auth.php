@@ -28,8 +28,12 @@ class Auth {
 
         try {
             $token = $matches[1];
-            $secret = $_ENV['JWT_SECRET'] ?? 'chave_mestra_segura_2026';
-            
+            $secret = $_ENV['JWT_SECRET'] ?? '';
+            if (empty($secret)) {
+                error_log("JWT_SECRET não configurado no ambiente");
+                return null;
+            }
+
             $decoded = JWT::decode($token, new Key($secret, 'HS256'));
             $decodedArray = json_decode(json_encode($decoded), true);
             $userData = $decodedArray['data'] ?? $decodedArray;

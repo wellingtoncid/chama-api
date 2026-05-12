@@ -55,8 +55,7 @@ public function __construct($db) {
             error_log("ERRO FATAL getProfile: " . $e->getMessage() . " em " . $e->getFile() . ":" . $e->getLine());
             return Response::json([
                 "success" => false, 
-                "message" => "Erro interno no servidor",
-                "error" => $e->getMessage() // Opcional: remova em produção
+                "message" => "Erro interno no servidor"
             ], 500);
         }
     }
@@ -749,7 +748,7 @@ public function __construct($db) {
                 $result[$s['setting_key']] = $s['setting_value'];
             }
             
-            return Response::json($result);
+            return Response::json(["success" => true, "data" => $result]);
         } catch (\Throwable $e) {
             error_log("ERRO getSiteSettings: " . $e->getMessage());
             return Response::json(["success" => false, "message" => "Erro interno"], 500);

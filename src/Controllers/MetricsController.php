@@ -120,7 +120,7 @@ class MetricsController {
             ]);
         } catch (\Exception $e) {
             error_log("Erro MetricsController: " . $e->getMessage());
-            return Response::json(["success" => false, "error" => $e->getMessage()], 500);
+            return Response::json(["success" => false, "message" => $e->getMessage()], 500);
         }
     }
 
@@ -151,7 +151,7 @@ class MetricsController {
                 ]
             ]);
         } catch (\Exception $e) {
-            return Response::json(["success" => false, "error" => $e->getMessage()], 500);
+            return Response::json(["success" => false, "message" => $e->getMessage()], 500);
         }
     }
 

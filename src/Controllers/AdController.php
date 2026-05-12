@@ -24,6 +24,19 @@ class AdController {
     }
 
     /**
+     * Delete anúncio (soft delete)
+     * DELETE /api/ads/:id
+     */
+    public function delete($data, $loggedUser = null) {
+        $id = $data['id'] ?? null;
+        if (!$id) {
+            return Response::json(["success" => false, "message" => "ID inválido"], 400);
+        }
+        $this->adRepo->save(['id' => $id, 'status' => 'rejected', 'deleted_at' => date('Y-m-d H:i:s')]);
+        return Response::json(["success" => true, "message" => "Anúncio removido"]);
+    }
+
+    /**
      * Lista anúncios com inteligência geográfica e controle de créditos
      * GET /api/ads?position=...&state=...&city=...&search=...
      * NÃO incrementa mais views automaticamente - views são contadas via frontend com IntersectionObserver

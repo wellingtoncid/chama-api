@@ -84,13 +84,10 @@ try {
     $router->get('/api/user/usage', 'UserController@getUserUsage');
     $router->get('/api/plans', 'UserController@getPlans');
     $router->post('/api/update-profile', 'UserController@updateProfile');
-    $router->post('/api/save-profile', 'UserController@updateProfile');
     $router->post('/api/update-quick-profile', 'UserController@updateProfile');
-    $router->post('/api/update-user-basic', 'UserController@updateProfile');
     $router->post('/api/toggle-availability', 'UserController@toggleAvailability');
 
-    $router->get('/api/get-public-profile', 'UserController@getUserSummary'); //User @deprecated
-    $router->get('/api/user/details/:id', 'UserController@getUserSummary'); //trocar acima
+    $router->get('/api/user/details/:id', 'UserController@getUserSummary');
     $router->get('/api/get-by-slug', 'UserController@getBySlug');
     $router->get('/api/check-slug', 'UserController@checkSlug');
     $router->post('/api/upload-image', 'UserController@uploadImage');
@@ -113,13 +110,12 @@ try {
     $router->get('/api/get-user-ads', 'PublicController@getPublicAds'); //Criar
 
     $router->post('/api/upload-avatar', 'UserController@uploadAvatar');
-    $router->post('/api/upload-banner', 'UserController@uploadImage');
 
     // --- FRETES (SISTEMA CORE) ---
+    // Legacy routes (deprecated, will be removed in future)
     $router->get('/api/freights', 'FreightController@listAll');
     $router->post('/api/create-freight', 'FreightController@createFreight');
     $router->post('/api/update-freight', 'FreightController@updateFreight');
-    $router->get('/api/list-freights', 'FreightController@listAll');
     $router->get('/api/list-my-freights', 'FreightController@listMyFreights');
     $router->post('/api/delete-freight', 'FreightController@deleteFreight');
     $router->post('/api/toggle-favorite', 'FreightController@toggleFavorite');
@@ -139,6 +135,12 @@ try {
     $router->get('/api/top-ads-freight', 'FreightController@getTopAdvertisersFreight');
     $router->get('/api/freight-tracking', 'FreightController@getFreightTracking');
     $router->get('/api/freight/:id/matching-drivers', 'FreightController@findMatchingDrivers');
+    // RESTful aliases
+    $router->post('/api/freights', 'FreightController@createFreight');
+    $router->put('/api/freights/:id', 'FreightController@updateFreight');
+    $router->delete('/api/freights/:id', 'FreightController@deleteFreight');
+    $router->post('/api/freights/:id/finish', 'FreightController@finishFreight');
+    $router->get('/api/freights/my', 'FreightController@listMyFreights');
     
     // --- ADS & BANNERS (MÉTRICAS ATIVAS) ---
     $router->get('/api/ads', 'AdController@list');
@@ -152,20 +154,18 @@ try {
     $router->delete('/api/partners/:id', 'AdController@deletePartner');
     
     $router->post('/api/log-ad-click', 'MetricsController@registerEvent');
-    $router->post('/api/log-ad-view', 'MetricsController@registerEvent');
     $router->post('/api/register-ad-event', 'AdController@trackClick');
 
     $router->post('/api/ads/click/:id', 'AdController@recordClick');
-    $router->get('/api/ads/click/:id', 'AdController@recordClick');
     $router->get('/api/ads/report/:id', 'AdController@getReport');
     $router->get('/api/ads/my-report', 'AdController@getUserAdsReport');
     $router->post('/api/ads/save', 'AdController@store');
-    $router->delete('/api/ads/:id', 'AdController@store');
+    $router->delete('/api/ads/:id', 'AdController@delete');
     
 
     // --- MARKETPLACE & LISTINGS ---
+    // Legacy routes (deprecated)
     $router->get('/api/listings', 'ListingController@getAll');
-    $router->get('/api/marketplace', 'ListingController@getAll');
     $router->get('/api/my-listings', 'ListingController@getMyListings');
     $router->get('/api/listing/:id', 'ListingController@getMyListing');
     $router->get('/api/anuncio/:slug', 'ListingController@getPublicBySlug');
@@ -174,6 +174,10 @@ try {
     $router->post('/api/delete-listing', 'ListingController@delete');
     $router->post('/api/listing/boost', 'ListingController@boost');
     $router->post('/api/listing/extend', 'ListingController@extend');
+    // RESTful aliases
+    $router->post('/api/listings', 'ListingController@create');
+    $router->put('/api/listings/:id', 'ListingController@update');
+    $router->delete('/api/listings/:id', 'ListingController@delete');
 
     // --- LISTING CATEGORIES (Marketplace) ---
     $router->get('/api/listing-categories', 'ListingCategoryController@getAll');
@@ -192,7 +196,6 @@ try {
     // --- MÉTRICAS GERAIS ---
     $router->post('/api/log-event', 'MetricsController@registerEvent');
     $router->post('/api/register-click', 'FreightController@logEvent');
-    $router->post('/api/track-metric', 'FreightController@logEvent');
 
     // --- NOTIFICAÇÕES & REVIEWS ---
     $router->get('/api/list-notifications', 'NotificationController@index');
@@ -224,8 +227,6 @@ try {
             $router->get('/api/articles/admin/all', 'ArticleController@getAllAdmin');
             $router->get('/api/articles/admin/pending', 'ArticleController@getPending');
         }
-        
-        $router->get('/api/articles/:id/stats', 'ArticleController@stats');
     }
 
     // --- ARTIGOS - CATEGORIAS ---
@@ -243,7 +244,7 @@ try {
     $router->post('/api/manage-groups', 'GroupController@manageGroups');
     $router->post('/api/log-group-click', 'GroupController@logGroupClick');
     $router->post('/api/upload-group-image', 'GroupController@uploadImage');
-    $router->post('/api/portal-request', 'AdminController@storePortalRequest'); //verificar
+    // $router->post('/api/portal-request', 'AdminController@storePortalRequest'); // @deprecated - método nunca existiu
 
     // --- CATEGORIAS DE GRUPOS ---
     $router->get('/api/group-categories', 'GroupCategoryController@getAll');
@@ -254,12 +255,9 @@ try {
 
     // --- PAGAMENTOS & MEMBRESIA ---
     $router->post('/api/checkout', 'PaymentController@checkout');
-    // Novo: criação de pagamento via MVP MercadoPago (redundante ao checkout, mas separado para endpoints previsíveis)
     $router->post('/api/payments/create', 'PaymentController@createPayment');
     $router->post('/api/payments/webhook', 'PaymentController@webhook');
     $router->get('/api/payments/status', 'PaymentController@getPaymentStatus');
-    $router->post('/api/process-checkout', 'PaymentController@checkout');
-    $router->post('/api/webhook-mp', 'PaymentController@webhook');
     $router->get('/api/my-services', 'MembershipController@myServices');
     $router->get('/api/payment-history', 'MembershipController@getPaymentHistory'); 
     $router->get('/api/my-transactions', 'PaymentController@getMyTransactions');
@@ -353,15 +351,15 @@ try {
     
     // CRM / Notas Internas - permissão: users.view
     if ($loggedUser && Auth::hasPermission('users.view')) {
-        $router->post('/api/admin/user-notes', 'AdminController@addUserNote');
-        $router->get('/api/admin/user-notes', 'AdminController@getUserNotes');
+        $router->post('/api/admin/user-notes', 'AdminUserController@addUserNote');
+        $router->get('/api/admin/user-notes', 'AdminUserController@getUserNotes');
     }
     
     // Dashboard BI - permissão: bi.view
     if ($loggedUser && Auth::hasPermission('bi.view')) {
-        $router->get('/api/admin-dashboard-data', 'AdminController@getDashboardData');
-        $router->get('/api/admin/home-stats', 'AdminController@getHomeStats');
-        $router->get('/api/admin/bi-stats', 'AdminController@getBIStats');
+        $router->get('/api/admin-dashboard-data', 'AdminDashboardController@getDashboardData');
+        $router->get('/api/admin/home-stats', 'AdminDashboardController@getHomeStats');
+        $router->get('/api/admin/bi-stats', 'AdminDashboardController@getBIStats');
         
         // Novo BI com dados reais
         $router->get('/api/admin/bi', 'BIController@summary');
@@ -384,34 +382,38 @@ try {
 
     // Gestão de Usuários - permissão: users.view, users.manage
     if ($loggedUser && Auth::hasPermission('users.view')) {
-        $router->get('/api/admin-user-details', 'AdminController@getUserDetails');
-        $router->get('/api/admin-company-members', 'AdminController@listCompanyMembers');
-        $router->get('/api/users/search', 'AdminController@searchUsers');
-        $router->get('/api/list-all-users', 'AdminController@listUsers');
-        $router->get('/api/admin/users/search', 'AdminController@searchUsers');
-        $router->get('/api/admin-team', 'AdminController@getTeamUsers');
+        $router->get('/api/admin-user-details', 'AdminUserController@getUserDetails');
+        $router->get('/api/admin-company-members', 'AdminUserController@listCompanyMembers');
+        $router->get('/api/users/search', 'AdminUserController@searchUsers');
+        $router->get('/api/list-all-users', 'AdminUserController@listUsers');
+        $router->get('/api/admin-team', 'AdminUserController@getTeamUsers');
+        // RESTful aliases
+        $router->get('/api/admin/users', 'AdminUserController@listUsers');
+        $router->get('/api/admin/users/:id', 'AdminUserController@getUserDetails');
     }
     // Rota para responsáveis no CRM (registrada sempre; controller já protege com auth check)
-    $router->get('/api/internal-users', 'AdminController@getTeamUsers');
+    $router->get('/api/internal-users', 'AdminUserController@getTeamUsers');
     if ($loggedUser && Auth::hasPermission('users.manage')) {
-        $router->post('/api/admin-create-user', 'AdminController@createUser');
-        $router->post('/api/admin-create-internal-user', 'AdminController@createInternalUser');
-        $router->post('/api/admin-add-note', 'AdminController@addUserNote');
-        $router->post('/api/admin-update-user', 'AdminController@updateUser');
-        $router->post('/api/admin-manage-user', 'AdminController@manageUsers');
-        $router->post('/api/admin-verify-user', 'AdminController@verifyUser');
-        $router->post('/api/admin-delete-user', 'AdminController@deleteUser');
+        $router->post('/api/admin-create-user', 'AdminUserController@createUser');
+        $router->post('/api/admin-create-internal-user', 'AdminUserController@createInternalUser');
+        $router->post('/api/admin-add-note', 'AdminUserController@addUserNote');
+        $router->post('/api/admin-update-user', 'AdminUserController@updateUser');
+        $router->post('/api/admin-manage-user', 'AdminUserController@manageUsers');
+        $router->post('/api/admin-verify-user', 'AdminUserController@verifyUser');
+        $router->post('/api/admin-delete-user', 'AdminUserController@deleteUser');
     }
 
     // Gestão de Fretes - permissão: freight.view, freight.edit
     if ($loggedUser && Auth::hasPermission('freight.view')) {
         $router->get('/api/admin-list-freights', 'AdminController@listAllFreights');
+        // RESTful alias
+        $router->get('/api/admin/freights', 'AdminController@listAllFreights');
     }
     if ($loggedUser && Auth::hasPermission('freight.edit')) {
         $router->post('/api/admin-update-freight', 'AdminController@updateFreightStatus');
         $router->post('/api/manage-freights', 'AdminController@manageFreights');
-        $router->get('/api/admin/freight-matching', 'AdminController@findMatchingDrivers');
-        $router->post('/api/admin/driver-location', 'AdminController@updateDriverLocation');
+        // RESTful alias
+        $router->put('/api/admin/freights/:id', 'AdminController@updateFreightStatus');
     }
 
     // Gestão de Leads (CRM) - permissão: users.view
@@ -451,17 +453,25 @@ try {
     if ($loggedUser && Auth::hasPermission('ads.view')) {
         $router->get('/api/admin-manage-ads', 'AdminController@manageAds');
         $router->get('/api/admin-ads', 'AdminController@manageAds');
+        // RESTful alias
+        $router->get('/api/admin/ads', 'AdminController@manageAds');
     }
     if ($loggedUser && Auth::hasPermission('ads.manage')) {
         $router->post('/api/admin-manage-ads', 'AdminController@manageAds');
+        // RESTful alias
+        $router->post('/api/admin/ads', 'AdminController@manageAds');
     }
 
     // Gestão de Grupos - permissão: grupos.view, grupos.edit
     if ($loggedUser && Auth::hasPermission('grupos.view')) {
         $router->get('/api/admin-groups', 'AdminController@listAllGroups');
+        // RESTful alias
+        $router->get('/api/admin/groups', 'AdminController@listAllGroups');
     }
     if ($loggedUser && Auth::hasPermission('grupos.edit')) {
         $router->post('/api/admin-groups', 'AdminController@manageGroups');
+        // RESTful alias
+        $router->post('/api/admin/groups', 'AdminController@manageGroups');
         $router->get('/api/admin/group-categories', 'GroupCategoryController@getAll');
         $router->post('/api/admin/group-categories', 'GroupCategoryController@create');
         $router->put('/api/admin/group-categories/:id', 'GroupCategoryController@update');
@@ -485,41 +495,49 @@ try {
 
     // Gestão de Verificações - permissão: driver.view
     if ($loggedUser && Auth::hasPermission('driver.view')) {
-        $router->get('/api/admin/driver-verifications', 'AdminController@listDriverVerifications');
-        $router->post('/api/admin/driver-verification/approve', 'AdminController@approveDriverVerification');
-        $router->post('/api/admin/driver-verification/reject', 'AdminController@rejectDriverVerification');
-        $router->get('/api/admin/verifications', 'AdminController@getAllVerifications');
-        $router->post('/api/admin/verification/approve', 'AdminController@approveVerification');
-        $router->post('/api/admin/verification/reject', 'AdminController@rejectVerification');
+        $router->get('/api/admin/driver-verifications', 'AdminVerificationController@listDriverVerifications');
+        $router->post('/api/admin/driver-verification/approve', 'AdminVerificationController@approveDriverVerification');
+        $router->post('/api/admin/driver-verification/reject', 'AdminVerificationController@rejectDriverVerification');
+        $router->get('/api/admin/verifications', 'AdminVerificationController@getAllVerifications');
+        $router->post('/api/admin/verification/approve', 'AdminVerificationController@approveVerification');
+        $router->post('/api/admin/verification/reject', 'AdminVerificationController@rejectVerification');
     }
 
     // Gestão de Documentos - permissão: users.view
     if ($loggedUser && Auth::hasPermission('users.view')) {
-        $router->get('/api/admin-pending-docs', 'AdminController@listPendingDocuments');
-        $router->post('/api/admin-review-doc', 'AdminController@reviewDocument');
+        $router->get('/api/admin-pending-docs', 'AdminVerificationController@listPendingDocuments');
+        $router->post('/api/admin-review-doc', 'AdminVerificationController@reviewDocument');
+        // RESTful aliases
+        $router->get('/api/admin/documents/pending', 'AdminVerificationController@listPendingDocuments');
+        $router->post('/api/admin/documents/review', 'AdminVerificationController@reviewDocument');
     }
 
     // Plans e Créditos - permissão: wallet.manage
     if ($loggedUser && Auth::hasPermission('wallet.manage')) {
         $router->post('/api/admin/add-credits', 'AdminController@manualAddCredits');
-        $router->get('/api/manage-plans', 'AdminController@managePlans');
-        $router->post('/api/admin-manage-plans', 'AdminController@managePlans');
+        $router->get('/api/manage-plans', 'AdminPlanController@managePlans');
+        $router->post('/api/admin-manage-plans', 'AdminPlanController@managePlans');
     }
 
     // Precificação - permissão: roles.manage
     if ($loggedUser && Auth::hasPermission('roles.manage')) {
-        $router->get('/api/admin-pricing', 'AdminController@managePricing');
-        $router->post('/api/admin-pricing', 'AdminController@managePricing');
+        $router->get('/api/admin-pricing', 'AdminPlanController@managePricing');
+        $router->post('/api/admin-pricing', 'AdminPlanController@managePricing');
     }
 
     // Reviews - permissão: users.view
     if ($loggedUser && Auth::hasPermission('users.view')) {
-        $router->get('/api/admin-reviews', 'AdminController@getReviews');
-        $router->post('/api/admin-review/approve', 'AdminController@approveReview');
-        $router->post('/api/admin-review/reject', 'AdminController@rejectReview');
-        $router->post('/api/admin-review/delete', 'AdminController@deleteReview');
+        $router->get('/api/admin-reviews', 'AdminReviewController@getReviews');
+        $router->post('/api/admin-review/approve', 'AdminReviewController@approveReview');
+        $router->post('/api/admin-review/reject', 'AdminReviewController@rejectReview');
+        $router->post('/api/admin-review/delete', 'AdminReviewController@deleteReview');
         $router->post('/api/review/reply', 'ReviewController@replyReview');
         $router->post('/api/review/delete-reply', 'ReviewController@deleteReply');
+        // RESTful aliases
+        $router->get('/api/admin/reviews', 'AdminReviewController@getReviews');
+        $router->post('/api/admin/reviews/:id/approve', 'AdminReviewController@approveReview');
+        $router->post('/api/admin/reviews/:id/reject', 'AdminReviewController@rejectReview');
+        $router->delete('/api/admin/reviews/:id', 'AdminReviewController@deleteReview');
     }
 
     // Reports / Denúncias (usuários)
@@ -553,12 +571,12 @@ try {
             $router->post('/api/admin/reports/:id/delete', 'ReportController@delete');
             
             // Configurações e Estatísticas (Outros)
-            $router->get('/api/admin-stats', 'AdminController@getStats');
-            $router->get('/api/get-advertising-plans', 'AdminController@getAdvertisingPlans');
+            // $router->get('/api/admin-stats', 'AdminController@getStats'); // @deprecated - método nunca existiu
+            $router->get('/api/get-advertising-plans', 'AdminPlanController@getAdvertisingPlans');
             
             // Revenue e Financial
-            $router->get('/api/admin-revenue-report', 'AdminController@getRevenueReport');
-            $router->get('/api/admin-financial-stats', 'AdminController@getFinancialStats');
+            $router->get('/api/admin-revenue-report', 'AdminDashboardController@getRevenueReport');
+            $router->get('/api/admin-financial-stats', 'AdminDashboardController@getFinancialStats');
             $router->get('/api/admin-audit-logs', 'AdminController@listLogs');
             $router->get('/api/admin-settings', 'AdminController@getSettings');
             $router->post('/api/admin-update-settings', 'AdminController@updateSettings');
@@ -649,25 +667,11 @@ try {
     }
 
 } catch (Throwable $e) {
-   // Log interno do erro (não mostrar tudo ao usuário em produção)
-
-   Response::json([
-        "success" => false, 
-        "message" => $e->getMessage(), 
-        "file" => $e->getFile(), 
-        "line" => $e->getLine()
-    ]);
-
     error_log("ERRO NO INDEX: " . $e->getMessage() . " em " . $e->getFile() . ":" . $e->getLine());
 
-    if (!headers_sent()) {
-        http_response_code(500);
-        header("Content-Type: application/json; charset=utf-8");
-    }
-
-    echo json_encode([
-        "success" => false, 
-        "message" => "Erro interno no servidor",
-        "error_id" => time(), // Útil para suporte
-    ]);
+    $isDebug = ($_ENV['APP_DEBUG'] ?? 'false') === 'true';
+    Response::json([
+        "success" => false,
+        "message" => $isDebug ? $e->getMessage() : "Erro interno no servidor",
+    ], 500);
 }

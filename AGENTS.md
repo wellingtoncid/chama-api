@@ -238,6 +238,29 @@ $router->post('/api/login', 'AuthController@login');
 $router->get('/api/user/:id', 'UserController@getUser');
 ```
 
+#### RESTful Naming Convention
+All new routes MUST follow RESTful conventions. Legacy routes (verb-based) are kept for backward compatibility but are marked as `@deprecated`.
+
+| HTTP Method | RESTful Path | Controller Action | Legacy (deprecated) |
+|-------------|-------------|-------------------|---------------------|
+| GET | `/api/freights` | list resource | — |
+| POST | `/api/freights` | create resource | `/api/create-freight` |
+| GET | `/api/freights/:id` | show single resource | — |
+| PUT | `/api/freights/:id` | update resource | `/api/update-freight` |
+| DELETE | `/api/freights/:id` | delete resource | `/api/delete-freight` |
+| GET | `/api/freights/my` | list user's resources | `/api/list-my-freights` |
+| POST | `/api/freights/:id/finish` | sub-resource action | `/api/finish-freight` |
+
+**Rules:**
+- Use **nouns (plural)** for resources: `/api/freights`, `/api/listings`, `/api/admin/users`
+- Use **HTTP methods** for actions: GET (read), POST (create), PUT (update), DELETE (delete)
+- Use **sub-resources** for relations: `/api/freights/:id/matching-drivers`
+- Use **`:param`** for path parameters (e.g., `:id`, `:slug`)
+- For **admin** routes, prefix with `/api/admin/`: `/api/admin/freights`, `/api/admin/users/:id`
+- For **user-owned** resources, use `/api/resource/my`: `/api/freights/my`, `/api/listings/my`
+- **Avoid verbs** in paths: prefer `POST /api/freights` over `/api/create-freight`
+- Add **RESTful alias** when creating new routes; keep legacy routes for backward compat
+
 ### Environment Configuration
 Use `.env` file for configuration:
 ```
