@@ -1,15 +1,18 @@
 <?php
+
 namespace App\Services;
 
-use PDO;
 use Exception;
+use PDO;
 
-class NotificationService {
+class NotificationService
+{
     private $db;
     private $tgToken;
     private $tgChatId;
 
-    public function __construct($db) {
+    public function __construct($db)
+    {
         $this->db = $db;
         $this->tgToken  = $_ENV['TELEGRAM_BOT_TOKEN'] ?? '';
         $this->tgChatId = $_ENV['TELEGRAM_CHAT_ID'] ?? '';
@@ -18,8 +21,9 @@ class NotificationService {
     /**
      * MÉTODO PRINCIPAL: Orquestra todas as notificações do sistema
      */
-    public function send(int $userId, string $title, string $message, string $type = 'system', string $priority = 'medium', string $actionUrl = null, array $metadata = null): bool {
-        
+    public function send(int $userId, string $title, string $message, string $type = 'system', string $priority = 'medium', string $actionUrl = null, array $metadata = null): bool
+    {
+
         // 1. Persistência no Banco de Dados (Sininho In-App)
         $dbSuccess = $this->notifyInDatabase($userId, $title, $message, $type, $priority, $actionUrl, $metadata);
 
@@ -37,7 +41,8 @@ class NotificationService {
     /**
      * Notifica motorist sobre perfil incompleto
      */
-    public function notifyProfileIncomplete(int $userId, array $missingFields = []): bool {
+    public function notifyProfileIncomplete(int $userId, array $missingFields = []): bool
+    {
         $missingLabels = [
             'name' => 'nome completo',
             'bio' => 'biografia',
@@ -46,17 +51,17 @@ class NotificationService {
             'body_type' => 'tipo de carroceria',
             'location' => 'localização',
             'rntrc' => 'RNTRC',
-            'verification' => 'verificação de documentos'
+            'verification' => 'verificação de documentos',
         ];
 
-        $missingText = array_map(fn($f) => $missingLabels[$f] ?? $f, $missingFields);
+        $missingText = array_map(fn ($f) => $missingLabels[$f] ?? $f, $missingFields);
         $count = count($missingText);
-        
+
         $title = 'Complete seu perfil';
         $message = "Seu perfil está {$count}% completo. ";
-        $message .= $count <= 3 
-            ? "Falta: " . implode(', ', $missingText) 
-            : "Adicione mais informações para ser encontrado por empresas.";
+        $message .= $count <= 3
+            ? 'Falta: ' . implode(', ', $missingText)
+            : 'Adicione mais informações para ser encontrado por empresas.';
 
         return $this->send(
             $userId,
@@ -72,7 +77,8 @@ class NotificationService {
     /**
      * Notifica empresa sobre novo match de motorista
      */
-    public function notifyNewMatch(int $companyUserId, int $freightId, int $driverId, string $driverName, float $distanceKm): bool {
+    public function notifyNewMatch(int $companyUserId, int $freightId, int $driverId, string $driverName, float $distanceKm): bool
+    {
         return $this->send(
             $companyUserId,
             'Novo motorista encontrado!',
@@ -87,7 +93,8 @@ class NotificationService {
     /**
      * Notifica motorista sobre convite de frete
      */
-    public function notifyFreightInvite(int $driverId, int $freightId, string $companyName): bool {
+    public function notifyFreightInvite(int $driverId, int $freightId, string $companyName): bool
+    {
         return $this->send(
             $driverId,
             'Novo convite de frete!',
@@ -102,10 +109,11 @@ class NotificationService {
     /**
      * Verifica e notifica automaticamente sobre perfil incompleto
      */
-    public function checkAndNotifyIncompleteProfile(int $userId): bool {
+    public function checkAndNotifyIncompleteProfile(int $userId): bool
+    {
         try {
             $stmt = $this->db->prepare("
-                SELECT u.name, p.bio, p.avatar_url, p.vehicle_type, p.body_type, 
+                SELECT u.name, p.bio, p.avatar_url, p.vehicle_type, p.body_type,
                        p.home_lat, p.home_lng, p.rntrc_number, p.verification_status,
                        p.profile_completeness
                 FROM users u
@@ -114,66 +122,86 @@ class NotificationService {
             ");
             $stmt->execute([$userId]);
             $profile = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$profile) return false;
+
+            if (!$profile) {
+                return false;
+            }
 
             $missing = [];
-            if (empty($profile['name'])) $missing[] = 'name';
-            if (empty($profile['bio'])) $missing[] = 'bio';
-            if (empty($profile['avatar_url'])) $missing[] = 'avatar';
-            if (empty($profile['vehicle_type'])) $missing[] = 'vehicle_type';
-            if (empty($profile['body_type'])) $missing[] = 'body_type';
-            if (empty($profile['home_lat']) || empty($profile['home_lng'])) $missing[] = 'location';
-            if (empty($profile['rntrc_number'])) $missing[] = 'rntrc';
-            if ($profile['verification_status'] !== 'verified') $missing[] = 'verification';
+            if (empty($profile['name'])) {
+                $missing[] = 'name';
+            }
+            if (empty($profile['bio'])) {
+                $missing[] = 'bio';
+            }
+            if (empty($profile['avatar_url'])) {
+                $missing[] = 'avatar';
+            }
+            if (empty($profile['vehicle_type'])) {
+                $missing[] = 'vehicle_type';
+            }
+            if (empty($profile['body_type'])) {
+                $missing[] = 'body_type';
+            }
+            if (empty($profile['home_lat']) || empty($profile['home_lng'])) {
+                $missing[] = 'location';
+            }
+            if (empty($profile['rntrc_number'])) {
+                $missing[] = 'rntrc';
+            }
+            if ($profile['verification_status'] !== 'verified') {
+                $missing[] = 'verification';
+            }
 
             // Só notifica se tiver menos de 80%
             if ($profile['profile_completeness'] < 80) {
                 // Verifica se já tem notificação similar não lida nas últimas 24h
                 $checkStmt = $this->db->prepare("
-                    SELECT id FROM notifications 
-                    WHERE user_id = ? AND type = 'profile_incomplete' AND is_read = 0 
+                    SELECT id FROM notifications
+                    WHERE user_id = ? AND type = 'profile_incomplete' AND is_read = 0
                     AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)
                 ");
                 $checkStmt->execute([$userId]);
-                
+
                 if (!$checkStmt->fetch()) {
                     return $this->notifyProfileIncomplete($userId, $missing);
                 }
             }
-            
+
             return false;
         } catch (Exception $e) {
-            error_log("Erro checkAndNotifyIncompleteProfile: " . $e->getMessage());
+            error_log('Erro checkAndNotifyIncompleteProfile: ' . $e->getMessage());
             return false;
         }
     }
 
-    private function notifyInDatabase($userId, $title, $message, $type, $priority, $actionUrl, $metadata): bool {
+    private function notifyInDatabase($userId, $title, $message, $type, $priority, $actionUrl, $metadata): bool
+    {
         try {
-            $sql = "INSERT INTO notifications (user_id, title, message, type, priority, action_url, metadata) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)";
-            
+            $sql = 'INSERT INTO notifications (user_id, title, message, type, priority, action_url, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)';
+
             $stmt = $this->db->prepare($sql);
             return $stmt->execute([
-                $userId, 
-                $title, 
-                $message, 
-                $type, 
-                $priority, 
-                $actionUrl, 
-                $metadata ? json_encode($metadata) : null
+                $userId,
+                $title,
+                $message,
+                $type,
+                $priority,
+                $actionUrl,
+                $metadata ? json_encode($metadata) : null,
             ]);
         } catch (Exception $e) {
-            error_log("Erro ao salvar notificação: " . $e->getMessage());
+            error_log('Erro ao salvar notificação: ' . $e->getMessage());
             return false;
         }
     }
 
-    private function sendPushNotification($userId, $title, $message, $actionUrl) {
+    private function sendPushNotification($userId, $title, $message, $actionUrl)
+    {
         try {
             // Usamos um bloco try/catch para que, se a coluna não existir, o sistema ignore e siga em frente
-            $stmt = $this->db->prepare("SELECT push_token FROM user_profiles WHERE user_id = ? AND push_token IS NOT NULL");
+            $stmt = $this->db->prepare('SELECT push_token FROM user_profiles WHERE user_id = ? AND push_token IS NOT NULL');
             $stmt->execute([$userId]);
             $token = $stmt->fetchColumn();
 
@@ -183,46 +211,51 @@ class NotificationService {
             }
         } catch (Exception $e) {
             // Logamos o erro mas não travamos a execução do sistema
-            error_log("Push Notification ignorada: " . $e->getMessage());
+            error_log('Push Notification ignorada: ' . $e->getMessage());
         }
         return false;
     }
 
-    public function getUnreadByUser(int $userId): array {
+    public function getUnreadByUser(int $userId): array
+    {
         try {
-            $stmt = $this->db->prepare("
-                SELECT * FROM notifications 
-                WHERE user_id = ? AND is_read = 0 
-                ORDER BY created_at DESC 
+            $stmt = $this->db->prepare('
+                SELECT * FROM notifications
+                WHERE user_id = ? AND is_read = 0
+                ORDER BY created_at DESC
                 LIMIT 50
-            ");
+            ');
             $stmt->execute([$userId]);
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Exception $e) {
-            error_log("Erro ao buscar notificações: " . $e->getMessage());
+            error_log('Erro ao buscar notificações: ' . $e->getMessage());
             return [];
         }
     }
 
-    public function getUserNotifications($userId, $limit = 20) {
-        $stmt = $this->db->prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?");
+    public function getUserNotifications($userId, $limit = 20)
+    {
+        $stmt = $this->db->prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?');
         $stmt->execute([$userId, $limit]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 
-    public function getUnreadCount($userId) {
-        $stmt = $this->db->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+    public function getUnreadCount($userId)
+    {
+        $stmt = $this->db->prepare('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0');
         $stmt->execute([$userId]);
         return (int) $stmt->fetchColumn();
     }
 
-    public function markAsRead($id, $userId) {
-        $stmt = $this->db->prepare("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?");
+    public function markAsRead($id, $userId)
+    {
+        $stmt = $this->db->prepare('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?');
         return $stmt->execute([$id, $userId]);
     }
 
-    public function markAllRead($userId) {
-        $sql = "UPDATE notifications SET is_read = 1 WHERE user_id = ?";
+    public function markAllRead($userId)
+    {
+        $sql = 'UPDATE notifications SET is_read = 1 WHERE user_id = ?';
         $stmt = $this->db->prepare($sql);
         return $stmt->execute([$userId]);
     }
@@ -230,29 +263,35 @@ class NotificationService {
     /**
      * Adapter para AdminController (mantém compatibilidade com chamadas existentes)
      */
-    public function notify(int $userId, string $title, string $message): bool {
+    public function notify(int $userId, string $title, string $message): bool
+    {
         return $this->send($userId, $title, $message);
     }
 
     /**
      * Adapter para AdminController (mantém compatibilidade com chamadas existentes)
      */
-    public function createNotification(int $userId, string $title, string $message, string $type = 'system', ?int $targetId = null): bool {
+    public function createNotification(int $userId, string $title, string $message, string $type = 'system', ?int $targetId = null): bool
+    {
         return $this->send($userId, $title, $message, $type, 'normal', null, $targetId ? ['target_id' => $targetId] : null);
     }
 
-    public function sendTelegramAlert(string $message): bool {
-        if (empty($this->tgToken) || empty($this->tgChatId)) return false;
+    public function sendTelegramAlert(string $message): bool
+    {
+        if (empty($this->tgToken) || empty($this->tgChatId)) {
+            return false;
+        }
         $url = "https://api.telegram.org/bot{$this->tgToken}/sendMessage";
         $data = [
             'chat_id'    => $this->tgChatId,
             'parse_mode' => 'HTML',
-            'text'       => $message
+            'text'       => $message,
         ];
         return $this->executeRequest($url, $data, 'POST');
     }
 
-    private function executeRequest(string $url, array $params, string $method = 'GET', array $headers = []): bool {
+    private function executeRequest(string $url, array $params, string $method = 'GET', array $headers = []): bool
+    {
         $ch = curl_init();
         if ($method === 'POST') {
             curl_setopt($ch, CURLOPT_POST, true);
@@ -271,24 +310,28 @@ class NotificationService {
         return $httpCode >= 200 && $httpCode < 300;
     }
 
-     /**
-     * Remove notificações lidas e antigas para evitar inchaço do banco
-     */
-    public function cleanOldNotifications(int $days = 30): int {
-        $stmt = $this->db->prepare("DELETE FROM notifications WHERE is_read = 1 AND created_at < DATE_SUB(NOW(), INTERVAL ? DAY)");
+    /**
+    * Remove notificações lidas e antigas para evitar inchaço do banco
+    */
+    public function cleanOldNotifications(int $days = 30): int
+    {
+        $stmt = $this->db->prepare('DELETE FROM notifications WHERE is_read = 1 AND created_at < DATE_SUB(NOW(), INTERVAL ? DAY)');
         $stmt->execute([$days]);
         return $stmt->rowCount();
     }
 
-    public function notifyCompanyQuote(int $accountId, string $quoteData) {
-        if (empty($this->tgToken)) return false;
+    public function notifyCompanyQuote(int $accountId, string $quoteData)
+    {
+        if (empty($this->tgToken)) {
+            return false;
+        }
         // 1. Procura o telegram_chat_id de todos os usuários vinculados a esta ACCOUNT
         // Isso garante que se a empresa tiver 2 atendentes, ambos recebam a cotação
-        $sql = "SELECT p.telegram_chat_id 
+        $sql = 'SELECT p.telegram_chat_id
                 FROM user_profiles p
                 JOIN users u ON p.user_id = u.id
-                WHERE u.account_id = ? AND p.telegram_chat_id IS NOT NULL";
-                
+                WHERE u.account_id = ? AND p.telegram_chat_id IS NOT NULL';
+
         $stmt = $this->db->prepare($sql);
         $stmt->execute([$accountId]);
         $recipients = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -307,11 +350,13 @@ class NotificationService {
             $data = [
                 'chat_id'    => $recipient['telegram_chat_id'],
                 'parse_mode' => 'HTML',
-                'text'       => $message
+                'text'       => $message,
             ];
-            
+
             $result = $this->executeRequest($url, $data, 'POST');
-            if ($result) $success = true;
+            if ($result) {
+                $success = true;
+            }
         }
 
         return $success;

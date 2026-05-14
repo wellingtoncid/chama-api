@@ -2,24 +2,27 @@
 
 namespace App\Controllers;
 
-use App\Core\Response;
 use App\Core\Auth;
+use App\Core\Response;
 use App\Services\BIService;
 
-class BIController {
+class BIController
+{
     private $db;
 
-    public function __construct($db, $loggedUser = null) {
+    public function __construct($db, $loggedUser = null)
+    {
         $this->db = $db;
     }
 
-    private function authorize() {
+    private function authorize()
+    {
         $user = Auth::getAuthenticatedUser();
         if (!$user) {
-            throw new \Exception("Não autorizado", 401);
+            throw new \Exception('Não autorizado', 401);
         }
         if (!Auth::hasPermission('bi.view')) {
-            throw new \Exception("Sem permissão para acessar BI", 403);
+            throw new \Exception('Sem permissão para acessar BI', 403);
         }
         return $user;
     }
@@ -27,7 +30,8 @@ class BIController {
     /**
      * GET /api/admin/bi - Resumo completo do BI
      */
-    public function summary($data = []) {
+    public function summary($data = [])
+    {
         $this->authorize();
         $period = $data['period'] ?? 'this_month';
 
@@ -36,14 +40,14 @@ class BIController {
             $summary = $biService->getSummary();
 
             return Response::json([
-                "success" => true,
-                "data" => $summary
+                'success' => true,
+                'data' => $summary,
             ]);
         } catch (\Throwable $e) {
-            error_log("BI Summary Error: " . $e->getMessage());
+            error_log('BI Summary Error: ' . $e->getMessage());
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar BI: " . $e->getMessage()
+                'success' => false,
+                'message' => 'Erro ao carregar BI: ' . $e->getMessage(),
             ], 500);
         }
     }
@@ -51,7 +55,8 @@ class BIController {
     /**
      * GET /api/admin/bi/freights - Métricas de fretes
      */
-    public function freights($data = []) {
+    public function freights($data = [])
+    {
         $this->authorize();
         $period = $data['period'] ?? 'this_month';
         $type = $data['type'] ?? 'summary';
@@ -61,13 +66,13 @@ class BIController {
             $freights = $biService->getFreights($type);
 
             return Response::json([
-                "success" => true,
-                "data" => $freights
+                'success' => true,
+                'data' => $freights,
             ]);
         } catch (\Throwable $e) {
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar fretes"
+                'success' => false,
+                'message' => 'Erro ao carregar fretes',
             ], 500);
         }
     }
@@ -75,7 +80,8 @@ class BIController {
     /**
      * GET /api/admin/bi/users - Métricas de usuários
      */
-    public function users($data = []) {
+    public function users($data = [])
+    {
         $this->authorize();
         $period = $data['period'] ?? 'this_month';
 
@@ -86,17 +92,17 @@ class BIController {
             $companies = $biService->getCompanies();
 
             return Response::json([
-                "success" => true,
-                "data" => [
-                    "users" => $users,
-                    "drivers" => $drivers,
-                    "companies" => $companies
-                ]
+                'success' => true,
+                'data' => [
+                    'users' => $users,
+                    'drivers' => $drivers,
+                    'companies' => $companies,
+                ],
             ]);
         } catch (\Throwable $e) {
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar usuários"
+                'success' => false,
+                'message' => 'Erro ao carregar usuários',
             ], 500);
         }
     }
@@ -104,7 +110,8 @@ class BIController {
     /**
      * GET /api/admin/bi/finance - Métricas financeiras
      */
-    public function finance($data = []) {
+    public function finance($data = [])
+    {
         $this->authorize();
         $period = $data['period'] ?? 'this_month';
 
@@ -115,17 +122,17 @@ class BIController {
             $ads = $biService->getAds();
 
             return Response::json([
-                "success" => true,
-                "data" => [
-                    "wallet" => $finance,
-                    "plans" => $plans,
-                    "ads" => $ads
-                ]
+                'success' => true,
+                'data' => [
+                    'wallet' => $finance,
+                    'plans' => $plans,
+                    'ads' => $ads,
+                ],
             ]);
         } catch (\Throwable $e) {
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar financeiro"
+                'success' => false,
+                'message' => 'Erro ao carregar financeiro',
             ], 500);
         }
     }
@@ -133,7 +140,8 @@ class BIController {
     /**
      * GET /api/admin/bi/quotes - Métricas de cotações
      */
-    public function quotes($data = []) {
+    public function quotes($data = [])
+    {
         $this->authorize();
         $period = $data['period'] ?? 'this_month';
 
@@ -142,13 +150,13 @@ class BIController {
             $quotes = $biService->getQuotes();
 
             return Response::json([
-                "success" => true,
-                "data" => $quotes
+                'success' => true,
+                'data' => $quotes,
             ]);
         } catch (\Throwable $e) {
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar cotações"
+                'success' => false,
+                'message' => 'Erro ao carregar cotações',
             ], 500);
         }
     }
@@ -156,7 +164,8 @@ class BIController {
     /**
      * GET /api/admin/bi/support - Métricas de suporte
      */
-    public function support($data = []) {
+    public function support($data = [])
+    {
         $this->authorize();
         $period = $data['period'] ?? 'this_month';
 
@@ -165,13 +174,13 @@ class BIController {
             $tickets = $biService->getTickets();
 
             return Response::json([
-                "success" => true,
-                "data" => $tickets
+                'success' => true,
+                'data' => $tickets,
             ]);
         } catch (\Throwable $e) {
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar suporte"
+                'success' => false,
+                'message' => 'Erro ao carregar suporte',
             ], 500);
         }
     }
@@ -179,7 +188,8 @@ class BIController {
     /**
      * GET /api/admin/bi/groups - Métricas de grupos
      */
-    public function groups($data = []) {
+    public function groups($data = [])
+    {
         $this->authorize();
 
         try {
@@ -187,13 +197,13 @@ class BIController {
             $groups = $biService->getGroups();
 
             return Response::json([
-                "success" => true,
-                "data" => $groups
+                'success' => true,
+                'data' => $groups,
             ]);
         } catch (\Throwable $e) {
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar grupos"
+                'success' => false,
+                'message' => 'Erro ao carregar grupos',
             ], 500);
         }
     }
@@ -201,7 +211,8 @@ class BIController {
     /**
      * GET /api/admin/bi/marketplace - Métricas de marketplace
      */
-    public function marketplace($data = []) {
+    public function marketplace($data = [])
+    {
         $this->authorize();
         $period = $data['period'] ?? 'this_month';
 
@@ -210,13 +221,13 @@ class BIController {
             $marketplace = $biService->getMarketplace();
 
             return Response::json([
-                "success" => true,
-                "data" => $marketplace
+                'success' => true,
+                'data' => $marketplace,
             ]);
         } catch (\Throwable $e) {
             return Response::json([
-                "success" => false,
-                "message" => "Erro ao carregar marketplace"
+                'success' => false,
+                'message' => 'Erro ao carregar marketplace',
             ], 500);
         }
     }

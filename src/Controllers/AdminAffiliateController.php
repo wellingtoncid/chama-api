@@ -1,9 +1,10 @@
 <?php
+
 namespace App\Controllers;
 
-use PDO;
-use App\Core\Response;
 use App\Core\Auth;
+use App\Core\Response;
+use PDO;
 
 class AdminAffiliateController
 {
@@ -17,11 +18,11 @@ class AdminAffiliateController
     public function listInterests($params)
     {
         $user = Auth::requireAuth();
-        
+
         if (!Auth::hasAnyRole(['admin', 'gerente', 'suporte'])) {
             return Response::json([
                 'success' => false,
-                'message' => 'Acesso não autorizado.'
+                'message' => 'Acesso não autorizado.',
             ], 403);
         }
 
@@ -30,11 +31,11 @@ class AdminAffiliateController
         $limit = 20;
         $offset = ($page - 1) * $limit;
 
-        $where = "WHERE 1=1";
+        $where = 'WHERE 1=1';
         $params = [];
 
         if ($status && in_array($status, ['pending', 'approved', 'rejected'])) {
-            $where .= " AND ai.status = ?";
+            $where .= ' AND ai.status = ?';
             $params[] = $status;
         }
 
@@ -43,7 +44,7 @@ class AdminAffiliateController
         $countStmt->execute($params);
         $total = (int)$countStmt->fetch()['total'];
 
-        $sql = "SELECT 
+        $sql = "SELECT
                     ai.*,
                     u.name as user_name,
                     u.email as user_email,
@@ -57,7 +58,7 @@ class AdminAffiliateController
                 {$where}
                 ORDER BY ai.created_at DESC
                 LIMIT ? OFFSET ?";
-        
+
         $params[] = $limit;
         $params[] = $offset;
 
@@ -72,19 +73,19 @@ class AdminAffiliateController
                 'total' => $total,
                 'page' => $page,
                 'limit' => $limit,
-                'pages' => ceil($total / $limit)
-            ]
+                'pages' => ceil($total / $limit),
+            ],
         ]);
     }
 
     public function approveInterest($params, $data)
     {
         $user = Auth::requireAuth();
-        
+
         if (!Auth::hasAnyRole(['admin', 'gerente'])) {
             return Response::json([
                 'success' => false,
-                'message' => 'Acesso não autorizado.'
+                'message' => 'Acesso não autorizado.',
             ], 403);
         }
 
@@ -93,25 +94,25 @@ class AdminAffiliateController
         if (!$interestId) {
             return Response::json([
                 'success' => false,
-                'message' => 'ID da solicitação não encontrado.'
+                'message' => 'ID da solicitação não encontrado.',
             ], 400);
         }
 
-        $stmt = $this->db->prepare("SELECT * FROM affiliate_interests WHERE id = ?");
+        $stmt = $this->db->prepare('SELECT * FROM affiliate_interests WHERE id = ?');
         $stmt->execute([$interestId]);
         $interest = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$interest) {
             return Response::json([
                 'success' => false,
-                'message' => 'Solicitação não encontrada.'
+                'message' => 'Solicitação não encontrada.',
             ], 404);
         }
 
         if ($interest['status'] !== 'pending') {
             return Response::json([
                 'success' => false,
-                'message' => 'Esta solicitação já foi processada.'
+                'message' => 'Esta solicitação já foi processada.',
             ], 400);
         }
 
@@ -119,9 +120,9 @@ class AdminAffiliateController
 
         try {
             $updateStmt = $this->db->prepare("
-                UPDATE affiliate_interests 
-                SET status = 'approved', 
-                    approved_by = ?, 
+                UPDATE affiliate_interests
+                SET status = 'approved',
+                    approved_by = ?,
                     approved_at = NOW(),
                     admin_notes = ?
                 WHERE id = ?
@@ -129,21 +130,21 @@ class AdminAffiliateController
             $adminNotes = trim($data['admin_notes'] ?? 'Aprovado');
             $updateStmt->execute([$user['id'], $adminNotes, $interestId]);
 
-            $userUpdateStmt = $this->db->prepare("UPDATE users SET has_affiliate_access = 1 WHERE id = ?");
+            $userUpdateStmt = $this->db->prepare('UPDATE users SET has_affiliate_access = 1 WHERE id = ?');
             $userUpdateStmt->execute([$interest['user_id']]);
 
             $this->db->commit();
 
             return Response::json([
                 'success' => true,
-                'message' => 'Acesso ao recurso de afiliados liberado com sucesso!'
+                'message' => 'Acesso ao recurso de afiliados liberado com sucesso!',
             ]);
         } catch (\Exception $e) {
             $this->db->rollBack();
-            
+
             return Response::json([
                 'success' => false,
-                'message' => 'Erro ao processar aprovação.'
+                'message' => 'Erro ao processar aprovação.',
             ], 500);
         }
     }
@@ -151,11 +152,11 @@ class AdminAffiliateController
     public function rejectInterest($params, $data)
     {
         $user = Auth::requireAuth();
-        
+
         if (!Auth::hasAnyRole(['admin', 'gerente'])) {
             return Response::json([
                 'success' => false,
-                'message' => 'Acesso não autorizado.'
+                'message' => 'Acesso não autorizado.',
             ], 403);
         }
 
@@ -164,31 +165,31 @@ class AdminAffiliateController
         if (!$interestId) {
             return Response::json([
                 'success' => false,
-                'message' => 'ID da solicitação não encontrado.'
+                'message' => 'ID da solicitação não encontrado.',
             ], 400);
         }
 
-        $stmt = $this->db->prepare("SELECT * FROM affiliate_interests WHERE id = ?");
+        $stmt = $this->db->prepare('SELECT * FROM affiliate_interests WHERE id = ?');
         $stmt->execute([$interestId]);
         $interest = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$interest) {
             return Response::json([
                 'success' => false,
-                'message' => 'Solicitação não encontrada.'
+                'message' => 'Solicitação não encontrada.',
             ], 404);
         }
 
         if ($interest['status'] !== 'pending') {
             return Response::json([
                 'success' => false,
-                'message' => 'Esta solicitação já foi processada.'
+                'message' => 'Esta solicitação já foi processada.',
             ], 400);
         }
 
         $updateStmt = $this->db->prepare("
-            UPDATE affiliate_interests 
-            SET status = 'rejected', 
+            UPDATE affiliate_interests
+            SET status = 'rejected',
                 approved_by = ?,
                 approved_at = NOW(),
                 admin_notes = ?
@@ -199,18 +200,18 @@ class AdminAffiliateController
 
         return Response::json([
             'success' => true,
-            'message' => 'Solicitação rejeitada.'
+            'message' => 'Solicitação rejeitada.',
         ]);
     }
 
     public function revokeAccess($params)
     {
         $user = Auth::requireAuth();
-        
+
         if (!Auth::hasAnyRole(['admin', 'gerente'])) {
             return Response::json([
                 'success' => false,
-                'message' => 'Acesso não autorizado.'
+                'message' => 'Acesso não autorizado.',
             ], 403);
         }
 
@@ -219,26 +220,26 @@ class AdminAffiliateController
         if (!$interestId) {
             return Response::json([
                 'success' => false,
-                'message' => 'ID não encontrado.'
+                'message' => 'ID não encontrado.',
             ], 400);
         }
 
-        $stmt = $this->db->prepare("SELECT user_id FROM affiliate_interests WHERE id = ?");
+        $stmt = $this->db->prepare('SELECT user_id FROM affiliate_interests WHERE id = ?');
         $stmt->execute([$interestId]);
         $interest = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$interest) {
             return Response::json([
                 'success' => false,
-                'message' => 'Registro não encontrado.'
+                'message' => 'Registro não encontrado.',
             ], 404);
         }
 
-        $revokeStmt = $this->db->prepare("UPDATE users SET has_affiliate_access = 0 WHERE id = ?");
+        $revokeStmt = $this->db->prepare('UPDATE users SET has_affiliate_access = 0 WHERE id = ?');
         $revokeStmt->execute([$interest['user_id']]);
 
         $updateStmt = $this->db->prepare("
-            UPDATE affiliate_interests 
+            UPDATE affiliate_interests
             SET status = 'pending',
                 approved_by = NULL,
                 approved_at = NULL,
@@ -249,23 +250,23 @@ class AdminAffiliateController
 
         return Response::json([
             'success' => true,
-            'message' => 'Acesso ao recurso de afiliados foi revogado.'
+            'message' => 'Acesso ao recurso de afiliados foi revogado.',
         ]);
     }
 
     public function getStats()
     {
         $user = Auth::requireAuth();
-        
+
         if (!Auth::hasAnyRole(['admin', 'gerente', 'suporte'])) {
             return Response::json([
                 'success' => false,
-                'message' => 'Acesso não autorizado.'
+                'message' => 'Acesso não autorizado.',
             ], 403);
         }
 
         $stmt = $this->db->query("
-            SELECT 
+            SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
                 SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
@@ -275,9 +276,9 @@ class AdminAffiliateController
         ");
         $stats = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        $usersWithAccess = $this->db->query("
+        $usersWithAccess = $this->db->query('
             SELECT COUNT(*) as total FROM users WHERE has_affiliate_access = 1
-        ")->fetch()['total'];
+        ')->fetch()['total'];
 
         return Response::json([
             'success' => true,
@@ -287,10 +288,10 @@ class AdminAffiliateController
                     'pending' => (int)$stats['pending'],
                     'approved' => (int)$stats['approved'],
                     'rejected' => (int)$stats['rejected'],
-                    'avg_willing_to_pay' => round((float)$stats['avg_willing_to_pay'], 2)
+                    'avg_willing_to_pay' => round((float)$stats['avg_willing_to_pay'], 2),
                 ],
-                'users_with_access' => (int)$usersWithAccess
-            ]
+                'users_with_access' => (int)$usersWithAccess,
+            ],
         ]);
     }
 }

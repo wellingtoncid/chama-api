@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Script de migração para adicionar colunas na credit_transactions
  * Executar: php api/scripts/migrate_wallet.php
@@ -17,17 +18,17 @@ try {
     $columnsToAdd = [
         'module_key VARCHAR(50) DEFAULT NULL',
         'feature_key VARCHAR(50) DEFAULT NULL',
-        'reference_id INT DEFAULT NULL'
+        'reference_id INT DEFAULT NULL',
     ];
 
     foreach ($columnsToAdd as $column) {
         $columnName = explode(' ', $column)[0];
-        
+
         $stmt = $db->prepare("
-            SELECT COUNT(*) as exists_col 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = DATABASE() 
-            AND TABLE_NAME = 'credit_transactions' 
+            SELECT COUNT(*) as exists_col
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'credit_transactions'
             AND COLUMN_NAME = :col
         ");
         $stmt->execute([':col' => $columnName]);
@@ -63,6 +64,6 @@ try {
     echo "\n=== MIGRATION COMPLETE ===\n";
 
 } catch (Exception $e) {
-    echo "ERROR: " . $e->getMessage() . "\n";
+    echo 'ERROR: ' . $e->getMessage() . "\n";
     exit(1);
 }

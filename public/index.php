@@ -1,17 +1,18 @@
 <?php
+
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use App\Core\Database;
-use App\Core\Router;
-use App\Core\Response;
 use App\Core\Auth;
+use App\Core\Database;
+use App\Core\Response;
+use App\Core\Router;
 use App\Services\AuditLoggerService;
 
 // 1. Setup Ambiental
-$envFile = file_exists(__DIR__ . '/../.env.production') 
-    ? __DIR__ . '/../.env.production' 
+$envFile = file_exists(__DIR__ . '/../.env.production')
+    ? __DIR__ . '/../.env.production'
     : __DIR__ . '/../.env';
-    
+
 if (file_exists($envFile)) {
     $dotenv = Dotenv\Dotenv::createImmutable(dirname($envFile));
     $dotenv->load();
@@ -21,7 +22,7 @@ $appEnv = $_ENV['APP_ENV'] ?? 'local';
 $isProduction = $appEnv === 'production';
 
 // 2. CORS e Headers
-$allowedOrigins = $isProduction 
+$allowedOrigins = $isProduction
     ? ['https://www.chamafrete.com.br', 'https://chamafrete.com.br']
     : ['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://localhost:3000'];
 
@@ -29,10 +30,10 @@ $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 $allowedOrigin = in_array($origin, $allowedOrigins) ? $origin : ($allowedOrigins[0] ?? '*');
 
 header("Access-Control-Allow-Origin: $allowedOrigin");
-header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Origin, Accept");
-header("Access-Control-Allow-Credentials: true");
-header("Content-Type: application/json; charset=utf-8");
+header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Origin, Accept');
+header('Access-Control-Allow-Credentials: true');
+header('Content-Type: application/json; charset=utf-8');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -43,12 +44,14 @@ try {
     $db = Database::getConnection();
 
     // 4. Captura de Dados
-    $input = file_get_contents("php://input");
+    $input = file_get_contents('php://input');
     $jsonData = json_decode($input, true) ?? [];
     // Prioridade: JSON > POST > GET
     $data = array_merge($_GET, $_POST, $jsonData);
+    // Remove system-level parameters to prevent mass assignment
+    unset($data['endpoint'], $data['token'], $data['action']);
 
-    // 5. Autenticação JWT 
+    // 5. Autenticação JWT
     $loggedUser = Auth::getAuthenticatedUser() ?: null;
     $role = $loggedUser ? strtoupper($loggedUser['role'] ?? '') : '';
 
@@ -95,13 +98,13 @@ try {
     $router->post('/api/delete-account', 'UserController@deleteAccount');
     $router->post('/api/verify-cnpj', 'UserController@verifyCnpj');
     $router->get('/api/get-cnpj-data', 'UserController@getCnpjData');
-    
+
     // --- DRIVER MATCHING & GEOLOCATION ---
     $router->get('/api/geocode/cep', 'UserController@geocodeCep');
     $router->post('/api/driver/location', 'UserController@updateDriverLocation');
     $router->get('/api/profile/completeness', 'UserController@getProfileCompleteness');
     $router->post('/api/driver/equipment', 'UserController@updateDriverEquipment');
-    
+
     $router->get('/api/public-freight/:slug', 'PublicController@getFreightDetails');
     //$router->get('/api/public-profile', 'PublicController@getProfilePage'); //Public profile @deprecated
     $router->get('/api/profile/page/:slug', 'PublicController@getProfilePage'); //trocar acima
@@ -128,8 +131,8 @@ try {
     $router->post('/api/contact-advertiser', 'FreightController@contact');
     $router->get('/api/list-interests', 'FreightController@listInterests');
     $router->get('/api/invite-driver', 'FreightController@inviteDriver');
-    $router->post('/api/respond-invitation', 'FreightController@respondInvitation'); 
-    $router->get('/api/user-alerts', 'FreightController@userAlerts'); 
+    $router->post('/api/respond-invitation', 'FreightController@respondInvitation');
+    $router->get('/api/user-alerts', 'FreightController@userAlerts');
     $router->get('/api/my-active-freight', 'FreightController@myActiveFreight');
     $router->get('/api/driver-stats', 'FreightController@getdriverstats');
     $router->get('/api/top-ads-freight', 'FreightController@getTopAdvertisersFreight');
@@ -141,18 +144,18 @@ try {
     $router->delete('/api/freights/:id', 'FreightController@deleteFreight');
     $router->post('/api/freights/:id/finish', 'FreightController@finishFreight');
     $router->get('/api/freights/my', 'FreightController@listMyFreights');
-    
+
     // --- ADS & BANNERS (MÉTRICAS ATIVAS) ---
     $router->get('/api/ads', 'AdController@list');
     $router->get('/api/my-ads', 'AdController@listMyAds');
     $router->post('/api/upload-ad', 'AdController@create');
     $router->get('/api/companies', 'UserController@listCompanies');
-    
+
     // --- PARTNERS (Strategic & Media Network - Separate from Ads) ---
     $router->get('/api/partners', 'AdController@listPartners');
     $router->post('/api/partners', 'AdController@savePartner');
     $router->delete('/api/partners/:id', 'AdController@deletePartner');
-    
+
     $router->post('/api/log-ad-click', 'MetricsController@registerEvent');
     $router->post('/api/register-ad-event', 'AdController@trackClick');
 
@@ -161,7 +164,6 @@ try {
     $router->get('/api/ads/my-report', 'AdController@getUserAdsReport');
     $router->post('/api/ads/save', 'AdController@store');
     $router->delete('/api/ads/:id', 'AdController@delete');
-    
 
     // --- MARKETPLACE & LISTINGS ---
     // Legacy routes (deprecated)
@@ -211,16 +213,16 @@ try {
     // --- ARTIGOS ---
     $router->get('/api/articles', 'ArticleController@index');
     $router->get('/api/articles/:slug', 'ArticleController@show');
-    
+
     if ($loggedUser) {
         $router->get('/api/articles/me', 'ArticleController@myArticles');
-        
+
         if (Auth::hasPermission('articles.create')) {
             $router->post('/api/articles', 'ArticleController@store');
             $router->put('/api/articles/:id', 'ArticleController@update');
             $router->delete('/api/articles/:id', 'ArticleController@destroy');
         }
-        
+
         if (Auth::hasPermission('articles.approve')) {
             $router->put('/api/articles/:id/approve', 'ArticleController@approve');
             $router->put('/api/articles/:id/reject', 'ArticleController@reject');
@@ -250,45 +252,42 @@ try {
     $router->get('/api/group-categories', 'GroupCategoryController@getAll');
     $router->get('/api/group-categories/active', 'GroupCategoryController@getActive');
 
-
-
-
     // --- PAGAMENTOS & MEMBRESIA ---
     $router->post('/api/checkout', 'PaymentController@checkout');
     $router->post('/api/payments/create', 'PaymentController@createPayment');
     $router->post('/api/payments/webhook', 'PaymentController@webhook');
     $router->get('/api/payments/status', 'PaymentController@getPaymentStatus');
     $router->get('/api/my-services', 'MembershipController@myServices');
-    $router->get('/api/payment-history', 'MembershipController@getPaymentHistory'); 
+    $router->get('/api/payment-history', 'MembershipController@getPaymentHistory');
     $router->get('/api/my-transactions', 'PaymentController@getMyTransactions');
-    
+
     // --- CARTEIRA (WALLET) ---
     $router->get('/api/wallet/balance', 'WalletController@getBalance');
     $router->post('/api/wallet/recharge', 'WalletController@recharge');
     $router->get('/api/wallet/transactions', 'WalletController@getTransactions');
     $router->get('/api/wallet/pricing', 'WalletController@getPricing');
     $router->post('/api/wallet/webhook', 'WalletController@webhook');
-    
+
     // --- PAGAMENTOS DE MÓDULOS ---
     $router->post('/api/module/purchase-per-use', 'PaymentController@purchasePerUse');
     $router->post('/api/module/purchase-partial', 'PaymentController@purchasePartial');
     $router->post('/api/module/subscribe-monthly', 'PaymentController@subscribeMonthly');
     $router->post('/api/plans/subscribe', 'PaymentController@subscribePlan');
     $router->get('/api/ad/check-eligibility', 'PaymentController@checkAdEligibility');
-    
+
     // --- DESTAQUE/URGENTE DE FRETE ---
     $router->post('/api/freight/promote', 'PaymentController@promoteFreight');
-    
+
     // --- DRIVER VERIFICATION ---
     $router->post('/api/driver/verification/purchase', 'PaymentController@purchaseDriverVerification');
     $router->get('/api/driver/verification/status', 'PaymentController@getDriverVerificationStatus');
-    
+
     // --- COMPANY VERIFICATION ---
     $router->get('/api/company/verification/status', 'CompanyController@getVerificationStatus');
     $router->post('/api/company/verification/verify-cnpj', 'CompanyController@verifyCnpj');
     $router->post('/api/company/verification/submit', 'CompanyController@submitVerification');
     $router->post('/api/company/verification/purchase', 'CompanyController@purchaseVerification');
-    
+
     // --- TEAM (GESTÃO DE EQUIPE) ---
     $router->get('/api/team', 'TeamController@getTeam');
     $router->post('/api/team/invite', 'TeamController@invite');
@@ -297,7 +296,7 @@ try {
     $router->post('/api/team/accept', 'TeamController@acceptInvitation');
     $router->post('/api/team/member/remove', 'TeamController@removeMember');
     $router->post('/api/team/member/update', 'TeamController@updateMember');
-    
+
     // --- DOCUMENT UPLOAD ---
     $router->post('/api/document/upload', 'PaymentController@uploadDocument');
     $router->get('/api/document/list', 'PaymentController@listMyDocuments');
@@ -335,7 +334,7 @@ try {
 
     // --- BLOCO ADMINISTRATIVO / GESTÃO (RESTRITO) ---
     $role = strtoupper($loggedUser['role'] ?? '');
-    
+
     // Suporte - permissões: support.view, support.respond, support.manage
     if ($loggedUser && Auth::hasPermission('support.view')) {
         $router->get('/api/support/tickets', 'SupportController@listAllTickets');
@@ -348,19 +347,19 @@ try {
         $router->post('/api/support/close-ticket', 'SupportController@closeTicket');
         $router->post('/api/support/update-ticket', 'SupportController@updateTicket');
     }
-    
+
     // CRM / Notas Internas - permissão: users.view
     if ($loggedUser && Auth::hasPermission('users.view')) {
         $router->post('/api/admin/user-notes', 'AdminUserController@addUserNote');
         $router->get('/api/admin/user-notes', 'AdminUserController@getUserNotes');
     }
-    
+
     // Dashboard BI - permissão: bi.view
     if ($loggedUser && Auth::hasPermission('bi.view')) {
         $router->get('/api/admin-dashboard-data', 'AdminDashboardController@getDashboardData');
         $router->get('/api/admin/home-stats', 'AdminDashboardController@getHomeStats');
         $router->get('/api/admin/bi-stats', 'AdminDashboardController@getBIStats');
-        
+
         // Novo BI com dados reais
         $router->get('/api/admin/bi', 'BIController@summary');
         $router->get('/api/admin/bi/freights', 'BIController@freights');
@@ -543,7 +542,7 @@ try {
     // Reports / Denúncias (usuários)
     $router->post('/api/reports', 'ReportController@create');
     $router->get('/api/my-reports', 'ReportController@listMine');
-    
+
     // Affiliate / Afiliados (Marketplace)
     $router->get('/api/affiliate/scrape', 'AffiliateController@scrapeProduct');
     $router->post('/api/affiliate/scrape', 'AffiliateController@scrapeProduct');
@@ -552,85 +551,85 @@ try {
     $router->get('/api/affiliate/my-interest', 'AffiliateController@getMyInterest');
     $router->get('/api/affiliate/access', 'AffiliateController@checkAccess');
     $router->get('/api/affiliate/redirect/:id', 'AffiliateController@redirect');
-    
+
     // Rotas exclusivas de ADMIN MASTER - permissão: roles.manage
     if ($loggedUser && Auth::hasPermission('roles.manage')) {
-            // Affiliate Admin
-            $router->get('/api/admin/affiliate/interests', 'AdminAffiliateController@listInterests');
-            $router->get('/api/admin/affiliate/stats', 'AdminAffiliateController@getStats');
-            $router->post('/api/admin/affiliate/interests/:id/approve', 'AdminAffiliateController@approveInterest');
-            $router->post('/api/admin/affiliate/interests/:id/reject', 'AdminAffiliateController@rejectInterest');
-            $router->post('/api/admin/affiliate/interests/:id/revoke', 'AdminAffiliateController@revokeAccess');
-            
-            // Reports / Denúncias (admin)
-            $router->get('/api/admin/reports', 'ReportController@getAll');
-            $router->get('/api/admin/reports/:id', 'ReportController@get');
-            $router->post('/api/admin/reports/:id/assign', 'ReportController@assign');
-            $router->post('/api/admin/reports/:id/resolve', 'ReportController@resolve');
-            $router->post('/api/admin/reports/:id/dismiss', 'ReportController@dismiss');
-            $router->post('/api/admin/reports/:id/delete', 'ReportController@delete');
-            
-            // Configurações e Estatísticas (Outros)
-            // $router->get('/api/admin-stats', 'AdminController@getStats'); // @deprecated - método nunca existiu
-            $router->get('/api/get-advertising-plans', 'AdminPlanController@getAdvertisingPlans');
-            
-            // Revenue e Financial
-            $router->get('/api/admin-revenue-report', 'AdminDashboardController@getRevenueReport');
-            $router->get('/api/admin-financial-stats', 'AdminDashboardController@getFinancialStats');
-            $router->get('/api/admin-audit-logs', 'AdminController@listLogs');
-            $router->get('/api/admin-settings', 'AdminController@getSettings');
-            $router->post('/api/admin-update-settings', 'AdminController@updateSettings');
-            $router->get('/api/admin-activity', 'AdminController@getActivityLogs');
-            $router->get('/api/admin/freight-matching', 'AdminController@findMatchingDrivers');
-            $router->post('/api/admin/driver-location', 'AdminController@updateDriverLocation');
-            
-            // Permissions
-            $router->get('/api/admin-permissions', 'PermissionController@getAll');
-            $router->post('/api/admin-permissions', 'PermissionController@create');
-            $router->put('/api/admin-permissions', 'PermissionController@update');
-            $router->delete('/api/admin-permissions', 'PermissionController@delete');
-            $router->get('/api/admin-role-permissions', 'PermissionController@getRolePermissions');
-            $router->post('/api/admin-role-permissions', 'PermissionController@setRolePermissions');
-            $router->get('/api/admin-user-permissions', 'PermissionController@getUserPermissions');
-            $router->post('/api/admin-user-permissions', 'PermissionController@setUserPermissions');
-            
-            // Roles
-            $router->get('/api/admin-roles', 'RoleController@getAll');
-            $router->post('/api/admin-roles', 'RoleController@create');
-            $router->put('/api/admin-roles', 'RoleController@update');
-            $router->delete('/api/admin-roles', 'RoleController@delete');
-            $router->get('/api/admin-roles/:id', 'RoleController@getById');
-            
-            // Modules
-            $router->get('/api/admin-modules', 'ModuleController@getAll');
-            $router->post('/api/admin-modules', 'ModuleController@create');
-            $router->put('/api/admin-modules', 'ModuleController@update');
-            $router->delete('/api/admin-modules', 'ModuleController@delete');
-            
-            // Team
-            $router->get('/api/admin-team', 'TeamController@getTeam');
-            $router->post('/api/admin-team/invite', 'TeamController@invite');
-            $router->get('/api/admin-team/invitations', 'TeamController@getInvitations');
-            $router->delete('/api/admin-team/invitation', 'TeamController@cancelInvitation');
-            $router->post('/api/admin-team/accept', 'TeamController@acceptInvitation');
-            $router->delete('/api/admin-team/member', 'TeamController@removeMember');
-            $router->put('/api/admin-team/member', 'TeamController@updateMember');
-            
-            // Profile (user endpoints)
-            $router->get('/api/profile', 'ProfileController@get');
-            $router->put('/api/profile', 'ProfileController@update');
-            $router->post('/api/profile/avatar', 'ProfileController@updateAvatar');
-            $router->get('/api/profile/activity', 'ProfileController@getActivity');
-            
-            $router->post('/api/delete-group', 'GroupController@deleteGroup');
-        }
+        // Affiliate Admin
+        $router->get('/api/admin/affiliate/interests', 'AdminAffiliateController@listInterests');
+        $router->get('/api/admin/affiliate/stats', 'AdminAffiliateController@getStats');
+        $router->post('/api/admin/affiliate/interests/:id/approve', 'AdminAffiliateController@approveInterest');
+        $router->post('/api/admin/affiliate/interests/:id/reject', 'AdminAffiliateController@rejectInterest');
+        $router->post('/api/admin/affiliate/interests/:id/revoke', 'AdminAffiliateController@revokeAccess');
+
+        // Reports / Denúncias (admin)
+        $router->get('/api/admin/reports', 'ReportController@getAll');
+        $router->get('/api/admin/reports/:id', 'ReportController@get');
+        $router->post('/api/admin/reports/:id/assign', 'ReportController@assign');
+        $router->post('/api/admin/reports/:id/resolve', 'ReportController@resolve');
+        $router->post('/api/admin/reports/:id/dismiss', 'ReportController@dismiss');
+        $router->post('/api/admin/reports/:id/delete', 'ReportController@delete');
+
+        // Configurações e Estatísticas (Outros)
+        // $router->get('/api/admin-stats', 'AdminController@getStats'); // @deprecated - método nunca existiu
+        $router->get('/api/get-advertising-plans', 'AdminPlanController@getAdvertisingPlans');
+
+        // Revenue e Financial
+        $router->get('/api/admin-revenue-report', 'AdminDashboardController@getRevenueReport');
+        $router->get('/api/admin-financial-stats', 'AdminDashboardController@getFinancialStats');
+        $router->get('/api/admin-audit-logs', 'AdminController@listLogs');
+        $router->get('/api/admin-settings', 'AdminController@getSettings');
+        $router->post('/api/admin-update-settings', 'AdminController@updateSettings');
+        $router->get('/api/admin-activity', 'AdminController@getActivityLogs');
+        $router->get('/api/admin/freight-matching', 'AdminController@findMatchingDrivers');
+        $router->post('/api/admin/driver-location', 'AdminController@updateDriverLocation');
+
+        // Permissions
+        $router->get('/api/admin-permissions', 'PermissionController@getAll');
+        $router->post('/api/admin-permissions', 'PermissionController@create');
+        $router->put('/api/admin-permissions', 'PermissionController@update');
+        $router->delete('/api/admin-permissions', 'PermissionController@delete');
+        $router->get('/api/admin-role-permissions', 'PermissionController@getRolePermissions');
+        $router->post('/api/admin-role-permissions', 'PermissionController@setRolePermissions');
+        $router->get('/api/admin-user-permissions', 'PermissionController@getUserPermissions');
+        $router->post('/api/admin-user-permissions', 'PermissionController@setUserPermissions');
+
+        // Roles
+        $router->get('/api/admin-roles', 'RoleController@getAll');
+        $router->post('/api/admin-roles', 'RoleController@create');
+        $router->put('/api/admin-roles', 'RoleController@update');
+        $router->delete('/api/admin-roles', 'RoleController@delete');
+        $router->get('/api/admin-roles/:id', 'RoleController@getById');
+
+        // Modules
+        $router->get('/api/admin-modules', 'ModuleController@getAll');
+        $router->post('/api/admin-modules', 'ModuleController@create');
+        $router->put('/api/admin-modules', 'ModuleController@update');
+        $router->delete('/api/admin-modules', 'ModuleController@delete');
+
+        // Team
+        $router->get('/api/admin-team', 'TeamController@getTeam');
+        $router->post('/api/admin-team/invite', 'TeamController@invite');
+        $router->get('/api/admin-team/invitations', 'TeamController@getInvitations');
+        $router->delete('/api/admin-team/invitation', 'TeamController@cancelInvitation');
+        $router->post('/api/admin-team/accept', 'TeamController@acceptInvitation');
+        $router->delete('/api/admin-team/member', 'TeamController@removeMember');
+        $router->put('/api/admin-team/member', 'TeamController@updateMember');
+
+        // Profile (user endpoints)
+        $router->get('/api/profile', 'ProfileController@get');
+        $router->put('/api/profile', 'ProfileController@update');
+        $router->post('/api/profile/avatar', 'ProfileController@updateAvatar');
+        $router->get('/api/profile/activity', 'ProfileController@getActivity');
+
+        $router->post('/api/delete-group', 'GroupController@deleteGroup');
+    }
 
     // 7. Execução
     $response = $router->run($db, $loggedUser, $data);
 
-// 7.1. Registrar auditoria após ação bem-sucedida
+    // 7.1. Registrar auditoria após ação bem-sucedida
     $userId = $loggedUser['id'] ?? null;
-    
+
     // FORÇAR para TODAS as requisições (desabilitar depois)
     if ($userId && in_array($requestMethod, ['POST', 'PUT', 'DELETE'])) {
         $desc = "{$requestMethod} {$requestUri}";
@@ -653,12 +652,12 @@ try {
         $auditLogger->log($auditData);
     }
 
-   if ($response !== null) {
+    if ($response !== null) {
         // Só limpamos o buffer se houver lixo (espaços, warnings) antes do JSON
         if (ob_get_level() > 0) {
-            $unexpectedOutput = ob_get_clean(); 
+            $unexpectedOutput = ob_get_clean();
             if (!empty($unexpectedOutput)) {
-                error_log("Lixo detectado no buffer: " . $unexpectedOutput);
+                error_log('Lixo detectado no buffer: ' . $unexpectedOutput);
             }
         }
 
@@ -667,11 +666,11 @@ try {
     }
 
 } catch (Throwable $e) {
-    error_log("ERRO NO INDEX: " . $e->getMessage() . " em " . $e->getFile() . ":" . $e->getLine());
+    error_log('ERRO NO INDEX: ' . $e->getMessage() . ' em ' . $e->getFile() . ':' . $e->getLine());
 
     $isDebug = ($_ENV['APP_DEBUG'] ?? 'false') === 'true';
     Response::json([
-        "success" => false,
-        "message" => $isDebug ? $e->getMessage() : "Erro interno no servidor",
+        'success' => false,
+        'message' => $isDebug ? $e->getMessage() : 'Erro interno no servidor',
     ], 500);
 }

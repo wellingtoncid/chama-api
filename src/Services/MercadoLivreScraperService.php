@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Services;
 
 class MercadoLivreScraperService
@@ -9,44 +10,44 @@ class MercadoLivreScraperService
     public function scrapeProduct(string $mlUrl): array
     {
         $url = $this->normalizeUrl($mlUrl);
-        
+
         if (!$this->isValidMlUrl($url)) {
             return [
                 'success' => false,
-                'message' => 'URL inválida. Forneça uma URL do Mercado Livre Brasil.'
+                'message' => 'URL inválida. Forneça uma URL do Mercado Livre Brasil.',
             ];
         }
 
         $html = $this->fetchPage($url);
-        
+
         if (!$html) {
             return [
                 'success' => false,
-                'message' => 'Não foi possível acessar o produto. Verifique se a URL está correta.'
+                'message' => 'Não foi possível acessar o produto. Verifique se a URL está correta.',
             ];
         }
 
         $data = $this->parseHtml($html, $url);
-        
+
         if (!$data['title']) {
             return [
                 'success' => false,
-                'message' => 'Não foi possível extrair os dados do produto.'
+                'message' => 'Não foi possível extrair os dados do produto.',
             ];
         }
 
         $data['affiliate_url'] = $this->generateAffiliateUrl($url);
-        
+
         return [
             'success' => true,
-            'data' => $data
+            'data' => $data,
         ];
     }
 
     public function generateAffiliateUrl(string $mlUrl): string
     {
         $url = $this->normalizeUrl($mlUrl);
-        
+
         $separator = (strpos($url, '?') !== false) ? '&' : '?';
         return $url . $separator . 'tag=' . self::AFFILIATE_TAG;
     }
@@ -54,22 +55,22 @@ class MercadoLivreScraperService
     public function getProductId(string $mlUrl): ?string
     {
         $url = $this->normalizeUrl($mlUrl);
-        
+
         if (preg_match('/-(\d+)(?:[\/\?#]|$)/', $url, $matches)) {
             return $matches[1];
         }
-        
+
         return null;
     }
 
     private function normalizeUrl(string $url): string
     {
         $url = trim($url);
-        
+
         if (strpos($url, 'http') !== 0) {
             $url = 'https://' . $url;
         }
-        
+
         return $url;
     }
 
@@ -80,13 +81,13 @@ class MercadoLivreScraperService
             'mercadolivre.com',
             'mlabs.com.br',
         ];
-        
+
         foreach ($patterns as $pattern) {
             if (strpos($url, $pattern) !== false) {
                 return true;
             }
         }
-        
+
         return false;
     }
 
@@ -113,14 +114,14 @@ class MercadoLivreScraperService
         ]);
 
         $response = @file_get_contents($url, false, $context);
-        
+
         if ($response && function_exists('mb_convert_encoding')) {
             $encoding = mb_detect_encoding($response, ['UTF-8', 'ISO-8859-1', 'ASCII']);
             if ($encoding && $encoding !== 'UTF-8') {
                 $response = mb_convert_encoding($response, 'UTF-8', $encoding);
             }
         }
-        
+
         return $response ?: null;
     }
 
@@ -145,7 +146,7 @@ class MercadoLivreScraperService
             '/<h1[^>]*data-testid="title"[^>]*>(.*?)<\/h1>/si',
             '/<title>(.*?)<\/title>/si',
         ];
-        
+
         foreach ($titlePatterns as $pattern) {
             if (preg_match($pattern, $html, $matches)) {
                 $data['title'] = $this->cleanText($matches[1]);
@@ -158,7 +159,7 @@ class MercadoLivreScraperService
             '/"price"\s*:\s*([\d.]+)/',
             '/<meta[^>]*itemprop="price"[^>]*content="([\d.]+)"/si',
         ];
-        
+
         foreach ($pricePatterns as $pattern) {
             if (preg_match($pattern, $html, $matches)) {
                 $data['price'] = (float) str_replace([',', '.'], ['.', ''], $matches[1]);
@@ -170,7 +171,7 @@ class MercadoLivreScraperService
             '/<s[^>]*class="[^"]*(?:original-price|price-original|strikethrough)[^"]*"[^>]*>R\$\s*([\d.,]+)/si',
             '/"priceBefore"\s*:\s*([\d.]+)/',
         ];
-        
+
         foreach ($originalPricePatterns as $pattern) {
             if (preg_match($pattern, $html, $matches)) {
                 $data['original_price'] = (float) str_replace([',', '.'], ['.', ''], $matches[1]);
@@ -184,7 +185,7 @@ class MercadoLivreScraperService
             '/<meta[^>]*property="og:image"[^>]*content="([^"]+)"/si',
             '/<img[^>]*data-src="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/si',
         ];
-        
+
         foreach ($imagePatterns as $pattern) {
             if (preg_match($pattern, $html, $matches)) {
                 $data['main_image'] = $this->cleanUrl($matches[1]);
@@ -196,7 +197,7 @@ class MercadoLivreScraperService
             '/<span[^>]*class="[^"]*ui-pdp-label[^"]*"[^>]*>(.*?)<\/span>/si',
             '/"condition"\s*:\s*"([^"]+)"/',
         ];
-        
+
         foreach ($conditionPatterns as $pattern) {
             if (preg_match($pattern, $html, $matches)) {
                 $conditionText = $this->cleanText($matches[1]);
@@ -209,7 +210,7 @@ class MercadoLivreScraperService
             '/<span[^>]*class="[^"]*(?:seller-name|ui-pdp-seller__name)[^"]*"[^>]*>(.*?)<\/span>/si',
             '/"seller"\s*:\s*\{"nickname"\s*:\s*"([^"]+)"/',
         ];
-        
+
         foreach ($sellerPatterns as $pattern) {
             if (preg_match($pattern, $html, $matches)) {
                 $data['seller_name'] = $this->cleanText($matches[1]);
@@ -221,7 +222,7 @@ class MercadoLivreScraperService
             '/"category"\s*:\s*"([^"]+)"/',
             '/<a[^>]*class="[^"]*breadcrumb[^"]*"[^>]*>(.*?)<\/a>/si',
         ];
-        
+
         foreach ($categoryPatterns as $pattern) {
             if (preg_match($pattern, $html, $matches)) {
                 $data['category'] = $this->cleanText($matches[1]);

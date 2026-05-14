@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Controllers;
 
 use App\Core\Response;
@@ -6,11 +7,13 @@ use App\Repositories\AdRepository;
 use App\Services\ContentFilterService;
 use PDO;
 
-class AdController {
+class AdController
+{
     private $adRepo;
     private $db;
 
-    public function __construct($db) {
+    public function __construct($db)
+    {
         $this->db = $db;
         $this->adRepo = new AdRepository($db);
     }
@@ -19,7 +22,8 @@ class AdController {
      * Cria novo anúncio (chama store)
      * POST /api/upload-ad
      */
-    public function create($data, $loggedUser = null) {
+    public function create($data, $loggedUser = null)
+    {
         return $this->store($data, $loggedUser);
     }
 
@@ -27,13 +31,14 @@ class AdController {
      * Delete anúncio (soft delete)
      * DELETE /api/ads/:id
      */
-    public function delete($data, $loggedUser = null) {
+    public function delete($data, $loggedUser = null)
+    {
         $id = $data['id'] ?? null;
         if (!$id) {
-            return Response::json(["success" => false, "message" => "ID inválido"], 400);
+            return Response::json(['success' => false, 'message' => 'ID inválido'], 400);
         }
         $this->adRepo->save(['id' => $id, 'status' => 'rejected', 'deleted_at' => date('Y-m-d H:i:s')]);
-        return Response::json(["success" => true, "message" => "Anúncio removido"]);
+        return Response::json(['success' => true, 'message' => 'Anúncio removido']);
     }
 
     /**
@@ -41,7 +46,8 @@ class AdController {
      * GET /api/ads?position=...&state=...&city=...&search=...
      * NÃO incrementa mais views automaticamente - views são contadas via frontend com IntersectionObserver
      */
-    public function list($data) {
+    public function list($data)
+    {
         // 1. Captura de dados (Mantendo a funcionalidade original)
         $position = $data['position'] ?? $_GET['position'] ?? '';
         $state    = $data['state']    ?? $_GET['state']    ?? '';
@@ -62,63 +68,65 @@ class AdController {
 
         // 3. Resposta para o Frontend (Mantendo compatibilidade com React)
         return Response::json([
-            "success" => true, 
-            "data" => $ads ?: [],
+            'success' => true,
+            'data' => $ads ?: [],
             // Mantém a funcionalidade de avisar o React para ativar fallback (ex: Google Adsense)
-            "show_fallback" => count($ads) < 2 
+            'show_fallback' => count($ads) < 2,
         ]);
     }
 
-   /**
-     * Registra o clique e processa o débito (Model de Impulsão/Créditos)
-     * Suporta POST ou GET /api/ads/click/:id?type=CLICK
-     */
-    public function recordClick($data) {
+    /**
+      * Registra o clique e processa o débito (Model de Impulsão/Créditos)
+      * Suporta POST ou GET /api/ads/click/:id?type=CLICK
+      */
+    public function recordClick($data)
+    {
         // 1. Captura o ID e o tipo de clique (pode ser CLICK ou WHATSAPP_CLICK)
         $id = $data['id'] ?? null;
         $type = $data['type'] ?? 'CLICK'; // Default para clique no banner
 
         if (!$id) {
-            return Response::json(["success" => false, "message" => "ID do anúncio ausente"]);
+            return Response::json(['success' => false, 'message' => 'ID do anúncio ausente']);
         }
 
         /** * 2. Chamamos o novo método unificado do Repository.
-         * Ele vai: 
+         * Ele vai:
          * - Incrementar o contador de cliques na tabela 'ads'
          * - Debitar os créditos do usuário dono do anúncio (valor dinâmico da site_settings)
          * - Gravar a transação no extrato
          */
         $result = $this->adRepo->incrementCounter($id, $type);
-        
+
         return Response::json([
-            "success" => $result,
-            "message" => $result ? "Interação registrada e processada" : "Erro ao processar interação ou saldo insuficiente"
+            'success' => $result,
+            'message' => $result ? 'Interação registrada e processada' : 'Erro ao processar interação ou saldo insuficiente',
         ]);
     }
 
     /**
      * Salva ou Atualiza Anúncio (Admin/Empresa)
      */
-    public function store($data, $loggedUser = null) {
+    public function store($data, $loggedUser = null)
+    {
         // Validar conteúdo com ContentFilter
         if (!empty($data['title']) && !ContentFilterService::isClean($data['title'])) {
             $reason = ContentFilterService::getReason($data['title']);
-            return Response::json(["success" => false, "message" => $reason ?: "O título contém conteúdo não permitido."], 400);
+            return Response::json(['success' => false, 'message' => $reason ?: 'O título contém conteúdo não permitido.'], 400);
         }
         if (!empty($data['description']) && !ContentFilterService::isClean($data['description'])) {
             $reason = ContentFilterService::getReason($data['description']);
-            return Response::json(["success" => false, "message" => $reason ?: "A descrição contém conteúdo não permitido."], 400);
+            return Response::json(['success' => false, 'message' => $reason ?: 'A descrição contém conteúdo não permitido.'], 400);
         }
 
         $action = $data['action'] ?? '';
-        
+
         if ($action === 'delete') {
             $id = $data['id'] ?? null;
             if ($id) {
                 $this->adRepo->save(['id' => $id, 'status' => 'rejected', 'deleted_at' => date('Y-m-d H:i:s')]);
-                return Response::json(["success" => true]);
+                return Response::json(['success' => true]);
             }
-            return Response::json(["success" => false, "message" => "ID inválido"]);
+            return Response::json(['success' => false, 'message' => 'ID inválido']);
         }
 
         // Update existing ad
@@ -126,42 +134,44 @@ class AdController {
             // Se houver upload de imagem
             if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
                 $uploadPath = $this->uploadFile($_FILES['image']);
-                if ($uploadPath) $data['image_url'] = $uploadPath;
+                if ($uploadPath) {
+                    $data['image_url'] = $uploadPath;
+                }
             }
-            
+
             $result = $this->adRepo->save($data);
             return Response::json([
-                "success" => $result,
-                "message" => $result ? "Anúncio atualizado com sucesso" : "Erro ao atualizar"
+                'success' => $result,
+                'message' => $result ? 'Anúncio atualizado com sucesso' : 'Erro ao atualizar',
             ]);
         }
 
         // Se for admin criando para outro usuário, usa o user_id informado
         // Se não, usa o usuário logado
         $targetUserId = $data['target_user_id'] ?? $data['user_id'] ?? null;
-        
+
         // Verifica se é admin (pode criar sem pagar)
         $role = strtolower($loggedUser['role'] ?? '');
         $isAdmin = in_array($role, ['admin', 'manager']);
-        
+
         // Verifica elegibilidade se for usuário logado ou user_id especificado (mas não para admin)
         $position = $data['position'] ?? 'sidebar';
         $featureKey = $this->getFeatureKeyFromPosition($position);
-        
+
         $checkUserId = $targetUserId ?? ($loggedUser['id'] ?? null);
-        
+
         // Admin pode criar anúncios sem restrição de pagamento
         if ($checkUserId && !$isAdmin) {
             $eligibility = $this->adRepo->checkAdPositionEligibility($checkUserId, $featureKey);
-            
+
             if (!$eligibility['allowed']) {
                 return Response::json([
-                    "success" => false,
-                    "message" => $eligibility['reason'],
-                    "requires_payment" => $eligibility['requires_payment'],
-                    "price_monthly" => $eligibility['price_monthly'] ?? 0,
-                    "price_per_use" => $eligibility['price_per_use'] ?? 0,
-                    "feature_name" => $eligibility['feature_name'] ?? ''
+                    'success' => false,
+                    'message' => $eligibility['reason'],
+                    'requires_payment' => $eligibility['requires_payment'],
+                    'price_monthly' => $eligibility['price_monthly'] ?? 0,
+                    'price_per_use' => $eligibility['price_per_use'] ?? 0,
+                    'feature_name' => $eligibility['feature_name'] ?? '',
                 ], 402);
             }
         }
@@ -169,34 +179,40 @@ class AdController {
         // Se houver upload de imagem
         if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
             $uploadPath = $this->uploadFile($_FILES['image']);
-            if ($uploadPath) $data['image_url'] = $uploadPath;
+            if ($uploadPath) {
+                $data['image_url'] = $uploadPath;
+            }
         }
 
         $result = $this->adRepo->save($data);
-        
+
         return Response::json([
-            "success" => (bool)$result,
-            "id" => $result,
-            "message" => $result ? "Anúncio salvo com sucesso" : "Erro ao salvar"
+            'success' => (bool)$result,
+            'id' => $result,
+            'message' => $result ? 'Anúncio salvo com sucesso' : 'Erro ao salvar',
         ]);
     }
 
     /**
      * Converte posição para feature_key (agora são iguais)
      */
-    private function getFeatureKeyFromPosition($position) {
+    private function getFeatureKeyFromPosition($position)
+    {
         return $position;
     }
 
-    private function uploadFile($file) {
-        $targetDir = __DIR__ . "/../../public/uploads/ads/";
-        if (!is_dir($targetDir)) mkdir($targetDir, 0777, true);
+    private function uploadFile($file)
+    {
+        $targetDir = __DIR__ . '/../../public/uploads/ads/';
+        if (!is_dir($targetDir)) {
+            mkdir($targetDir, 0777, true);
+        }
 
         $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
-        $fileName = time() . "_" . uniqid() . "." . $ext;
-        
+        $fileName = time() . '_' . uniqid() . '.' . $ext;
+
         if (move_uploaded_file($file['tmp_name'], $targetDir . $fileName)) {
-            return "uploads/ads/" . $fileName;
+            return 'uploads/ads/' . $fileName;
         }
         return null;
     }
@@ -204,30 +220,34 @@ class AdController {
     /**
      * Lista os anúncios da própria empresa (Painel de Gestão)
      */
-    public function listMyAds($data, $loggedUser) {
-        if (!$loggedUser) return Response::json(["success" => false, "message" => "Não autorizado"], 401);
+    public function listMyAds($data, $loggedUser)
+    {
+        if (!$loggedUser) {
+            return Response::json(['success' => false, 'message' => 'Não autorizado'], 401);
+        }
 
         $ads = $this->adRepo->getAdsByUserId($loggedUser['id']);
-        
+
         // Pegamos o saldo atual do usuário (do primeiro registro ou busca direta)
         $credits = !empty($ads) ? $ads[0]['ad_credits'] : 0;
 
         return Response::json([
-            "success" => true,
-            "data" => $ads,
-            "ad_credits" => $credits,
-            "message" => empty($ads) ? "Você ainda não possui anúncios." : ""
+            'success' => true,
+            'data' => $ads,
+            'ad_credits' => $credits,
+            'message' => empty($ads) ? 'Você ainda não possui anúncios.' : '',
         ]);
     }
 
     /**
      * Retorna os pacotes de anúncios para a tela de compra
      */
-    public function getPackages() {
+    public function getPackages()
+    {
         $packages = $this->adRepo->getPackages();
         return Response::json([
-            "success" => true,
-            "data" => $packages
+            'success' => true,
+            'data' => $packages,
         ]);
     }
 
@@ -235,9 +255,10 @@ class AdController {
      * Retorna relatório de anúncios do usuário logado
      * GET /api/ads/my-report?period=weekly|monthly|all
      */
-    public function getUserAdsReport($data, $loggedUser) {
+    public function getUserAdsReport($data, $loggedUser)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
-            return Response::json(["success" => false, "message" => "Sessão expirada"], 401);
+            return Response::json(['success' => false, 'message' => 'Sessão expirada'], 401);
         }
 
         $userId = $loggedUser['id'];
@@ -254,13 +275,13 @@ class AdController {
         try {
             // Estatísticas gerais dos anúncios do usuário
             $stmt = $this->db->prepare("
-                SELECT 
+                SELECT
                     COUNT(*) as total_ads,
                     SUM(views_count) as total_views,
                     SUM(clicks_count) as total_clicks,
                     SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_ads,
                     SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) as expired_ads
-                FROM ads 
+                FROM ads
                 WHERE user_id = ? $dateFilter
             ");
             $stmt->execute([$userId]);
@@ -268,15 +289,15 @@ class AdController {
 
             // Lista de anúncios com métricas
             $adsStmt = $this->db->prepare("
-                SELECT 
-                    id, title, position, status, views_count, clicks_count, 
+                SELECT
+                    id, title, position, status, views_count, clicks_count,
                     created_at, expires_at,
-                    CASE 
-                        WHEN clicks_count > 0 AND views_count > 0 
+                    CASE
+                        WHEN clicks_count > 0 AND views_count > 0
                         THEN ROUND((clicks_count / views_count) * 100, 2)
-                        ELSE 0 
+                        ELSE 0
                     END as ctr
-                FROM ads 
+                FROM ads
                 WHERE user_id = ? $dateFilter
                 ORDER BY views_count DESC, clicks_count DESC
                 LIMIT 50
@@ -291,23 +312,23 @@ class AdController {
             }
 
             return Response::json([
-                "success" => true,
-                "data" => [
-                    "period" => $period,
-                    "summary" => [
-                        "total_ads" => (int)($stats['total_ads'] ?? 0),
-                        "active_ads" => (int)($stats['active_ads'] ?? 0),
-                        "expired_ads" => (int)($stats['expired_ads'] ?? 0),
-                        "total_views" => (int)($stats['total_views'] ?? 0),
-                        "total_clicks" => (int)($stats['total_clicks'] ?? 0),
-                        "overall_ctr" => $overallCtr
+                'success' => true,
+                'data' => [
+                    'period' => $period,
+                    'summary' => [
+                        'total_ads' => (int)($stats['total_ads'] ?? 0),
+                        'active_ads' => (int)($stats['active_ads'] ?? 0),
+                        'expired_ads' => (int)($stats['expired_ads'] ?? 0),
+                        'total_views' => (int)($stats['total_views'] ?? 0),
+                        'total_clicks' => (int)($stats['total_clicks'] ?? 0),
+                        'overall_ctr' => $overallCtr,
                     ],
-                    "ads" => $ads
-                ]
+                    'ads' => $ads,
+                ],
             ]);
         } catch (\Throwable $e) {
-            error_log("ERRO getUserAdsReport: " . $e->getMessage());
-            return Response::json(["success" => false, "message" => "Erro ao carregar relatório"], 500);
+            error_log('ERRO getUserAdsReport: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao carregar relatório'], 500);
         }
     }
 }

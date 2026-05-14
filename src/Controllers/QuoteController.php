@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Controllers;
 
 use App\Core\Response;
@@ -7,37 +8,41 @@ use App\Repositories\UserRepository;
 use App\Services\CreditService;
 use Exception;
 
-class QuoteController {
+class QuoteController
+{
     private QuoteRepository $quoteRepo;
     private ?UserRepository $userRepo;
     private $db;
     private $creditService;
 
-    public function __construct($db, $userRepo = null) {
+    public function __construct($db, $userRepo = null)
+    {
         $this->db = $db;
         $this->quoteRepo = new QuoteRepository($db);
         $this->userRepo = $userRepo;
         $this->creditService = new CreditService($db);
     }
 
-    private function userHasModule(int $userId, string $moduleKey, string $featureKey = null): bool {
-        $sql = "SELECT id FROM user_modules 
-                WHERE user_id = :user_id AND module_key = :module_key 
+    private function userHasModule(int $userId, string $moduleKey, string $featureKey = null): bool
+    {
+        $sql = "SELECT id FROM user_modules
+                WHERE user_id = :user_id AND module_key = :module_key
                 AND status = 'active' AND (expires_at IS NULL OR expires_at > NOW())";
-        
+
         $params = [':user_id' => $userId, ':module_key' => $moduleKey];
-        
+
         if ($featureKey) {
-            $sql .= " AND plan_id IN (SELECT id FROM plans WHERE module_key = :module_key AND feature_key = :feature_key AND is_active = 1)";
+            $sql .= ' AND plan_id IN (SELECT id FROM plans WHERE module_key = :module_key AND feature_key = :feature_key AND is_active = 1)';
             $params[':feature_key'] = $featureKey;
         }
-        
+
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
         return (bool)$stmt->fetch();
     }
 
-    public function create($data, $loggedUser) {
+    public function create($data, $loggedUser)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -73,14 +78,14 @@ class QuoteController {
         // Verificar saldo e debitar
         if ($paymentRequired) {
             $balance = $this->creditService->getBalance($userId);
-            
+
             if ($balance < $amount) {
                 return Response::json([
                     'success' => false,
-                    'message' => "Saldo insuficiente. Você tem R$ " . number_format($balance, 2, ',', '.') . " na carteira. Custo: R$ " . number_format($amount, 2, ',', '.') . ".",
-                    "balance" => $balance,
-                    "required" => $amount,
-                    "code" => "INSUFFICIENT_BALANCE"
+                    'message' => 'Saldo insuficiente. Você tem R$ ' . number_format($balance, 2, ',', '.') . ' na carteira. Custo: R$ ' . number_format($amount, 2, ',', '.') . '.',
+                    'balance' => $balance,
+                    'required' => $amount,
+                    'code' => 'INSUFFICIENT_BALANCE',
                 ], 402);
             }
 
@@ -88,7 +93,7 @@ class QuoteController {
             if (!$debited) {
                 return Response::json([
                     'success' => false,
-                    'message' => "Erro ao debitar saldo. Tente novamente."
+                    'message' => 'Erro ao debitar saldo. Tente novamente.',
                 ], 500);
             }
         }
@@ -109,7 +114,7 @@ class QuoteController {
                 'pickup_date' => $data['pickup_date'] ?? null,
                 'description' => $data['description'] ?? null,
                 'expires_at' => date('Y-m-d H:i:s', strtotime("+$expiresDays days")),
-                'is_priority' => $isPriority ? 1 : 0
+                'is_priority' => $isPriority ? 1 : 0,
             ];
 
             $quoteId = $this->quoteRepo->create($quoteData);
@@ -121,15 +126,16 @@ class QuoteController {
                 'message' => 'Cotação criada com sucesso',
                 'data' => ['id' => $quoteId],
                 'cost' => $paymentRequired ? $amount : 0,
-                'balance' => $newBalance
+                'balance' => $newBalance,
             ], 201);
         } catch (Exception $e) {
-            error_log("Erro ao criar cotação: " . $e->getMessage());
+            error_log('Erro ao criar cotação: ' . $e->getMessage());
             return Response::json(['success' => false, 'message' => 'Erro ao criar cotação'], 500);
         }
     }
 
-    public function update($data, $loggedUser, $id) {
+    public function update($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -155,7 +161,8 @@ class QuoteController {
         }
     }
 
-    public function delete($data, $loggedUser, $id) {
+    public function delete($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -181,7 +188,8 @@ class QuoteController {
         }
     }
 
-    public function getMyQuotes($data, $loggedUser) {
+    public function getMyQuotes($data, $loggedUser)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -191,11 +199,12 @@ class QuoteController {
 
         return Response::json([
             'success' => true,
-            'data' => $quotes
+            'data' => $quotes,
         ]);
     }
 
-    public function getQuote($data, $loggedUser, $id) {
+    public function getQuote($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -210,11 +219,12 @@ class QuoteController {
 
         return Response::json([
             'success' => true,
-            'data' => $quote
+            'data' => $quote,
         ]);
     }
 
-    public function getOpenQuotes($data, $loggedUser) {
+    public function getOpenQuotes($data, $loggedUser)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -222,8 +232,8 @@ class QuoteController {
         $hasModule = $this->userHasModule($loggedUser['id'], 'quotes', 'receive_quotes');
         if (!$hasModule) {
             return Response::json([
-                'success' => false, 
-                'message' => 'Você precisa do módulo Receber Cotações para ver as cotações disponíveis'
+                'success' => false,
+                'message' => 'Você precisa do módulo Receber Cotações para ver as cotações disponíveis',
             ], 403);
         }
 
@@ -231,11 +241,12 @@ class QuoteController {
 
         return Response::json([
             'success' => true,
-            'data' => $quotes
+            'data' => $quotes,
         ]);
     }
 
-    public function respond($data, $loggedUser, $quoteId) {
+    public function respond($data, $loggedUser, $quoteId)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -256,8 +267,8 @@ class QuoteController {
         $hasModule = $this->userHasModule($loggedUser['id'], 'quotes', 'receive_quotes');
         if (!$hasModule) {
             return Response::json([
-                'success' => false, 
-                'message' => 'Você precisa do módulo Receber Cotações para responder'
+                'success' => false,
+                'message' => 'Você precisa do módulo Receber Cotações para responder',
             ], 403);
         }
 
@@ -272,21 +283,22 @@ class QuoteController {
                 'price' => $data['price'],
                 'delivery_time' => $data['delivery_time'] ?? null,
                 'conditions' => $data['conditions'] ?? null,
-                'notes' => $data['notes'] ?? null
+                'notes' => $data['notes'] ?? null,
             ]);
 
             return Response::json([
                 'success' => true,
                 'message' => 'Resposta enviada com sucesso',
-                'data' => ['id' => $responseId]
+                'data' => ['id' => $responseId],
             ], 201);
         } catch (Exception $e) {
-            error_log("Erro ao responder cotação: " . $e->getMessage());
+            error_log('Erro ao responder cotação: ' . $e->getMessage());
             return Response::json(['success' => false, 'message' => 'Erro ao enviar resposta'], 500);
         }
     }
 
-    public function acceptResponse($data, $loggedUser, $quoteId) {
+    public function acceptResponse($data, $loggedUser, $quoteId)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -312,7 +324,8 @@ class QuoteController {
         }
     }
 
-    public function getMyResponses($data, $loggedUser) {
+    public function getMyResponses($data, $loggedUser)
+    {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -321,13 +334,14 @@ class QuoteController {
 
         return Response::json([
             'success' => true,
-            'data' => $responses
+            'data' => $responses,
         ]);
     }
 
     // ==================== ADMIN METHODS ====================
 
-    public function adminList($data, $loggedUser) {
+    public function adminList($data, $loggedUser)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER', 'SUPPORT'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -336,30 +350,30 @@ class QuoteController {
         $type = $data['type'] ?? null;
         $search = $data['search'] ?? null;
 
-        $sql = "SELECT q.*, u.name as shipper_name, u.email as shipper_email,
+        $sql = 'SELECT q.*, u.name as shipper_name, u.email as shipper_email,
                 (SELECT COUNT(*) FROM quote_responses WHERE quote_id = q.id) as responses_count
                 FROM quotes q
                 LEFT JOIN users u ON q.shipper_id = u.id
-                WHERE 1=1";
-        
+                WHERE 1=1';
+
         $params = [];
 
         if ($status && $status !== 'all') {
-            $sql .= " AND q.status = :status";
+            $sql .= ' AND q.status = :status';
             $params[':status'] = $status;
         }
 
         if ($type && $type !== 'all') {
-            $sql .= " AND q.type = :type";
+            $sql .= ' AND q.type = :type';
             $params[':type'] = $type;
         }
 
         if ($search) {
-            $sql .= " AND (q.title LIKE :search OR u.name LIKE :search OR u.email LIKE :search)";
+            $sql .= ' AND (q.title LIKE :search OR u.name LIKE :search OR u.email LIKE :search)';
             $params[':search'] = "%$search%";
         }
 
-        $sql .= " ORDER BY q.created_at DESC";
+        $sql .= ' ORDER BY q.created_at DESC';
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
@@ -367,11 +381,12 @@ class QuoteController {
 
         return Response::json([
             'success' => true,
-            'data' => $quotes
+            'data' => $quotes,
         ]);
     }
 
-    public function adminGetQuote($data, $loggedUser, $id) {
+    public function adminGetQuote($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER', 'SUPPORT'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -386,11 +401,12 @@ class QuoteController {
 
         return Response::json([
             'success' => true,
-            'data' => $quote
+            'data' => $quote,
         ]);
     }
 
-    public function adminUpdateQuote($data, $loggedUser, $id) {
+    public function adminUpdateQuote($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -408,7 +424,8 @@ class QuoteController {
         }
     }
 
-    public function adminDeleteQuote($data, $loggedUser, $id) {
+    public function adminDeleteQuote($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -426,7 +443,8 @@ class QuoteController {
         }
     }
 
-    public function adminRespondQuote($data, $loggedUser, $quoteId) {
+    public function adminRespondQuote($data, $loggedUser, $quoteId)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -447,21 +465,22 @@ class QuoteController {
                 'price' => $data['price'],
                 'delivery_time' => $data['delivery_time'] ?? null,
                 'conditions' => $data['conditions'] ?? null,
-                'notes' => $data['notes'] ?? 'Resposta enviada pela administração'
+                'notes' => $data['notes'] ?? 'Resposta enviada pela administração',
             ]);
 
             return Response::json([
                 'success' => true,
                 'message' => 'Resposta enviada em nome da empresa',
-                'data' => ['id' => $responseId]
+                'data' => ['id' => $responseId],
             ], 201);
         } catch (Exception $e) {
-            error_log("Erro admin responder cotação: " . $e->getMessage());
+            error_log('Erro admin responder cotação: ' . $e->getMessage());
             return Response::json(['success' => false, 'message' => 'Erro ao enviar resposta'], 500);
         }
     }
 
-    public function adminCreate($data, $loggedUser) {
+    public function adminCreate($data, $loggedUser)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -501,7 +520,7 @@ class QuoteController {
                 'volume' => $data['volume'] ?? null,
                 'period_days' => $data['period_days'] ?? null,
                 'pickup_date' => $data['pickup_date'] ?? null,
-                'description' => $data['description'] ?? null
+                'description' => $data['description'] ?? null,
             ];
 
             $quoteId = $this->quoteRepo->create($quoteData);
@@ -509,10 +528,10 @@ class QuoteController {
             return Response::json([
                 'success' => true,
                 'message' => 'Cotação criada com sucesso',
-                'data' => ['id' => $quoteId]
+                'data' => ['id' => $quoteId],
             ], 201);
         } catch (Exception $e) {
-            error_log("Erro admin criar cotação: " . $e->getMessage());
+            error_log('Erro admin criar cotação: ' . $e->getMessage());
             return Response::json(['success' => false, 'message' => 'Erro ao criar cotação'], 500);
         }
     }

@@ -1,24 +1,30 @@
 <?php
+
 namespace App\Core;
 
-use PDO;
+use Exception;
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
-use Exception;
+use PDO;
 
-class Auth {
+class Auth
+{
     private static ?array $user = null;
     private static ?PDO $db = null;
 
-    private static function getDb(): PDO {
+    private static function getDb(): PDO
+    {
         if (self::$db === null) {
             self::$db = Database::getConnection();
         }
         return self::$db;
     }
 
-    public static function getAuthenticatedUser() {
-        if (self::$user !== null) return self::$user;
+    public static function getAuthenticatedUser()
+    {
+        if (self::$user !== null) {
+            return self::$user;
+        }
 
         $authHeader = self::getAuthorizationHeader();
 
@@ -30,14 +36,14 @@ class Auth {
             $token = $matches[1];
             $secret = $_ENV['JWT_SECRET'] ?? '';
             if (empty($secret)) {
-                error_log("JWT_SECRET não configurado no ambiente");
+                error_log('JWT_SECRET não configurado no ambiente');
                 return null;
             }
 
             $decoded = JWT::decode($token, new Key($secret, 'HS256'));
             $decodedArray = json_decode(json_encode($decoded), true);
             $userData = $decodedArray['data'] ?? $decodedArray;
-            
+
             if (!isset($userData['id']) && isset($decodedArray['sub'])) {
                 $userData['id'] = $decodedArray['sub'];
             }
@@ -48,29 +54,34 @@ class Auth {
 
             self::$user = $userData;
             return self::$user;
-            
+
         } catch (Exception $e) {
-            error_log("JWT Error: " . $e->getMessage());
+            error_log('JWT Error: ' . $e->getMessage());
             return null;
         }
     }
 
-    private static function getAuthorizationHeader() {
+    private static function getAuthorizationHeader()
+    {
         if (function_exists('getallheaders')) {
             $headers = getallheaders();
             foreach (['Authorization', 'authorization'] as $key) {
-                if (!empty($headers[$key])) return $headers[$key];
+                if (!empty($headers[$key])) {
+                    return $headers[$key];
+                }
             }
         }
         return $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
     }
 
-    public static function userId(): ?int {
+    public static function userId(): ?int
+    {
         $user = self::getAuthenticatedUser();
         return isset($user['id']) ? (int)$user['id'] : null;
     }
 
-    public static function hasRole($role): bool {
+    public static function hasRole($role): bool
+    {
         $user = self::getAuthenticatedUser();
         if (!$user || empty($user['role'])) {
             return false;
@@ -78,7 +89,8 @@ class Auth {
         return strtolower(trim($user['role'])) === strtolower(trim($role));
     }
 
-    public static function hasAnyRole(array $roles): bool {
+    public static function hasAnyRole(array $roles): bool
+    {
         foreach ($roles as $role) {
             if (self::hasRole($role)) {
                 return true;
@@ -87,7 +99,8 @@ class Auth {
         return false;
     }
 
-    public static function hasPermission(string $permission, ?int $userId = null): bool {
+    public static function hasPermission(string $permission, ?int $userId = null): bool
+    {
         $user = self::getAuthenticatedUser();
         if (!$user) {
             return false;
@@ -99,12 +112,12 @@ class Auth {
         }
 
         try {
-            $stmt = self::getDb()->prepare("
+            $stmt = self::getDb()->prepare('
                 SELECT u.role, u.permissions, r.id as role_id
                 FROM users u
                 LEFT JOIN roles r ON r.slug = u.role
                 WHERE u.id = ?
-            ");
+            ');
             $stmt->execute([$targetUserId]);
             $userData = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -122,12 +135,12 @@ class Auth {
             }
 
             if ($userData['role_id']) {
-                $stmt = self::getDb()->prepare("
+                $stmt = self::getDb()->prepare('
                     SELECT 1 FROM role_permissions rp
                     JOIN permissions p ON p.id = rp.permission_id
                     WHERE rp.role_id = ? AND p.slug = ?
                     LIMIT 1
-                ");
+                ');
                 $stmt->execute([$userData['role_id'], $permission]);
                 if ($stmt->fetch()) {
                     return true;
@@ -136,12 +149,13 @@ class Auth {
 
             return false;
         } catch (Exception $e) {
-            error_log("Permission check error: " . $e->getMessage());
+            error_log('Permission check error: ' . $e->getMessage());
             return false;
         }
     }
 
-    public static function hasModule(string $moduleKey, ?int $userId = null): bool {
+    public static function hasModule(string $moduleKey, ?int $userId = null): bool
+    {
         $user = self::getAuthenticatedUser();
         if (!$user) {
             return false;
@@ -154,11 +168,11 @@ class Auth {
 
         try {
             $db = self::getDb();
-            
-            $stmt = $db->prepare("
+
+            $stmt = $db->prepare('
                 SELECT status FROM user_modules
                 WHERE user_id = ? AND module_key = ?
-            ");
+            ');
             $stmt->execute([$targetUserId, $moduleKey]);
             $module = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -166,7 +180,7 @@ class Auth {
                 return true;
             }
 
-            $stmt = $db->prepare("SELECT role FROM users WHERE id = ?");
+            $stmt = $db->prepare('SELECT role FROM users WHERE id = ?');
             $stmt->execute([$targetUserId]);
             $userData = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -175,15 +189,15 @@ class Auth {
             }
 
             $role = strtolower($userData['role']);
-            
+
             if ($role === 'admin') {
                 return true;
             }
-            
-            $stmt = $db->prepare("
-                SELECT is_required, default_for FROM modules 
+
+            $stmt = $db->prepare('
+                SELECT is_required, default_for FROM modules
                 WHERE module_key = ?
-            ");
+            ');
             $stmt->execute([$moduleKey]);
             $moduleConfig = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -191,9 +205,9 @@ class Auth {
                 if ((int)$moduleConfig['is_required'] === 1) {
                     return true;
                 }
-                
-                $defaults = $moduleConfig['default_for'] 
-                    ? json_decode($moduleConfig['default_for'], true) 
+
+                $defaults = $moduleConfig['default_for']
+                    ? json_decode($moduleConfig['default_for'], true)
                     : [];
                 if (is_array($defaults) && in_array($role, $defaults)) {
                     return true;
@@ -202,12 +216,13 @@ class Auth {
 
             return false;
         } catch (Exception $e) {
-            error_log("Module check error: " . $e->getMessage());
+            error_log('Module check error: ' . $e->getMessage());
             return false;
         }
     }
 
-    public static function requireAuth(): array {
+    public static function requireAuth(): array
+    {
         $user = self::getAuthenticatedUser();
         if (!$user) {
             if (!headers_sent()) {
@@ -215,43 +230,45 @@ class Auth {
                 http_response_code(401);
             }
             echo json_encode([
-                'success' => false, 
-                'message' => 'Sessão inválida ou expirada.'
+                'success' => false,
+                'message' => 'Sessão inválida ou expirada.',
             ]);
             exit;
         }
         return $user;
     }
 
-    public static function requireRole($roles): array {
+    public static function requireRole($roles): array
+    {
         $user = self::requireAuth();
         $roles = is_array($roles) ? $roles : [$roles];
-        
+
         if (!self::hasAnyRole($roles)) {
             if (!headers_sent()) {
                 header('Content-Type: application/json');
                 http_response_code(403);
             }
             echo json_encode([
-                'success' => false, 
-                'message' => 'Acesso negado. Permissão insuficiente.'
+                'success' => false,
+                'message' => 'Acesso negado. Permissão insuficiente.',
             ]);
             exit;
         }
         return $user;
     }
 
-    public static function requirePermission(string $permission): array {
+    public static function requirePermission(string $permission): array
+    {
         $user = self::requireAuth();
-        
+
         if (!self::hasPermission($permission)) {
             if (!headers_sent()) {
                 header('Content-Type: application/json');
                 http_response_code(403);
             }
             echo json_encode([
-                'success' => false, 
-                'message' => 'Acesso negado. Você não tem permissão para esta ação.'
+                'success' => false,
+                'message' => 'Acesso negado. Você não tem permissão para esta ação.',
             ]);
             exit;
         }

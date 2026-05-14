@@ -1,7 +1,9 @@
 <?php
+
 namespace App\Core;
 
-class Response {
+class Response
+{
     /**
      * Envia resposta JSON padronizada.
      *
@@ -10,7 +12,8 @@ class Response {
      * - Erro:    { "success": false, "message": "..." }              (400+)
      * - Se $status omitido e success=false, assume 400 automaticamente.
      */
-    public static function json($data, $status = null) {
+    public static function json($data, $status = null)
+    {
         while (ob_get_level()) {
             ob_end_clean();
         }

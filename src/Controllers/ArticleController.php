@@ -1,17 +1,20 @@
 <?php
+
 namespace App\Controllers;
 
-use App\Core\Response;
 use App\Core\Auth;
+use App\Core\Response;
+use App\Repositories\ArticleAuthorRequestRepository;
 use App\Repositories\ArticleRepository;
 use App\Repositories\UserRepository;
-use App\Repositories\ArticleAuthorRequestRepository;
 
-class ArticleController {
+class ArticleController
+{
     private $articleRepo;
     private $userRepo;
 
-    public function __construct($db) {
+    public function __construct($db)
+    {
         $this->articleRepo = new ArticleRepository($db);
         $this->userRepo = new UserRepository($db);
     }
@@ -19,7 +22,8 @@ class ArticleController {
     /**
      * GET /api/articles - List published articles
      */
-    public function index($data) {
+    public function index($data)
+    {
         $filters = [
             'category_id' => $data['category_id'] ?? null,
             'category_slug' => $data['category_slug'] ?? null,
@@ -27,7 +31,7 @@ class ArticleController {
             'is_paid' => isset($data['paid']),
             'order' => $data['order'] ?? null,
             'limit' => min((int)($data['limit'] ?? 20), 50),
-            'offset' => (int)($data['offset'] ?? 0)
+            'offset' => (int)($data['offset'] ?? 0),
         ];
 
         $articles = $this->articleRepo->getAll($filters);
@@ -39,17 +43,18 @@ class ArticleController {
                 'articles' => $articles,
                 'total' => (int)$total,
                 'limit' => $filters['limit'],
-                'offset' => $filters['offset']
-            ]
+                'offset' => $filters['offset'],
+            ],
         ]);
     }
 
     /**
      * GET /api/articles/:slug - Get single article
      */
-    public function show($data) {
+    public function show($data)
+    {
         $slug = $data['slug'] ?? '';
-        
+
         if (empty($slug)) {
             return Response::json(['success' => false, 'message' => 'Slug é obrigatório'], 400);
         }
@@ -73,28 +78,29 @@ class ArticleController {
             'success' => true,
             'data' => [
                 'article' => $article,
-                'related' => $related
-            ]
+                'related' => $related,
+            ],
         ]);
     }
 
     /**
      * POST /api/articles - Create new article (author approved)
      */
-    public function store($data) {
+    public function store($data)
+    {
         $user = Auth::requireAuth();
-        
+
         // Check if user is approved author
         $authorRequestRepo = new ArticleAuthorRequestRepository($this->articleRepo->getDb());
         $isApprovedAuthor = $authorRequestRepo->isApprovedAuthor($user['id']);
-        
+
         if (!$isApprovedAuthor) {
             return Response::json([
-                'success' => false, 
-                'message' => 'Você precisa ser um autor aprovado para submeter artigos. <a href="/artigos/ser-autor" class="text-blue-600 underline">Solicitar acesso</a>'
+                'success' => false,
+                'message' => 'Você precisa ser um autor aprovado para submeter artigos. <a href="/artigos/ser-autor" class="text-blue-600 underline">Solicitar acesso</a>',
             ], 403);
         }
-        
+
         $required = ['title', 'content'];
         foreach ($required as $field) {
             if (empty($data[$field])) {
@@ -113,12 +119,12 @@ class ArticleController {
 
         // Check for banned words
         $bannedWords = $this->articleRepo->checkBannedWords($data['content']);
-        $hasHighSeverity = array_filter($bannedWords, fn($w) => $w['severity'] === 'high');
-        
+        $hasHighSeverity = array_filter($bannedWords, fn ($w) => $w['severity'] === 'high');
+
         if (!empty($hasHighSeverity)) {
             return Response::json([
-                'success' => false, 
-                'message' => 'Seu artigo contém palavras não permitidas e não pode ser submetido'
+                'success' => false,
+                'message' => 'Seu artigo contém palavras não permitidas e não pode ser submetido',
             ], 400);
         }
 
@@ -126,7 +132,7 @@ class ArticleController {
         $slug = $this->generateSlug($data['title']);
         $counter = 1;
         $originalSlug = $slug;
-        
+
         while ($this->articleRepo->slugExists($slug)) {
             $slug = $originalSlug . '-' . $counter;
             $counter++;
@@ -136,7 +142,7 @@ class ArticleController {
         $isPaid = !empty($data['is_paid']);
         $paidPlan = $data['paid_plan'] ?? null;
         $paidUntil = null;
-        
+
         if ($isPaid && $paidPlan) {
             $duration = ($paidPlan === 'premium') ? 60 : 30;
             $paidUntil = date('Y-m-d H:i:s', strtotime("+{$duration} days"));
@@ -155,25 +161,26 @@ class ArticleController {
             'paid_until' => $paidUntil,
             'paid_banner_image' => $data['paid_banner_image'] ?? null,
             'paid_banner_url' => $data['paid_banner_url'] ?? null,
-            'status' => 'pending'
+            'status' => 'pending',
         ]);
 
         return Response::json([
             'success' => true,
             'message' => 'Artigo submetido com sucesso! Aguarde a aprovação da equipe.',
-            'data' => ['article_id' => $articleId]
+            'data' => ['article_id' => $articleId],
         ], 201);
     }
 
     /**
      * PUT /api/articles/:id - Update article
      */
-    public function update($data) {
+    public function update($data)
+    {
         $user = Auth::requireAuth();
         $id = (int)$data['id'];
 
         $article = $this->articleRepo->findById($id);
-        
+
         if (!$article) {
             return Response::json(['success' => false, 'message' => 'Artigo não encontrado'], 404);
         }
@@ -186,8 +193,8 @@ class ArticleController {
         // Check rejection limit
         if ($article['rejection_count'] >= 3) {
             return Response::json([
-                'success' => false, 
-                'message' => 'Limite de reenvios atingido. Entre em contato com o suporte.'
+                'success' => false,
+                'message' => 'Limite de reenvios atingido. Entre em contato com o suporte.',
             ], 400);
         }
 
@@ -202,12 +209,12 @@ class ArticleController {
 
             // Check banned words again
             $bannedWords = $this->articleRepo->checkBannedWords($data['content']);
-            $hasHighSeverity = array_filter($bannedWords, fn($w) => $w['severity'] === 'high');
-            
+            $hasHighSeverity = array_filter($bannedWords, fn ($w) => $w['severity'] === 'high');
+
             if (!empty($hasHighSeverity)) {
                 return Response::json([
-                    'success' => false, 
-                    'message' => 'Seu artigo contém palavras não permitidas'
+                    'success' => false,
+                    'message' => 'Seu artigo contém palavras não permitidas',
                 ], 400);
             }
         }
@@ -227,7 +234,7 @@ class ArticleController {
             'slug' => $slug,
             'excerpt' => $data['excerpt'] ?? $article['excerpt'],
             'content' => $data['content'] ?? $article['content'],
-            'category_id' => $data['category_id'] ?? $article['category_id']
+            'category_id' => $data['category_id'] ?? $article['category_id'],
         ];
 
         // If was rejected, reset to pending
@@ -239,18 +246,19 @@ class ArticleController {
 
         return Response::json([
             'success' => true,
-            'message' => 'Artigo atualizado com sucesso!'
+            'message' => 'Artigo atualizado com sucesso!',
         ]);
     }
 
     /**
      * PUT /api/articles/:id/approve - Admin approves article
      */
-    public function approve($data) {
+    public function approve($data)
+    {
         Auth::requireRole('admin');
-        
+
         $id = (int)$data['id'];
-        
+
         $article = $this->articleRepo->findById($id);
         if (!$article) {
             return Response::json(['success' => false, 'message' => 'Artigo não encontrado'], 404);
@@ -260,19 +268,20 @@ class ArticleController {
 
         return Response::json([
             'success' => true,
-            'message' => 'Artigo publicado com sucesso!'
+            'message' => 'Artigo publicado com sucesso!',
         ]);
     }
 
     /**
      * PUT /api/articles/:id/reject - Admin rejects article
      */
-    public function reject($data) {
+    public function reject($data)
+    {
         Auth::requireRole('admin');
-        
+
         $id = (int)$data['id'];
         $reason = $data['reason'] ?? 'Artigo não atender aos critérios de publicação';
-        
+
         $article = $this->articleRepo->findById($id);
         if (!$article) {
             return Response::json(['success' => false, 'message' => 'Artigo não encontrado'], 404);
@@ -282,19 +291,20 @@ class ArticleController {
 
         return Response::json([
             'success' => true,
-            'message' => 'Artigo rejeitado'
+            'message' => 'Artigo rejeitado',
         ]);
     }
 
     /**
      * DELETE /api/articles/:id - Delete article
      */
-    public function destroy($data) {
+    public function destroy($data)
+    {
         $user = Auth::requireAuth();
         $id = (int)$data['id'];
 
         $article = $this->articleRepo->findById($id);
-        
+
         if (!$article) {
             return Response::json(['success' => false, 'message' => 'Artigo não encontrado'], 404);
         }
@@ -308,18 +318,19 @@ class ArticleController {
 
         return Response::json([
             'success' => true,
-            'message' => 'Artigo deletado'
+            'message' => 'Artigo deletado',
         ]);
     }
 
     /**
      * GET /api/articles/:id/stats - Get article stats
      */
-    public function stats($data) {
+    public function stats($data)
+    {
         Auth::requireRole('admin');
-        
+
         $id = (int)$data['id'];
-        
+
         $article = $this->articleRepo->findById($id);
         if (!$article) {
             return Response::json(['success' => false, 'message' => 'Artigo não encontrado'], 404);
@@ -330,23 +341,24 @@ class ArticleController {
             'data' => [
                 'views' => (int)$article['views_count'],
                 'clicks' => (int)$article['clicks_count'],
-                'ctr' => $article['views_count'] > 0 
-                    ? round(($article['clicks_count'] / $article['views_count']) * 100, 2) 
-                    : 0
-            ]
+                'ctr' => $article['views_count'] > 0
+                    ? round(($article['clicks_count'] / $article['views_count']) * 100, 2)
+                    : 0,
+            ],
         ]);
     }
 
     /**
      * GET /api/articles/admin/all - Get all articles for admin
      */
-    public function getAllAdmin($data) {
+    public function getAllAdmin($data)
+    {
         Auth::requireRole('admin');
-        
+
         $filters = [
             'status' => $data['status'] ?? null,
             'limit' => min((int)($data['limit'] ?? 50), 100),
-            'offset' => (int)($data['offset'] ?? 0)
+            'offset' => (int)($data['offset'] ?? 0),
         ];
 
         $articles = $this->articleRepo->getAllForAdmin($filters);
@@ -360,18 +372,19 @@ class ArticleController {
                     'total' => (int)$stats['total'],
                     'pending' => (int)$stats['pending'],
                     'published' => (int)$stats['published'],
-                    'rejected' => (int)$stats['rejected']
-                ]
-            ]
+                    'rejected' => (int)$stats['rejected'],
+                ],
+            ],
         ]);
     }
 
     /**
      * GET /api/articles/admin/pending - Get pending articles for admin
      */
-    public function getPending($data) {
+    public function getPending($data)
+    {
         Auth::requireRole('admin');
-        
+
         $limit = min((int)($data['limit'] ?? 20), 50);
         $offset = (int)($data['offset'] ?? 0);
 
@@ -382,30 +395,32 @@ class ArticleController {
             'success' => true,
             'data' => [
                 'articles' => $articles,
-                'total' => (int)$total
-            ]
+                'total' => (int)$total,
+            ],
         ]);
     }
 
     /**
      * GET /api/articles/me - Get my articles
      */
-    public function myArticles($data) {
+    public function myArticles($data)
+    {
         $user = Auth::requireAuth();
-        
+
         $status = $data['status'] ?? null;
         $articles = $this->articleRepo->getByAuthor($user['id'], $status);
 
         return Response::json([
             'success' => true,
-            'data' => ['articles' => $articles]
+            'data' => ['articles' => $articles],
         ]);
     }
 
     /**
      * Helper: Generate slug from title
      */
-    private function generateSlug($title) {
+    private function generateSlug($title)
+    {
         $slug = preg_replace('/[^a-zA-Z0-9\s-]/', '', $title);
         $slug = strtolower(trim($slug));
         $slug = preg_replace('/[\s-]+/', '-', $slug);

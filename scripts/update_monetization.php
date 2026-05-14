@@ -1,4 +1,5 @@
 <?php
+
 $pdo = new PDO('mysql:host=127.0.0.1;dbname=chama_frete_dev', 'root', '');
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
@@ -68,13 +69,13 @@ echo "\n=== MONETIZAÇÃO ATUALIZADA COM SUCESSO! ===\n\n";
 
 // Mostrar resultado
 echo "--- PLANOS ---\n";
-$stmt = $pdo->query("SELECT id, name, price, limit_ads_active, category FROM plans ORDER BY category, sort_order");
+$stmt = $pdo->query('SELECT id, name, price, limit_ads_active, category FROM plans ORDER BY category, sort_order');
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    echo "ID: " . $row['id'] . " | " . $row['name'] . " | R$" . $row['price'] . " | Limite: " . $row['limit_ads_active'] . " | " . $row['category'] . "\n";
+    echo 'ID: ' . $row['id'] . ' | ' . $row['name'] . ' | R$' . $row['price'] . ' | Limite: ' . $row['limit_ads_active'] . ' | ' . $row['category'] . "\n";
 }
 
 echo "\n--- PRICING RULES (ativos) ---\n";
-$stmt = $pdo->query("SELECT module_key, feature_key, feature_name, price_per_use, price_monthly, is_active FROM pricing_rules WHERE is_active = 1 ORDER BY module_key, feature_key");
+$stmt = $pdo->query('SELECT module_key, feature_key, feature_name, price_per_use, price_monthly, is_active FROM pricing_rules WHERE is_active = 1 ORDER BY module_key, feature_key');
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    echo $row['module_key'] . "." . $row['feature_key'] . " = R$" . $row['price_per_use'] . " (use) / R$" . $row['price_monthly'] . " (mês) - " . $row['feature_name'] . "\n";
+    echo $row['module_key'] . '.' . $row['feature_key'] . ' = R$' . $row['price_per_use'] . ' (use) / R$' . $row['price_monthly'] . ' (mês) - ' . $row['feature_name'] . "\n";
 }

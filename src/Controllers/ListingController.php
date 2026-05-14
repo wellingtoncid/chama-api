@@ -1,24 +1,27 @@
 <?php
+
 namespace App\Controllers;
 
-use PDO;
 use App\Core\Response;
 use App\Repositories\ListingRepository;
+use App\Services\AccessControlService;
+use App\Services\ContentFilterService;
 use App\Services\CreditService;
 use App\Services\GeocodingService;
-use App\Services\ContentFilterService;
 use App\Services\MercadoPagoService;
-use App\Services\AccessControlService;
+use PDO;
 
-class ListingController {
+class ListingController
+{
     private $repository;
     private $creditService;
     private $geocodingService;
-private $db;
+    private $db;
     private $mpService;
     private $accessControlService;
 
-    public function __construct($db) {
+    public function __construct($db)
+    {
         $this->db = $db;
         $this->repository = new ListingRepository($db);
         $this->creditService = new CreditService($db);
@@ -27,78 +30,82 @@ private $db;
         $this->accessControlService = new AccessControlService($db);
     }
 
-    private function uploadFile($file) {
+    private function uploadFile($file)
+    {
         if (!isset($file) || $file['error'] !== UPLOAD_ERR_OK) {
             return null;
         }
-        
-        $targetDir = __DIR__ . "/../../public/uploads/listings/";
-        if (!is_dir($targetDir)) mkdir($targetDir, 0777, true);
+
+        $targetDir = __DIR__ . '/../../public/uploads/listings/';
+        if (!is_dir($targetDir)) {
+            mkdir($targetDir, 0777, true);
+        }
 
         $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
         $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-        
+
         if (!in_array(strtolower($ext), $allowedExtensions)) {
             return null;
         }
 
-        $fileName = time() . "_" . uniqid() . "." . $ext;
-        
+        $fileName = time() . '_' . uniqid() . '.' . $ext;
+
         if (move_uploaded_file($file['tmp_name'], $targetDir . $fileName)) {
-            return "uploads/listings/" . $fileName;
+            return 'uploads/listings/' . $fileName;
         }
         return null;
     }
 
-public function create($data, $loggedUser = null) {
+    public function create($data, $loggedUser = null)
+    {
         // 0. Verificar limite de publicações (Access Control)
         if ($this->accessControlService && !empty($data['user_id'])) {
             $canPublish = $this->accessControlService->canPublish((int)$data['user_id'], 'marketplace');
             if (!$canPublish['allowed']) {
                 return Response::json([
-                    "success" => false, 
-                    "message" => $canPublish['reason'],
-                    "code" => "LIMIT_EXCEEDED",
-                    "used" => $canPublish['used'],
-                    "limit" => $canPublish['limit'],
-                    "remaining" => $canPublish['remaining']
+                    'success' => false,
+                    'message' => $canPublish['reason'],
+                    'code' => 'LIMIT_EXCEEDED',
+                    'used' => $canPublish['used'],
+                    'limit' => $canPublish['limit'],
+                    'remaining' => $canPublish['remaining'],
                 ], 402);
             }
         }
 
         // Validação básica
         if (empty($data['title']) || empty($data['user_id'])) {
-            return Response::json(["success" => false, "message" => "Dados insuficientes"], 400);
+            return Response::json(['success' => false, 'message' => 'Dados insuficientes'], 400);
         }
 
         // Validar conteúdo com ContentFilter
         if (!ContentFilterService::isClean($data['title'])) {
             $reason = ContentFilterService::getReason($data['title']);
-            return Response::json(["success" => false, "message" => $reason ?: "O título contém conteúdo não permitido."], 400);
+            return Response::json(['success' => false, 'message' => $reason ?: 'O título contém conteúdo não permitido.'], 400);
         }
         if (!empty($data['description']) && !ContentFilterService::isClean($data['description'])) {
             $reason = ContentFilterService::getReason($data['description']);
-            return Response::json(["success" => false, "message" => $reason ?: "A descrição contém conteúdo não permitido."], 400);
+            return Response::json(['success' => false, 'message' => $reason ?: 'A descrição contém conteúdo não permitido.'], 400);
         }
 
         // Validar acesso a afiliados se estiver tentando criar um anúncio afiliado
         $isAffiliate = !empty($data['is_affiliate']) && $data['is_affiliate'] == true;
         if ($isAffiliate && !$loggedUser) {
             return Response::json([
-                "success" => false, 
-                "message" => "Você precisa estar logado para criar anúncios de afiliados."
+                'success' => false,
+                'message' => 'Você precisa estar logado para criar anúncios de afiliados.',
             ], 401);
         }
-        
+
         if ($isAffiliate && !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
-            $stmt = $this->db->prepare("SELECT has_affiliate_access FROM users WHERE id = ?");
+            $stmt = $this->db->prepare('SELECT has_affiliate_access FROM users WHERE id = ?');
             $stmt->execute([(int)$data['user_id']]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
-            
+
             if (!$user || !$user['has_affiliate_access']) {
                 return Response::json([
-                    "success" => false, 
-                    "message" => "Você não tem acesso ao recurso de afiliados. Solicite acesso em 'Marketplace > Anúncios de Afiliado'."
+                    'success' => false,
+                    'message' => "Você não tem acesso ao recurso de afiliados. Solicite acesso em 'Marketplace > Anúncios de Afiliado'.",
                 ], 403);
             }
         }
@@ -125,9 +132,9 @@ public function create($data, $loggedUser = null) {
 
         try {
             $stmt = $this->db->prepare("
-                SELECT * FROM pricing_rules 
-                WHERE module_key = 'marketplace' 
-                AND feature_key = :feature_key 
+                SELECT * FROM pricing_rules
+                WHERE module_key = 'marketplace'
+                AND feature_key = :feature_key
                 AND is_active = 1
             ");
             $stmt->execute([':feature_key' => $featureKey]);
@@ -155,8 +162,8 @@ public function create($data, $loggedUser = null) {
         if ($freeLimit > 0) {
             try {
                 $stmt = $this->db->prepare("
-                    SELECT COUNT(*) as total FROM listings 
-                    WHERE user_id = :user_id 
+                    SELECT COUNT(*) as total FROM listings
+                    WHERE user_id = :user_id
                     AND MONTH(created_at) = MONTH(CURRENT_DATE())
                     AND YEAR(created_at) = YEAR(CURRENT_DATE())
                     AND status != 'rejected'
@@ -178,24 +185,24 @@ public function create($data, $loggedUser = null) {
         // Verificar saldo e debitar
         if ($paymentRequired) {
             $balance = $this->creditService->getBalance($userId);
-            
+
             if ($balance < $amount) {
                 return Response::json([
-                    "success" => false,
-                    "message" => "Saldo insuficiente. Você tem R$ " . number_format($balance, 2, ',', '.') . " na carteira. Custo: R$ " . number_format($amount, 2, ',', '.') . ".",
-                    "balance" => $balance,
-                    "required" => $amount,
-                    "free_limit" => $freeLimit,
-                    "used_free" => $usedFreeListings,
-                    "code" => "INSUFFICIENT_BALANCE"
+                    'success' => false,
+                    'message' => 'Saldo insuficiente. Você tem R$ ' . number_format($balance, 2, ',', '.') . ' na carteira. Custo: R$ ' . number_format($amount, 2, ',', '.') . '.',
+                    'balance' => $balance,
+                    'required' => $amount,
+                    'free_limit' => $freeLimit,
+                    'used_free' => $usedFreeListings,
+                    'code' => 'INSUFFICIENT_BALANCE',
                 ], 402);
             }
 
             $debited = $this->creditService->debit($userId, $amount, 'marketplace', $featureKey);
             if (!$debited) {
                 return Response::json([
-                    "success" => false,
-                    "message" => "Erro ao debitar saldo. Tente novamente."
+                    'success' => false,
+                    'message' => 'Erro ao debitar saldo. Tente novamente.',
                 ], 500);
             }
         }
@@ -203,10 +210,10 @@ public function create($data, $loggedUser = null) {
         $data['slug'] = $this->generateSlug($data['title']);
         $data['expires_at'] = date('Y-m-d H:i:s', strtotime("+$expiresDays days"));
         $data['is_featured'] = $isFeatured ? 1 : 0;
-        
+
         // Processar imagens (upload de arquivos)
         $imageUrls = [];
-        
+
         // Se houver uploads de arquivos (multipart/form-data)
         if (!empty($_FILES['images'])) {
             $files = $this->reArrayFiles($_FILES['images']);
@@ -217,7 +224,7 @@ public function create($data, $loggedUser = null) {
                 }
             }
         }
-        
+
         // Se houver URLs de imagens (JSON body)
         if (!empty($data['images']) && is_array($data['images'])) {
             foreach ($data['images'] as $img) {
@@ -226,21 +233,21 @@ public function create($data, $loggedUser = null) {
                 }
             }
         }
-        
+
         // Definir main_image como primeira imagem
-$data['main_image'] = $imageUrls[0] ?? null;
-        
+        $data['main_image'] = $imageUrls[0] ?? null;
+
         $listingId = $this->repository->save($data);
 
         // Registrar uso para controle de limite
         if ($this->accessControlService && $listingId && $userId) {
             $this->accessControlService->recordUsage($userId, 'marketplace', $listingId, 'listing');
         }
-        
+
         if (!$listingId) {
-            return Response::json(["success" => false, "message" => "Erro ao salvar anúncio"], 500);
+            return Response::json(['success' => false, 'message' => 'Erro ao salvar anúncio'], 500);
         }
-        
+
         // Geocodificar automaticamente pela cidade
         $city = $data['location_city'] ?? null;
         $state = $data['location_state'] ?? null;
@@ -250,7 +257,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
                 $this->repository->updateCoords($listingId, $coords['lat'], $coords['lng']);
             }
         }
-        
+
         // Salvar todas as imagens na tabela listing_images
         foreach ($imageUrls as $index => $url) {
             $this->repository->addImage($listingId, $url, $index);
@@ -259,17 +266,18 @@ $data['main_image'] = $imageUrls[0] ?? null;
         $newBalance = $paymentRequired ? $this->creditService->getBalance($userId) : null;
 
         return Response::json([
-            "success" => true, 
-            "id" => $listingId, 
-            "slug" => $data['slug'],
-            "cost" => $paymentRequired ? $amount : 0,
-            "balance" => $newBalance,
-            "message" => "Anúncio publicado com sucesso!",
-            "images" => $imageUrls
+            'success' => true,
+            'id' => $listingId,
+            'slug' => $data['slug'],
+            'cost' => $paymentRequired ? $amount : 0,
+            'balance' => $newBalance,
+            'message' => 'Anúncio publicado com sucesso!',
+            'images' => $imageUrls,
         ]);
     }
-    
-    private function reArrayFiles($files) {
+
+    private function reArrayFiles($files)
+    {
         $result = [];
         if (is_array($files['name'])) {
             $fileCount = count($files['name']);
@@ -280,7 +288,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
                         'type' => $files['type'][$i],
                         'tmp_name' => $files['tmp_name'][$i],
                         'error' => $files['error'][$i],
-                        'size' => $files['size'][$i]
+                        'size' => $files['size'][$i],
                     ];
                 }
             }
@@ -290,7 +298,8 @@ $data['main_image'] = $imageUrls[0] ?? null;
         return $result;
     }
 
-    public function getAll($data) {
+    public function getAll($data)
+    {
         $page = $data['page'] ?? 1;
         $filters = [
             'category' => $data['category'] ?? null,
@@ -306,50 +315,51 @@ $data['main_image'] = $imageUrls[0] ?? null;
         ];
 
         $listings = $this->repository->findActiveWithFilters($filters, $page);
-        
+
         // OTIMIZAÇÃO: Busca imagens de todos os anúncios em uma única query
         if (!empty($listings['items'])) {
             $ids = array_column($listings['items'], 'id');
             $allImages = $this->repository->getImagesForList($ids);
-            
+
             foreach ($listings['items'] as &$item) {
                 $item['images'] = $allImages[$item['id']] ?? [];
             }
         }
-        
-        return Response::json(["success" => true, "data" => $listings]);
+
+        return Response::json(['success' => true, 'data' => $listings]);
     }
 
-    public function getPublicBySlug($data) {
+    public function getPublicBySlug($data)
+    {
         $slug = $data['slug'] ?? '';
-        
+
         if (!$slug) {
-            return Response::json(["success" => false, "message" => "Slug não informado"], 400);
+            return Response::json(['success' => false, 'message' => 'Slug não informado'], 400);
         }
-        
+
         $listing = $this->repository->findBySlug($slug);
-        
+
         if (!$listing || $listing['status'] === 'deleted') {
-            return Response::json(["success" => false, "message" => "Anúncio não encontrado"], 404);
+            return Response::json(['success' => false, 'message' => 'Anúncio não encontrado'], 404);
         }
-        
+
         // Verificar se listing expirou
         if ($listing['expires_at'] && strtotime($listing['expires_at']) < time()) {
-            return Response::json(["success" => false, "message" => "Anúncio expirado"], 410);
+            return Response::json(['success' => false, 'message' => 'Anúncio expirado'], 410);
         }
-        
+
         $listing['gallery'] = $this->repository->getImages($listing['id']);
-        
+
         // Adicionar dados do vendedor
         $listing['total_listings'] = $this->repository->countUserListings($listing['user_id']);
-        
+
         // Buscar sugestões "podem interessar" (mesma categoria + mesmo estado + outros vendedores)
         $state = $listing['location_state'] ?? null;
         $related = $this->repository->findSuggestions(
-            $listing['id'], 
-            $listing['category'], 
+            $listing['id'],
+            $listing['category'],
             $state,
-            $listing['user_id'], 
+            $listing['user_id'],
             8
         );
         if (!empty($related)) {
@@ -360,34 +370,45 @@ $data['main_image'] = $imageUrls[0] ?? null;
             }
         }
         $listing['related'] = $related;
-        
-        return Response::json(["success" => true, "data" => $listing]);
+
+        $seo = [
+            'title' => strip_tags($listing['title'] ?? 'Anúncio no Chama Frete'),
+            'description' => "Confira \"{$listing['title']}\" por " . ($listing['price'] > 0 ? 'R$ ' . number_format((float)$listing['price'], 2, ',', '.') : 'valor a combinar') . " em {$listing['location_city']}-{$listing['location_state']} no Chama Frete Marketplace.",
+            'og_image' => $listing['main_image'] ?? ($listing['gallery'][0] ?? 'https://chamafrete.com.br/assets/img/share-default.jpg'),
+            'canonical' => 'https://chamafrete.com.br/anuncio/' . ($listing['slug'] ?? $listing['id']),
+            'type' => 'article',
+        ];
+
+        return Response::json(['success' => true, 'data' => $listing, 'seo' => $seo]);
     }
-    
-    public function getMyListings($data, $loggedUser) {
+
+    public function getMyListings($data, $loggedUser)
+    {
         if (!$loggedUser) {
-            return Response::json(["success" => false, "message" => "Unauthorized"], 401);
+            return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
-        
+
         $userId = $loggedUser['id'];
         $listings = $this->repository->findByUser($userId);
-        
-        return Response::json(["success" => true, "data" => $listings]);
+
+        return Response::json(['success' => true, 'data' => $listings]);
     }
 
-    public function getDetail($data) {
+    public function getDetail($data)
+    {
         $id = $data['id'] ?? 0;
         $item = $this->repository->findById($id);
-        
+
         if (!$item) {
-            return Response::json(["success" => false, "message" => "Anúncio não encontrado"], 404);
+            return Response::json(['success' => false, 'message' => 'Anúncio não encontrado'], 404);
         }
-        
+
         $item['gallery'] = $this->repository->getImages($id);
-        return Response::json(["success" => true, "data" => $item]);
+        return Response::json(['success' => true, 'data' => $item]);
     }
 
-    private function generateSlug($text) {
+    private function generateSlug($text)
+    {
         $text = preg_replace('~[^\pL\d]+~u', '-', $text);
         $text = iconv('utf-8', 'us-ascii//TRANSLIT', $text);
         $text = preg_replace('~[^-\w]+~', '', $text);
@@ -397,7 +418,8 @@ $data['main_image'] = $imageUrls[0] ?? null;
 
     // ==================== ADMIN METHODS ====================
 
-    public function adminList($data, $loggedUser) {
+    public function adminList($data, $loggedUser)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER', 'SUPPORT'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -406,7 +428,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
             'status' => $data['status'] ?? null,
             'category' => $data['category'] ?? null,
             'search' => $data['search'] ?? null,
-            'is_affiliate' => $data['is_affiliate'] ?? null
+            'is_affiliate' => $data['is_affiliate'] ?? null,
         ];
 
         $listings = $this->repository->findAll($filters);
@@ -414,7 +436,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
         if (!empty($listings)) {
             $ids = array_column($listings, 'id');
             $allImages = $this->repository->getImagesForList($ids);
-            
+
             foreach ($listings as &$item) {
                 $item['images'] = $allImages[$item['id']] ?? [];
                 if (empty($item['main_image']) && !empty($item['images'])) {
@@ -425,11 +447,12 @@ $data['main_image'] = $imageUrls[0] ?? null;
 
         return Response::json([
             'success' => true,
-            'data' => $listings
+            'data' => $listings,
         ]);
     }
 
-    public function adminGet($data, $loggedUser, $id) {
+    public function adminGet($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER', 'SUPPORT'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -443,11 +466,12 @@ $data['main_image'] = $imageUrls[0] ?? null;
 
         return Response::json([
             'success' => true,
-            'data' => $item
+            'data' => $item,
         ]);
     }
 
-    public function adminCreate($data, $loggedUser) {
+    public function adminCreate($data, $loggedUser)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -457,14 +481,16 @@ $data['main_image'] = $imageUrls[0] ?? null;
         }
 
         $data['slug'] = $this->generateSlug($data['title']);
-        
+
         // Processar imagens
         $imageUrls = [];
         if (!empty($_FILES['images'])) {
             $files = $this->reArrayFiles($_FILES['images']);
             foreach ($files as $file) {
                 $url = $this->uploadFile($file);
-                if ($url) $imageUrls[] = $url;
+                if ($url) {
+                    $imageUrls[] = $url;
+                }
             }
         } elseif (!empty($data['images']) && is_array($data['images'])) {
             foreach ($data['images'] as $img) {
@@ -474,26 +500,27 @@ $data['main_image'] = $imageUrls[0] ?? null;
             }
         }
         $data['main_image'] = $imageUrls[0] ?? null;
-        
+
         $listingId = $this->repository->save($data);
-        
+
         if (!$listingId) {
             return Response::json(['success' => false, 'message' => 'Erro ao salvar anúncio'], 500);
         }
-        
+
         foreach ($imageUrls as $index => $url) {
             $this->repository->addImage($listingId, $url, $index);
         }
 
         return Response::json([
-            'success' => true, 
-            'id' => $listingId, 
+            'success' => true,
+            'id' => $listingId,
             'slug' => $data['slug'],
-            'message' => 'Anúncio criado com sucesso'
+            'message' => 'Anúncio criado com sucesso',
         ], 201);
     }
 
-    public function update($data, $loggedUser, $id = null) {
+    public function update($data, $loggedUser, $id = null)
+    {
         if (!$loggedUser) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -501,11 +528,11 @@ $data['main_image'] = $imageUrls[0] ?? null;
         // Validar conteúdo com ContentFilter
         if (!empty($data['title']) && !ContentFilterService::isClean($data['title'])) {
             $reason = ContentFilterService::getReason($data['title']);
-            return Response::json(['success' => false, 'message' => $reason ?: "O título contém conteúdo não permitido."], 400);
+            return Response::json(['success' => false, 'message' => $reason ?: 'O título contém conteúdo não permitido.'], 400);
         }
         if (!empty($data['description']) && !ContentFilterService::isClean($data['description'])) {
             $reason = ContentFilterService::getReason($data['description']);
-            return Response::json(['success' => false, 'message' => $reason ?: "A descrição contém conteúdo não permitido."], 400);
+            return Response::json(['success' => false, 'message' => $reason ?: 'A descrição contém conteúdo não permitido.'], 400);
         }
 
         $listingId = $id ?? ($data['id'] ?? null);
@@ -515,7 +542,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
 
         $listingId = (int)$listingId;
         $existing = $this->repository->findById($listingId);
-        
+
         if (!$existing) {
             return Response::json(['success' => false, 'message' => 'Anúncio não encontrado'], 404);
         }
@@ -527,16 +554,16 @@ $data['main_image'] = $imageUrls[0] ?? null;
         // Validar acesso a afiliados se estiver tentando ativar afiliação
         $wantsAffiliate = array_key_exists('is_affiliate', $data) && $data['is_affiliate'] == true;
         $wasAffiliate = !empty($existing['is_affiliate']);
-        
+
         if ($wantsAffiliate && !$wasAffiliate && !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
-            $stmt = $this->db->prepare("SELECT has_affiliate_access FROM users WHERE id = ?");
+            $stmt = $this->db->prepare('SELECT has_affiliate_access FROM users WHERE id = ?');
             $stmt->execute([$loggedUser['id']]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
-            
+
             if (!$user || !$user['has_affiliate_access']) {
                 return Response::json([
-                    'success' => false, 
-                    'message' => 'Você não tem acesso ao recurso de afiliados. Solicite acesso em Marketplace.'
+                    'success' => false,
+                    'message' => 'Você não tem acesso ao recurso de afiliados. Solicite acesso em Marketplace.',
                 ], 403);
             }
         }
@@ -548,17 +575,19 @@ $data['main_image'] = $imageUrls[0] ?? null;
                 $files = $this->reArrayFiles($_FILES['images']);
                 foreach ($files as $file) {
                     $url = $this->uploadFile($file);
-                    if ($url) $imageUrls[] = $url;
+                    if ($url) {
+                        $imageUrls[] = $url;
+                    }
                 }
-                
+
                 // Atualizar main_image se houver nova imagem
                 if (!empty($imageUrls)) {
                     $data['main_image'] = $imageUrls[0];
                 }
             }
-            
+
             $this->repository->update($listingId, $data);
-            
+
             // Atualizar coordenadas se cidade mudou
             $city = $data['location_city'] ?? $existing['location_city'];
             $state = $data['location_state'] ?? $existing['location_state'];
@@ -568,21 +597,22 @@ $data['main_image'] = $imageUrls[0] ?? null;
                     $this->repository->updateCoords($listingId, $coords['lat'], $coords['lng']);
                 }
             }
-            
+
             // Adicionar novas imagens se houver
             if (!empty($imageUrls)) {
                 foreach ($imageUrls as $index => $url) {
                     $this->repository->addImage($listingId, $url, $existing['images_count'] ?? 0 + $index);
                 }
             }
-            
+
             return Response::json(['success' => true, 'message' => 'Anúncio atualizado']);
         } catch (Exception $e) {
             return Response::json(['success' => false, 'message' => 'Erro ao atualizar'], 500);
         }
     }
 
-    public function delete($data, $loggedUser, $id = null) {
+    public function delete($data, $loggedUser, $id = null)
+    {
         if (!$loggedUser) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -594,7 +624,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
 
         $listingId = (int)$listingId;
         $existing = $this->repository->findById($listingId);
-        
+
         if (!$existing) {
             return Response::json(['success' => false, 'message' => 'Anúncio não encontrado'], 404);
         }
@@ -611,7 +641,8 @@ $data['main_image'] = $imageUrls[0] ?? null;
         }
     }
 
-    public function getMyListing($data, $loggedUser) {
+    public function getMyListing($data, $loggedUser)
+    {
         if (!$loggedUser) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -622,13 +653,13 @@ $data['main_image'] = $imageUrls[0] ?? null;
         }
 
         $listing = $this->repository->findById((int)$listingId);
-        
+
         if (!$listing) {
             return Response::json(['success' => false, 'message' => 'Anúncio não encontrado'], 404);
         }
 
         $isAdmin = in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER']);
-        
+
         if ($listing['user_id'] !== $loggedUser['id'] && !$isAdmin) {
             return Response::json(['success' => false, 'message' => 'Você não tem permissão para ver este anúncio'], 403);
         }
@@ -638,14 +669,15 @@ $data['main_image'] = $imageUrls[0] ?? null;
         return Response::json(['success' => true, 'data' => $listing]);
     }
 
-    public function boost($data, $loggedUser) {
+    public function boost($data, $loggedUser)
+    {
         if (!$loggedUser) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
 
         $listingId = (int)($data['listing_id'] ?? 0);
         $type = $data['type'] ?? 'featured';
-        
+
         if (!$listingId) {
             return Response::json(['success' => false, 'message' => 'ID do anúncio não informado'], 400);
         }
@@ -663,15 +695,15 @@ $data['main_image'] = $imageUrls[0] ?? null;
         if (!in_array($type, $validTypes)) {
             $type = 'featured';
         }
-        
+
         $pricePerUse = 9.90;
         $durationDays = 7;
 
         try {
             $stmt = $this->db->prepare("
-                SELECT * FROM pricing_rules 
-                WHERE module_key = 'marketplace' 
-                AND feature_key = :key 
+                SELECT * FROM pricing_rules
+                WHERE module_key = 'marketplace'
+                AND feature_key = :key
                 AND is_active = 1
             ");
             $stmt->execute([':key' => $type]);
@@ -680,10 +712,11 @@ $data['main_image'] = $imageUrls[0] ?? null;
                 $pricePerUse = floatval($rule['price_per_use'] ?? 9.90);
                 $durationDays = intval($rule['duration_days'] ?? 7);
             }
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+        }
 
         if ($type === 'featured') {
-            if (!empty($listing['is_featured']) && !empty($listing['featured_until']) && 
+            if (!empty($listing['is_featured']) && !empty($listing['featured_until']) &&
                 strtotime($listing['featured_until']) > time()) {
                 return Response::json(['success' => false, 'message' => 'Anúncio já possui destaque ativo'], 400);
             }
@@ -692,7 +725,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
         $typeNames = [
             'featured' => 'Destaque Anúncio',
             'bump' => 'Prorrogar Anúncio',
-            'sponsored' => 'Anúncio Patrocinado'
+            'sponsored' => 'Anúncio Patrocinado',
         ];
 
         $paymentData = [
@@ -701,12 +734,12 @@ $data['main_image'] = $imageUrls[0] ?? null;
             'amount' => $pricePerUse,
             'title' => "Impulsionar Anúncio #{$listingId} - {$typeNames[$type]}",
             'duration_days' => $durationDays,
-            'description' => "{$durationDays} dias de visibilidade para {$listing['title']}"
+            'description' => "{$durationDays} dias de visibilidade para {$listing['title']}",
         ];
 
         try {
             $result = $this->mpService->createListingPromotionPreference($paymentData, $loggedUser['id']);
-            
+
             if (!empty($result['init_point'])) {
                 return Response::json([
                     'success' => true,
@@ -714,7 +747,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
                     'transaction_id' => $result['transaction_id'],
                     'amount' => $pricePerUse,
                     'type' => $type,
-                    'duration_days' => $durationDays
+                    'duration_days' => $durationDays,
                 ]);
             }
         } catch (\Exception $e) {
@@ -724,7 +757,8 @@ $data['main_image'] = $imageUrls[0] ?? null;
         return Response::json(['success' => false, 'message' => 'Erro ao gerar link de pagamento'], 500);
     }
 
-    public function extend($data, $loggedUser) {
+    public function extend($data, $loggedUser)
+    {
         if (!$loggedUser) {
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
@@ -750,9 +784,9 @@ $data['main_image'] = $imageUrls[0] ?? null;
 
         try {
             $stmt = $this->db->prepare("
-                SELECT * FROM pricing_rules 
-                WHERE module_key = 'marketplace' 
-                AND feature_key = 'bump' 
+                SELECT * FROM pricing_rules
+                WHERE module_key = 'marketplace'
+                AND feature_key = 'bump'
                 AND is_active = 1
             ");
             $stmt->execute();
@@ -761,7 +795,8 @@ $data['main_image'] = $imageUrls[0] ?? null;
                 $pricePerUse = floatval($rule['price_per_use'] ?? 6.90);
                 $durationDays = intval($rule['duration_days'] ?? 7);
             }
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+        }
 
         $amount = $pricePerUse;
         $paymentRequired = !$isAdmin;
@@ -773,7 +808,7 @@ $data['main_image'] = $imageUrls[0] ?? null;
                     'success' => false,
                     'message' => 'Saldo insuficiente',
                     'balance' => $balance,
-                    'required' => $amount
+                    'required' => $amount,
                 ], 402);
             }
             $debited = $this->creditService->debit($loggedUser['id'], $amount, 'marketplace', 'bump');
@@ -793,11 +828,12 @@ $data['main_image'] = $imageUrls[0] ?? null;
             'message' => "Anúncio prorrogado por mais {$durationDays} dia(s)!",
             'expires_at' => $expiresAt,
             'duration_days' => $durationDays,
-            'cost' => $paymentRequired ? $amount : 0
+            'cost' => $paymentRequired ? $amount : 0,
         ]);
     }
 
-    public function adminUpdate($data, $loggedUser, $id) {
+    public function adminUpdate($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }
@@ -815,7 +851,8 @@ $data['main_image'] = $imageUrls[0] ?? null;
         }
     }
 
-    public function adminDelete($data, $loggedUser, $id) {
+    public function adminDelete($data, $loggedUser, $id)
+    {
         if (!$loggedUser || !in_array(strtoupper($loggedUser['role'] ?? ''), ['ADMIN', 'MANAGER'])) {
             return Response::json(['success' => false, 'message' => 'Acesso restrito'], 403);
         }

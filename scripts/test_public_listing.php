@@ -1,10 +1,11 @@
 <?php
+
 require_once __DIR__ . '/../src/Core/Database.php';
 require_once __DIR__ . '/../src/Repositories/ListingRepository.php';
 require_once __DIR__ . '/../src/Controllers/ListingController.php';
 
-use App\Core\Database;
 use App\Controllers\ListingController;
+use App\Core\Database;
 
 $db = Database::getConnection();
 $controller = new ListingController($db);

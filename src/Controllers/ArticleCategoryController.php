@@ -1,47 +1,53 @@
 <?php
+
 namespace App\Controllers;
 
-use App\Core\Response;
 use App\Core\Auth;
+use App\Core\Response;
 use App\Repositories\ArticleCategoryRepository;
 
-class ArticleCategoryController {
+class ArticleCategoryController
+{
     private $categoryRepo;
 
-    public function __construct($db) {
+    public function __construct($db)
+    {
         $this->categoryRepo = new ArticleCategoryRepository($db);
     }
 
     /**
      * GET /api/article-categories - Get all categories
      */
-    public function getAll($data) {
+    public function getAll($data)
+    {
         $categories = $this->categoryRepo->getAll();
 
         return Response::json([
             'success' => true,
-            'data' => ['categories' => $categories]
+            'data' => ['categories' => $categories],
         ]);
     }
 
     /**
      * GET /api/article-categories/active - Get active categories
      */
-    public function getActive($data) {
+    public function getActive($data)
+    {
         $categories = $this->categoryRepo->getActive();
 
         return Response::json([
             'success' => true,
-            'data' => ['categories' => $categories]
+            'data' => ['categories' => $categories],
         ]);
     }
 
     /**
      * GET /api/admin/article-categories/:id - Get single category (admin)
      */
-    public function get($data) {
+    public function get($data)
+    {
         Auth::requireRole('admin');
-        
+
         $id = (int)$data['id'];
         $category = $this->categoryRepo->findById($id);
 
@@ -51,14 +57,15 @@ class ArticleCategoryController {
 
         return Response::json([
             'success' => true,
-            'data' => ['category' => $category]
+            'data' => ['category' => $category],
         ]);
     }
 
     /**
      * POST /api/admin/article-categories - Create category (admin)
      */
-    public function create($data) {
+    public function create($data)
+    {
         Auth::requireRole('admin');
 
         $required = ['name'];
@@ -78,20 +85,21 @@ class ArticleCategoryController {
             'name' => $data['name'],
             'slug' => $slug,
             'description' => $data['description'] ?? null,
-            'color' => $data['color'] ?? '#1f4ead'
+            'color' => $data['color'] ?? '#1f4ead',
         ]);
 
         return Response::json([
             'success' => true,
             'message' => 'Categoria criada com sucesso!',
-            'data' => ['category_id' => $categoryId]
+            'data' => ['category_id' => $categoryId],
         ], 201);
     }
 
     /**
      * PUT /api/admin/article-categories/:id - Update category (admin)
      */
-    public function update($data) {
+    public function update($data)
+    {
         Auth::requireRole('admin');
 
         $id = (int)$data['id'];
@@ -102,7 +110,7 @@ class ArticleCategoryController {
         }
 
         $updateData = [];
-        
+
         if (!empty($data['name'])) {
             $updateData['name'] = $data['name'];
             // Update slug if name changed
@@ -111,11 +119,11 @@ class ArticleCategoryController {
                 $updateData['slug'] = $newSlug;
             }
         }
-        
+
         if (isset($data['description'])) {
             $updateData['description'] = $data['description'];
         }
-        
+
         if (isset($data['color'])) {
             $updateData['color'] = $data['color'];
         }
@@ -124,14 +132,15 @@ class ArticleCategoryController {
 
         return Response::json([
             'success' => true,
-            'message' => 'Categoria atualizada com sucesso!'
+            'message' => 'Categoria atualizada com sucesso!',
         ]);
     }
 
     /**
      * DELETE /api/admin/article-categories/:id - Delete category (admin)
      */
-    public function delete($data) {
+    public function delete($data)
+    {
         Auth::requireRole('admin');
 
         $id = (int)$data['id'];
@@ -145,14 +154,15 @@ class ArticleCategoryController {
 
         return Response::json([
             'success' => true,
-            'message' => 'Categoria deletada com sucesso!'
+            'message' => 'Categoria deletada com sucesso!',
         ]);
     }
 
     /**
      * Helper: Generate slug
      */
-    private function generateSlug($name) {
+    private function generateSlug($name)
+    {
         $slug = preg_replace('/[^a-zA-Z0-9\s-]/', '', $name);
         $slug = strtolower(trim($slug));
         $slug = preg_replace('/[\s-]+/', '-', $slug);

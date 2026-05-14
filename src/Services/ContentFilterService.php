@@ -2,11 +2,11 @@
 
 namespace App\Services;
 
-class ContentFilterService {
-    
+class ContentFilterService
+{
     private static array $badWords = [
         // Ofensas
-        'idiota', 'imbecil', 'besta', 'besta feroz', 'otario', 'otário', 'palhaço', 
+        'idiota', 'imbecil', 'besta', 'besta feroz', 'otario', 'otário', 'palhaço',
         'estupido', 'estúpido', 'burro', 'babaca', 'cuzao', 'cuzao', 'fdp', 'filha da puta',
         'vsf', 'vsf', 'puta', 'merda', 'caralho', 'porra', 'desgraça', 'maldito', 'maldita',
         // Golpe e spam
@@ -18,7 +18,8 @@ class ContentFilterService {
         'lixo', 'nunca mais', 'nunca contrate', 'pior', 'pessimo', 'péssimo', 'horrivel', 'horrível',
     ];
 
-    public static function isClean(string $text): bool {
+    public static function isClean(string $text): bool
+    {
         if (empty(trim($text))) {
             return true;
         }
@@ -59,7 +60,8 @@ class ContentFilterService {
         return true;
     }
 
-    public static function getReason(string $text): ?string {
+    public static function getReason(string $text): ?string
+    {
         if (empty(trim($text))) {
             return null;
         }
@@ -69,14 +71,14 @@ class ContentFilterService {
         // Verificar palavras proibidas
         foreach (self::$badWords as $word) {
             if (str_contains($textLower, $word)) {
-                return "Conteúdo contém palavras não permitidas.";
+                return 'Conteúdo contém palavras não permitidas.';
             }
         }
 
         // Evitar excesso de links
         $linkCount = preg_match_all('/https?:\/\/|www\./i', $text);
         if ($linkCount > 2) {
-            return "Muitas tentativas de links detectados.";
+            return 'Muitas tentativas de links detectados.';
         }
 
         // Bloquear números de telefone
@@ -86,20 +88,21 @@ class ContentFilterService {
         ];
         foreach ($phonePatterns as $pattern) {
             if (preg_match($pattern, $text)) {
-                return "Números de telefone não são permitidos.";
+                return 'Números de telefone não são permitidos.';
             }
         }
 
         // Evitar excesso de números
         $digitCount = preg_match_all('/\d/', $text);
         if ($digitCount > 30) {
-            return "Excesso de números detectado.";
+            return 'Excesso de números detectado.';
         }
 
         return null;
     }
 
-    public static function sanitize(string $text): string {
+    public static function sanitize(string $text): string
+    {
         // Remove excesso de espaços
         $text = preg_replace('/\s+/', ' ', $text);
         return trim($text);

@@ -51,3 +51,5 @@ Desktop.ini
 /public/uploads/*
 # Mantém a pasta de uploads mas ignora os arquivos dentro dela
 !/public/uploads/.gitkeep
+# --- DEV FILES (nunca subir) ---
+/_dev/
