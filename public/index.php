@@ -49,7 +49,8 @@ try {
     // Prioridade: JSON > POST > GET
     $data = array_merge($_GET, $_POST, $jsonData);
     // Remove system-level parameters to prevent mass assignment
-    unset($data['endpoint'], $data['token'], $data['action']);
+    // 'action' parameter is preserved — used by controllers to determine operation (save/list/delete)
+    unset($data['endpoint'], $data['token']);
 
     // 5. Autenticação JWT
     $loggedUser = Auth::getAuthenticatedUser() ?: null;
@@ -77,6 +78,7 @@ try {
     // --- PERFIL DO USUÁRIO & SLUGS ---
     $router->get('/api/get-my-profile', 'UserController@getProfile');
     $router->get('/api/company/summary', 'UserController@getCompanySummary');
+    $router->get('/api/company/dashboard', 'DashboardController@getCompanyDashboard');
     $router->get('/api/user/modules', 'UserController@getUserModules');
     $router->post('/api/user/modules', 'UserController@toggleModule');
     $router->post('/api/user/modules/request', 'UserController@requestModuleAccess');

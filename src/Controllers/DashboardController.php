@@ -230,4 +230,173 @@ class DashboardController
             return Response::json(['success' => false, 'message' => 'Erro ao resetar widgets'], 500);
         }
     }
+
+    /**
+     * GET /api/company/dashboard - Dashboard principal da empresa
+     */
+    public function getCompanyDashboard($data = [])
+    {
+        $loggedUser = Auth::requireAuth();
+        $userId = (int)$loggedUser['id'];
+
+        try {
+            // 1. Fretes ativos + métricas agregadas
+            $stmt = $this->db->prepare("
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN f.status IN ('OPEN','PENDING') THEN 1 ELSE 0 END) as active_count,
+                    COALESCE(SUM(f.views_count), 0) as total_views,
+                    COALESCE(SUM(f.clicks_count), 0) as total_interests
+                FROM freights f
+                WHERE f.user_id = ?
+                  AND f.deleted_at IS NULL
+            ");
+            $stmt->execute([$userId]);
+            $freightStats = $stmt->fetch(PDO::FETCH_ASSOC);
+            $freightStats['total'] = (int)$freightStats['total'];
+            $freightStats['active_count'] = (int)$freightStats['active_count'];
+            $freightStats['total_views'] = (int)$freightStats['total_views'];
+            $freightStats['total_interests'] = (int)$freightStats['total_interests'];
+
+            // 2. Fretes por dia (últimos 7 dias)
+            $stmt = $this->db->prepare("
+                SELECT DATE(f.created_at) as day, COUNT(*) as count
+                FROM freights f
+                WHERE f.user_id = ?
+                  AND f.deleted_at IS NULL
+                  AND f.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                GROUP BY DATE(f.created_at)
+                ORDER BY day ASC
+            ");
+            $stmt->execute([$userId]);
+            $chartRaw = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $chartData = [];
+            for ($i = 6; $i >= 0; $i--) {
+                $date = date('Y-m-d', strtotime("-$i days"));
+                $dayLabel = $i === 0 ? 'Hoje' : ($i === 1 ? 'Ontem' : date('D', strtotime("-$i days")));
+                $found = 0;
+                foreach ($chartRaw as $row) {
+                    if ($row['day'] === $date) {
+                        $found = (int)$row['count'];
+                        break;
+                    }
+                }
+                $chartData[] = ['day' => $dayLabel, 'date' => $date, 'count' => $found];
+            }
+
+            // 3. Atividades recentes (últimos 5 fretes)
+            $stmt = $this->db->prepare("
+                SELECT id, product, origin_city, origin_state, dest_city, dest_state,
+                       status, views_count, clicks_count, created_at
+                FROM freights
+                WHERE user_id = ? AND deleted_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 5
+            ");
+            $stmt->execute([$userId]);
+            $recentFreights = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $recentActivity = array_map(function ($f) {
+                $statusLabel = match ($f['status']) {
+                    'OPEN' => 'publicado',
+                    'PENDING' => 'ativo',
+                    'FINISHED', 'CLOSED' => 'concluído',
+                    'CANCELLED' => 'cancelado',
+                    default => 'atualizado',
+                };
+                return [
+                    'type' => 'freight',
+                    'message' => "Frete #{$f['id']} ({$f['product']}) {$statusLabel} — {$f['origin_city']}/{$f['origin_state']} → {$f['dest_city']}/{$f['dest_state']}",
+                    'time' => date('d/m/Y H:i', strtotime($f['created_at'])),
+                    'created_at' => $f['created_at'],
+                    'freight_id' => (int)$f['id'],
+                    'views' => (int)$f['views_count'],
+                    'interests' => (int)$f['clicks_count'],
+                ];
+            }, $recentFreights);
+
+            // 4. Marketplace (se o módulo estiver ativo)
+            $stmt = $this->db->prepare("
+                SELECT COUNT(*) as total
+                FROM listings
+                WHERE user_id = ? AND deleted_at IS NULL AND status = 'active'
+            ");
+            $stmt->execute([$userId]);
+            $listingCount = (int)$stmt->fetchColumn();
+
+            $stmt = $this->db->prepare("
+                SELECT COALESCE(SUM(clicks_count), 0) as total_interests
+                FROM listings
+                WHERE user_id = ? AND deleted_at IS NULL
+            ");
+            $stmt->execute([$userId]);
+            $listingInterests = (int)$stmt->fetchColumn();
+
+            // 5. Publicidade (se o módulo estiver ativo)
+            $stmt = $this->db->prepare("
+                SELECT COUNT(*) as total, COALESCE(SUM(clicks_count), 0) as total_clicks
+                FROM ads
+                WHERE user_id = ? AND status IN ('active', 'pending')
+            ");
+            $stmt->execute([$userId]);
+            $adStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // 6. Consumo do plano
+            $usage = [
+                'freights' => ['used' => $freightStats['total'], 'limit' => 0, 'remaining' => 0],
+                'marketplace' => ['used' => $listingCount, 'limit' => 0, 'remaining' => 0],
+            ];
+
+            $stmt = $this->db->prepare("
+                SELECT p.limit_monthly, p.name as plan_name
+                FROM user_modules um
+                JOIN plans p ON p.id = um.plan_id
+                WHERE um.user_id = ? AND um.module_key = 'freights'
+                  AND um.status = 'active'
+                  AND (um.expires_at IS NULL OR um.expires_at >= NOW())
+                LIMIT 1
+            ");
+            $stmt->execute([$userId]);
+            $plan = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($plan && $plan['limit_monthly'] > 0) {
+                $usage['freights']['limit'] = (int)$plan['limit_monthly'];
+                $usage['freights']['remaining'] = max(0, (int)$plan['limit_monthly'] - $usage['freights']['used']);
+                $usage['freights']['plan_name'] = $plan['plan_name'];
+            } else {
+                $stmt = $this->db->prepare("
+                    SELECT free_limit FROM pricing_rules
+                    WHERE module_key = 'freights' AND feature_key = 'publish' AND is_active = 1
+                    LIMIT 1
+                ");
+                $stmt->execute();
+                $pricing = $stmt->fetch(PDO::FETCH_ASSOC);
+                $freeLimit = $pricing ? (int)$pricing['free_limit'] : 0;
+                $usage['freights']['limit'] = $freeLimit;
+                $usage['freights']['remaining'] = max(0, $freeLimit - $usage['freights']['used']);
+            }
+
+            return Response::json([
+                'success' => true,
+                'data' => [
+                    'freights' => $freightStats,
+                    'marketplace' => [
+                        'active_listings' => $listingCount,
+                        'total_interests' => $listingInterests,
+                    ],
+                    'advertising' => [
+                        'active_campaigns' => (int)$adStats['total'],
+                        'total_clicks' => (int)$adStats['total_clicks'],
+                    ],
+                    'usage' => $usage,
+                    'chart' => $chartData,
+                    'recent_activity' => $recentActivity,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            error_log("Erro ao carregar dashboard da empresa: " . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao carregar dashboard'], 500);
+        }
+    }
 }

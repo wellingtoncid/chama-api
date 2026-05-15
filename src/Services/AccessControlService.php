@@ -194,43 +194,60 @@ class AccessControlService
     }
 
     /**
-     * Conta publicações do mês atual
+     * Conta publicações do mês atual (com plano) ou ativas (sem plano)
      */
     private function getCurrentMonthUsage(int $userId, string $moduleKey): int
     {
         $usageMonth = (int)date('n');
         $usageYear = (int)date('Y');
 
-        // Mapear module_key para tabela
-        $tableMap = [
-            'freights' => 'freights',
-            'marketplace' => 'listings',
+        $moduleToCategory = [
+            'freights' => 'freight_subscription',
+            'marketplace' => 'marketplace_subscription',
         ];
+        $category = $moduleToCategory[$moduleKey] ?? $moduleKey;
+        $plan = $this->getActivePlan($userId, $category);
 
-        $table = $tableMap[$moduleKey] ?? $moduleKey;
-        $userColumn = 'user_id';
+        // Com plano ativo: conta publicações criadas no mês (limite mensal recorrente)
+        if ($plan) {
+            if ($moduleKey === 'freights') {
+                $sql = 'SELECT COUNT(*) as total FROM freights
+                       WHERE user_id = :user_id
+                       AND MONTH(created_at) = :month
+                       AND YEAR(created_at) = :year
+                       AND deleted_at IS NULL';
+            } else {
+                $sql = "SELECT COUNT(*) as total FROM listings
+                       WHERE user_id = :user_id
+                       AND MONTH(created_at) = :month
+                       AND YEAR(created_at) = :year
+                       AND status != 'rejected'";
+            }
 
-        // Verificar se é freight ou listing
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([
+                ':user_id' => $userId,
+                ':month' => $usageMonth,
+                ':year' => $usageYear,
+            ]);
+
+            return (int)($stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+        }
+
+        // Sem plano (free tier): conta itens ativos (limite de concorrência)
         if ($moduleKey === 'freights') {
             $sql = 'SELECT COUNT(*) as total FROM freights
                    WHERE user_id = :user_id
-                   AND MONTH(created_at) = :month
-                   AND YEAR(created_at) = :year
+                   AND status IN (\'OPEN\', \'PENDING\')
                    AND deleted_at IS NULL';
         } else {
             $sql = "SELECT COUNT(*) as total FROM listings
                    WHERE user_id = :user_id
-                   AND MONTH(created_at) = :month
-                   AND YEAR(created_at) = :year
-                   AND status != 'rejected'";
+                   AND status = 'active'";
         }
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([
-            ':user_id' => $userId,
-            ':month' => $usageMonth,
-            ':year' => $usageYear,
-        ]);
+        $stmt->execute([':user_id' => $userId]);
 
         return (int)($stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
     }

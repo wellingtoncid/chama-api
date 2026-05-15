@@ -29,7 +29,26 @@ class FreightRepository
 
             $params = [];
             $accountId = $filters['account_id'] ?? null;
-            $where = " WHERE f.deleted_at IS NULL AND f.status = 'OPEN'";
+            $statusFilter = isset($filters['status']) ? $filters['status'] : null;
+
+            // Owner viewing own freights: no status filter (show all)
+            // Public listing: only show OPEN
+            if ($userId !== null && (int)$userId > 0) {
+                $where = " WHERE f.deleted_at IS NULL";
+            } else {
+                $where = " WHERE f.deleted_at IS NULL AND f.status = 'OPEN'";
+            }
+
+            if ($statusFilter) {
+                $statuses = array_map('trim', explode(',', $statusFilter));
+                $placeholders = [];
+                foreach ($statuses as $i => $s) {
+                    $key = ":status_{$i}";
+                    $placeholders[] = $key;
+                    $params[$key] = $s;
+                }
+                $where .= ' AND f.status IN (' . implode(',', $placeholders) . ')';
+            }
 
             // 1. Filtros de Escopo
             if ($accountId) {

@@ -938,12 +938,30 @@ class AdminRepository
     {
         $action = $data['action'] ?? 'list';
         if ($action === 'save') {
+            $slug = $data['slug'] ?? '';
+            if (empty($slug)) {
+                $slug = strtolower(preg_replace('/[^a-zA-Z0-9]+/', '-', $data['name'] ?? ''));
+            }
+
             if (isset($data['id']) && $data['id'] > 0) {
-                $sql = 'UPDATE plans SET name=?, type=?, price=?, duration_days=?, description=? WHERE id=?';
-                return $this->db->prepare($sql)->execute([$data['name'], $data['type'], $data['price'], $data['duration_days'], $data['description'], $data['id']]);
+                $sql = 'UPDATE plans SET name=?, slug=?, type=?, price=?, limit_monthly=?, duration_days=?, category=?, description=?, features=?, is_highlighted=?, sort_order=?, active=? WHERE id=?';
+                return $this->db->prepare($sql)->execute([
+                    $data['name'], $slug, $data['type'], $data['price'],
+                    (int)($data['limit_monthly'] ?? 0), (int)($data['duration_days'] ?? 30),
+                    $data['category'] ?? '', $data['description'] ?? '',
+                    $data['features'] ?? '', (int)($data['is_highlighted'] ?? 0),
+                    (int)($data['sort_order'] ?? 0), (int)($data['active'] ?? 1),
+                    $data['id']
+                ]);
             } else {
-                $sql = 'INSERT INTO plans (name, type, price, duration_days, description, active) VALUES (?, ?, ?, ?, ?, 1)';
-                return $this->db->prepare($sql)->execute([$data['name'], $data['type'], $data['price'], $data['duration_days'], $data['description']]);
+                $sql = 'INSERT INTO plans (name, slug, type, price, limit_monthly, duration_days, category, description, features, is_highlighted, sort_order, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)';
+                return $this->db->prepare($sql)->execute([
+                    $data['name'], $slug, $data['type'], $data['price'],
+                    (int)($data['limit_monthly'] ?? 0), (int)($data['duration_days'] ?? 30),
+                    $data['category'] ?? '', $data['description'] ?? '',
+                    $data['features'] ?? '', (int)($data['is_highlighted'] ?? 0),
+                    (int)($data['sort_order'] ?? 0)
+                ]);
             }
         }
         return $this->db->query('SELECT * FROM plans ORDER BY price ASC')->fetchAll(PDO::FETCH_ASSOC);

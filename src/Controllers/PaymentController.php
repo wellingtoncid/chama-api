@@ -435,16 +435,19 @@ class PaymentController
             ]);
             $transactionId = $this->db->lastInsertId();
 
-            // Se não há token do MercadoPago, não pode processar
+            // Se não há token do MercadoPago, ativa direto em modo dev
             $mpToken = $_ENV['MP_ACCESS_TOKEN'] ?? getenv('MP_ACCESS_TOKEN') ?: '';
 
             if (empty($mpToken)) {
-                // Remove transação pendente
-                $this->db->prepare('DELETE FROM transactions WHERE id = ?')->execute([$transactionId]);
+                // Modo dev: ativa o módulo diretamente sem pagamento
+                $this->activateModuleForUser($userId, $moduleKey, $transactionId);
+
                 return Response::json([
-                    'success' => false,
-                    'message' => 'Gateway de pagamento não configurado. Entre em contato com o suporte.',
-                ], 500);
+                    'success' => true,
+                    'message' => 'Assinatura ativada (modo desenvolvimento)',
+                    'amount' => $amount,
+                    'expires_at' => date('Y-m-d H:i:s', strtotime('+30 days')),
+                ]);
             }
 
             // Cria preferência no MercadoPago
@@ -536,14 +539,17 @@ class PaymentController
                 ]);
             }
 
-            // Se não há token do MercadoPago, não pode processar
+            // Se não há token do MercadoPago, ativa direto em modo dev
             $mpToken = $_ENV['MP_ACCESS_TOKEN'] ?? getenv('MP_ACCESS_TOKEN') ?: '';
 
             if (empty($mpToken)) {
+                $this->activatePlan($userId, $plan);
                 return Response::json([
-                    'success' => false,
-                    'message' => 'Gateway de pagamento não configurado. Entre em contato com o suporte.',
-                ], 500);
+                    'success' => true,
+                    'message' => 'Plano ativado (modo desenvolvimento)',
+                    'payment_not_required' => true,
+                    'plan_name' => $plan['name'],
+                ]);
             }
 
             // Com MP token → cria preferência (MercadoPagoService cria a transação)
@@ -1567,5 +1573,14 @@ class PaymentController
         }
 
         return Response::json(['success' => false, 'message' => 'Erro ao gerar link de pagamento'], 500);
+    }
+
+    private function activateModuleForUser(int $userId, string $moduleKey, int $transactionId): void
+    {
+        // Atualiza transação como aprovada
+        $this->db->prepare('UPDATE transactions SET status = ? WHERE id = ?')->execute(['approved', $transactionId]);
+
+        // Ativa módulo para o usuário
+        $this->paymentRepo->activateModule($userId, $moduleKey);
     }
 }

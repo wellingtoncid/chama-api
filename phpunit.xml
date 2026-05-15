@@ -24,7 +24,7 @@
     <coverage>
         <report>
             <html outputDirectory=".coverage/html" lowUpperBound="50" highLowerBound="80"/>
-            <clover outputDirectory=".coverage"/>
+            <clover outputFile=".coverage/coverage.xml"/>
             <text outputFile="php://stdout" showOnlySummary="true"/>
         </report>
     </coverage>
