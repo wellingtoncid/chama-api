@@ -9,6 +9,7 @@ class MercadoPagoService
 {
     private $accessToken;
     private $baseUrl;
+    private $frontendUrl;
     private $paymentRepo;
     private $webhookSecret;
 
@@ -59,10 +60,10 @@ class MercadoPagoService
         $backUrlFailure = $this->frontendUrl . '/payment/failure';
         $backUrlPending = $this->frontendUrl . '/payment/pending';
 
-        // Só adiciona notification_url se for URL pública (não localhost)
         $notificationUrl = null;
         if (!preg_match('/localhost|127\.0\.0\.1/i', $this->baseUrl)) {
-            $notificationUrl = $this->baseUrl . '/api/webhook-mp';
+            $webhookPath = $data['webhook_path'] ?? 'payments';
+            $notificationUrl = $this->baseUrl . '/api/' . $webhookPath . '/webhook';
         }
 
         $payload = [
@@ -202,7 +203,8 @@ class MercadoPagoService
 
         $notificationUrl = null;
         if (!preg_match('/localhost|127\.0\.0\.1/i', $this->baseUrl)) {
-            $notificationUrl = $this->baseUrl . '/api/webhook-mp';
+            $webhookPath = $data['webhook_path'] ?? 'payments';
+            $notificationUrl = $this->baseUrl . '/api/' . $webhookPath . '/webhook';
         }
 
         $payload = [
@@ -269,7 +271,8 @@ class MercadoPagoService
 
         $notificationUrl = null;
         if (!preg_match('/localhost|127\.0\.0\.1/i', $this->baseUrl)) {
-            $notificationUrl = $this->baseUrl . '/api/webhook-mp';
+            $webhookPath = $data['webhook_path'] ?? 'payments';
+            $notificationUrl = $this->baseUrl . '/api/' . $webhookPath . '/webhook';
         }
 
         $payload = [

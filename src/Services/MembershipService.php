@@ -32,6 +32,9 @@ class MembershipService
 
     public function getHistory(int $userId)
     {
+        // Expira transações pendentes abandonadas (mais de 24h sem confirmação)
+        $this->repo->expireAbandonedPending($userId);
+
         return $this->repo->getTransactions($userId);
     }
 }

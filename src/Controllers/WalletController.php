@@ -61,31 +61,25 @@ class WalletController
         try {
             $userId = $loggedUser['id'];
 
-            $stmt = $this->db->prepare("
-                INSERT INTO transactions
-                (user_id, module_key, feature_key, transaction_type, amount, status, gateway_payload, created_at)
-                VALUES (:user_id, 'wallet', 'recharge', 'wallet_recharge', :amount, 'pending', :payload, NOW())
-            ");
-            $stmt->execute([
-                ':user_id' => $userId,
-                ':amount' => $amount,
-                ':payload' => json_encode(['description' => 'Recarga de carteira via PIX']),
-            ]);
-            $transactionId = $this->db->lastInsertId();
-
             $mpData = [
                 'title' => 'Recarga Carteira - Chama Frete',
                 'amount' => $amount,
                 'plan_id' => null,
                 'billing_cycle' => 'one_time',
+                'module_key' => 'wallet',
+                'feature_key' => 'recharge',
+                'webhook_path' => 'wallet',
             ];
 
             $result = $this->mpService->createPreference($mpData, $userId);
 
             if (!empty($result['init_point'])) {
+                $transactionId = $result['transaction_id'];
+
                 $stmt = $this->db->prepare('
                     UPDATE transactions
-                    SET external_reference = :ext_ref
+                    SET transaction_type = \'wallet_recharge\',
+                        external_reference = :ext_ref
                     WHERE id = :id
                 ');
                 $stmt->execute([

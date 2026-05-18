@@ -198,6 +198,7 @@ class AffiliateController
             return Response::json([
                 'success' => true,
                 'has_access' => false,
+                'requests_enabled' => true,
                 'message' => 'Usuário não logado',
             ]);
         }
@@ -208,9 +209,15 @@ class AffiliateController
         $stmt->execute([$userId]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        $stmtSetting = $this->db->prepare("SELECT setting_value FROM site_settings WHERE setting_key = 'affiliate_requests_enabled'");
+        $stmtSetting->execute();
+        $setting = $stmtSetting->fetch(PDO::FETCH_ASSOC);
+        $requestsEnabled = $setting ? $setting['setting_value'] !== '0' : true;
+
         return Response::json([
             'success' => true,
             'has_access' => (bool)($user['has_affiliate_access'] ?? false),
+            'requests_enabled' => $requestsEnabled,
         ]);
     }
 }

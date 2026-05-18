@@ -162,9 +162,43 @@ class CreditService
      */
     public function getTransactions(int $userId, int $limit = 50): array
     {
+        // Expira transações pendentes abandonadas (mais de 24h)
+        $stmt = $this->db->prepare("
+            UPDATE transactions
+            SET status = 'cancelled',
+                gateway_error_message = 'Pagamento abandonado (expirado automaticamente)',
+                updated_at = NOW()
+            WHERE user_id = :user_id
+              AND status = 'pending'
+              AND created_at < NOW() - INTERVAL 24 HOUR
+        ");
+        $stmt->execute([':user_id' => $userId]);
+
+        // Remove duplicatas órfãs (antigo bug: WalletController criava 2 transações)
+        // Cancela pendentes sem transaction_type que são redundantes com wallet_recharge
+        // Nenhuma transação legítima tem transaction_type+module_key+feature_key tudo NULL
+        $stmt = $this->db->prepare("
+            UPDATE transactions
+            SET status = 'cancelled',
+                gateway_error_message = 'Transação duplicada (limpeza automática)',
+                updated_at = NOW()
+            WHERE user_id = :user_id
+              AND status = 'pending'
+              AND (transaction_type IS NULL OR transaction_type = '')
+              AND (module_key IS NULL OR module_key = '')
+              AND (feature_key IS NULL OR feature_key = '')
+        ");
+        $stmt->execute([':user_id' => $userId]);
+
         $stmt = $this->db->prepare('
             SELECT * FROM transactions
             WHERE user_id = :user_id
+              AND NOT (
+                status = \'pending\'
+                AND (transaction_type IS NULL OR transaction_type = \'\')
+                AND (module_key IS NULL OR module_key = \'\')
+                AND (feature_key IS NULL OR feature_key = \'\')
+              )
             ORDER BY created_at DESC
             LIMIT :limit
         ');

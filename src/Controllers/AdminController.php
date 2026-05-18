@@ -267,7 +267,7 @@ class AdminController
                     'vehicle_types', 'body_types', 'equipment_types', 'certification_types',
                     'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from_email', 'smtp_from_name',
                     'review_auto_approve_high_rating', 'review_auto_approve_threshold', 'review_auto_reject_bad_words',
-                    'report_auto_dismiss_duplicate',
+                    'report_auto_dismiss_duplicate', 'affiliate_requests_enabled',
                 ];
                 foreach ($allowedKeys as $settingKey) {
                     if (isset($data[$settingKey])) {
@@ -291,11 +291,13 @@ class AdminController
 
     private function upsertSetting(string $key, $value): void
     {
-        $stmt = $this->db->prepare('SELECT setting_key FROM site_settings WHERE setting_key = ?');
-        $stmt->execute([$key]);
-        if ($stmt->fetch()) {
-            $this->db->prepare('UPDATE site_settings SET setting_value = ?, updated_at = NOW() WHERE setting_key = ?')->execute([(string)$value, $key]);
-        }
+        $stringValue = is_bool($value) ? ($value ? '1' : '0') : (string)$value;
+        $stmt = $this->db->prepare(
+            'INSERT INTO site_settings (setting_key, setting_value, updated_at)
+             VALUES (?, ?, NOW())
+             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = NOW()'
+        );
+        $stmt->execute([$key, $stringValue]);
     }
 
     // ===================== MATCHING DE MOTORISTAS =====================

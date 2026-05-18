@@ -552,6 +552,7 @@ class UserController
                     'description' => $mod['description'],
                     'status' => $isActive ? 'active' : ($userMod ? $userMod['status'] : 'inactive'),
                     'is_active' => $isActive,
+                    'plan_id' => $userMod['plan_id'] ?? null,
                     'activated_at' => $userMod['activated_at'] ?? ($isActive ? date('Y-m-d H:i:s') : null),
                     'expires_at' => $userMod['expires_at'] ?? null,
                     'is_allowed' => $isAllowed,
@@ -629,6 +630,20 @@ class UserController
                     ON DUPLICATE KEY UPDATE status = 'active', activated_at = NOW()
                 ");
                 $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+
+                // Copia o plan_id da transação aprovada mais recente para este módulo
+                $stmtPlan = $this->db->prepare("
+                    UPDATE user_modules um
+                    JOIN transactions t ON t.user_id = um.user_id AND t.plan_id IS NOT NULL
+                    SET um.plan_id = t.plan_id
+                    WHERE um.user_id = :uid AND um.module_key = :mk
+                      AND t.status = 'approved'
+                      AND t.module_key = :mk2
+                    ORDER BY t.approved_at DESC
+                    LIMIT 1
+                ");
+                $stmtPlan->execute([':uid' => $userId, ':mk' => $moduleKey, ':mk2' => $moduleKey]);
+
                 $message = 'Módulo ativado com sucesso!';
             } else {
                 $stmt = $this->db->prepare("UPDATE user_modules SET status = 'inactive' WHERE user_id = :user_id AND module_key = :module_key");

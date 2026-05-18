@@ -603,7 +603,7 @@ class PaymentController
             'freight_subscription' => 'freights',
             'marketplace_subscription' => 'marketplace',
             'advertising' => 'advertiser',
-            default => null
+            default => 'freights'
         };
 
         // Planos 'one_time' não expiram
@@ -749,7 +749,7 @@ class PaymentController
                                 'freight_subscription' => 'freights',
                                 'marketplace_subscription' => 'marketplace',
                                 'advertising' => 'advertiser',
-                                default => null
+                                default => 'freights'
                             };
 
                             if ($moduleKey) {
