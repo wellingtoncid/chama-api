@@ -50,7 +50,7 @@ class SupportController
         if ($this->repo->addTicketMessage($ticketId, $loggedUser['id'], $message, true)) {
             $ticket = $this->repo->getTicketById($ticketId);
             // Notifica o motorista/empresa
-            $this->notif->notify($ticket['user_id'], 'Suporte: Novo retorno', 'Você recebeu uma resposta em seu chamado.');
+            $this->notif->notify($ticket['user_id'], 'Suporte: Novo retorno', 'Você recebeu uma resposta em seu chamado.', '/dashboard/suporte');
 
             return Response::json(['success' => true]);
         }
@@ -455,7 +455,7 @@ class SupportController
                 $ticket = $ticketStmt->fetch(PDO::FETCH_ASSOC);
 
                 if ($ticket) {
-                    $this->notif->notify($ticket['user_id'], 'Ticket atualizado', 'Seu chamado foi atualizado pelo suporte.');
+                    $this->notif->notify($ticket['user_id'], 'Ticket atualizado', 'Seu chamado foi atualizado pelo suporte.', '/dashboard/suporte');
                 }
 
                 return Response::json(['success' => true, 'message' => 'Ticket atualizado']);

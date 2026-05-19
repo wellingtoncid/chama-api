@@ -53,9 +53,15 @@ class ChatRepository
         return $this->db->prepare($sql)->execute([$roomId, $userId]);
     }
 
+    public function markAsUnread($roomId, $userId)
+    {
+        $sql = 'UPDATE chat_messages SET is_read = 0
+                WHERE room_id = ? AND sender_id != ?';
+        return $this->db->prepare($sql)->execute([$roomId, $userId]);
+    }
+
     public function getUserRooms($userId)
     {
-        // SQL Otimizado: Traz o contato, última mensagem, data e contador de não lidas
         $sql = 'SELECT
                     r.id as room_id,
                     r.freight_id,
@@ -71,16 +77,23 @@ class ChatRepository
                 JOIN freights f ON r.freight_id = f.id
                 JOIN users u ON (CASE WHEN r.buyer_id = ? THEN r.seller_id = u.id ELSE r.buyer_id = u.id END)
                 LEFT JOIN user_profiles up ON u.id = up.user_id
+                LEFT JOIN user_profiles my_up ON my_up.user_id = ?
                 LEFT JOIN (
                     SELECT room_id, message, created_at
                     FROM chat_messages
                     WHERE id IN (SELECT MAX(id) FROM chat_messages GROUP BY room_id)
                 ) lm ON r.id = lm.room_id
-                WHERE r.buyer_id = ? OR r.seller_id = ?
+                WHERE (r.buyer_id = ? OR r.seller_id = ?)
+                  AND r.status = \'active\'
+                  AND NOT (
+                    (r.buyer_id = ? AND r.hidden_by_buyer = 1)
+                    OR (r.seller_id = ? AND r.hidden_by_seller = 1)
+                  )
+                  AND (my_up.blocked_list IS NULL OR FIND_IN_SET(u.id, my_up.blocked_list) = 0)
                 ORDER BY lm.created_at DESC';
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$userId, $userId, $userId, $userId]);
+        $stmt->execute([$userId, $userId, $userId, $userId, $userId, $userId, $userId]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 
@@ -91,14 +104,55 @@ class ChatRepository
                     r.freight_id,
                     f.product as freight_product,
                     CASE WHEN r.buyer_id = ? THEN r.seller_id ELSE r.buyer_id END as contact_id,
-                    CASE WHEN r.buyer_id = ? THEN u_seller.name ELSE u_buyer.name END as contact_name
+                    CASE WHEN r.buyer_id = ? THEN u_seller.name ELSE u_buyer.name END as contact_name,
+                    CASE WHEN r.buyer_id = ? THEN up_seller.avatar_url ELSE up_buyer.avatar_url END as contact_avatar,
+                    CASE WHEN r.buyer_id = ? THEN up_seller.slug ELSE up_buyer.slug END as contact_slug
                 FROM chat_rooms r
                 JOIN freights f ON r.freight_id = f.id
                 JOIN users u_seller ON r.seller_id = u_seller.id
                 JOIN users u_buyer ON r.buyer_id = u_buyer.id
+                LEFT JOIN user_profiles up_seller ON u_seller.id = up_seller.user_id
+                LEFT JOIN user_profiles up_buyer ON u_buyer.id = up_buyer.user_id
                 WHERE r.id = ? AND (r.buyer_id = ? OR r.seller_id = ?)';
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$userId, $userId, $roomId, $userId, $userId]);
+        $stmt->execute([$userId, $userId, $userId, $userId, $roomId, $userId, $userId]);
         return $stmt->fetch(\PDO::FETCH_ASSOC);
+    }
+
+    public function hideRoom($roomId, $userId)
+    {
+        $sql = 'UPDATE chat_rooms SET
+                    hidden_by_buyer = IF(buyer_id = ?, 1, hidden_by_buyer),
+                    hidden_by_seller = IF(seller_id = ?, 1, hidden_by_seller)
+                WHERE id = ?';
+        return $this->db->prepare($sql)->execute([$userId, $userId, $roomId]);
+    }
+
+    public function blockUser($userId, $blockedUserId)
+    {
+        $sql = "UPDATE user_profiles
+                SET blocked_list = CONCAT_WS(',', blocked_list, ?)
+                WHERE user_id = ?
+                  AND (blocked_list IS NULL OR FIND_IN_SET(?, blocked_list) = 0)";
+        return $this->db->prepare($sql)->execute([$blockedUserId, $userId, $blockedUserId]);
+    }
+
+    public function unblockUser($userId, $blockedUserId)
+    {
+        $sql = "UPDATE user_profiles
+                SET blocked_list = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', blocked_list, ','), CONCAT(',', ?, ','), ','))
+                WHERE user_id = ?";
+        return $this->db->prepare($sql)->execute([$blockedUserId, $userId]);
+    }
+
+    public function isBlocked($userId, $blockedUserId)
+    {
+        $sql = 'SELECT blocked_list FROM user_profiles WHERE user_id = ?';
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if (!$row || !$row['blocked_list']) return false;
+        $blocked = explode(',', $row['blocked_list']);
+        return in_array((string)$blockedUserId, $blocked);
     }
 }

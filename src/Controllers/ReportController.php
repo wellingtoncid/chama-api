@@ -28,8 +28,14 @@ class ReportController
         $targetId = (int)($data['target_id'] ?? 0);
         $reason = $data['reason'] ?? '';
         $description = trim($data['description'] ?? '');
+        $images = $data['images'] ?? [];
 
-        $validReasons = ['spam', 'harassment', 'fake', 'fraud', 'inappropriate', 'other'];
+        $validReasons = [
+            'spam', 'harassment', 'fake', 'fraud', 'inappropriate',
+            'sold', 'wrong_location', 'wrong_price', 'wrong_category',
+            'duplicate', 'illegal', 'suspicious_payment', 'external_deal',
+            'meet_in_person', 'fake_documents', 'third_party', 'other',
+        ];
         $validTargets = ['user', 'review', 'freight', 'listing', 'message'];
 
         if (!in_array($reason, $validReasons)) {
@@ -64,6 +70,13 @@ class ReportController
             }
         }
 
+        if (!empty($images) && is_array($images)) {
+            $images = array_slice($images, 0, 3);
+            $images = json_encode($images);
+        } else {
+            $images = null;
+        }
+
         try {
             $reportId = $this->repo->create([
                 'reporter_id' => $loggedUser['id'],
@@ -72,6 +85,7 @@ class ReportController
                 'target_id' => $targetId,
                 'reason' => $reason,
                 'description' => $description,
+                'images' => $images,
             ]);
 
             if ($reportId) {
@@ -243,6 +257,46 @@ class ReportController
             'success' => true,
             'message' => 'Denúncia descartada.',
         ]);
+    }
+
+    public function uploadTemp($data, $loggedUser = null)
+    {
+        if (!$loggedUser) {
+            return Response::json(['success' => false, 'message' => 'Não autorizado.'], 401);
+        }
+
+        if (!isset($_FILES['file'])) {
+            return Response::json(['success' => false, 'message' => 'Nenhum arquivo enviado.'], 400);
+        }
+
+        $file = $_FILES['file'];
+        $allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        $maxSize = 5 * 1024 * 1024;
+
+        if (!in_array($file['type'], $allowedTypes)) {
+            return Response::json(['success' => false, 'message' => 'Tipo de arquivo não permitido. Use JPG, PNG ou WEBP.'], 400);
+        }
+
+        if ($file['size'] > $maxSize) {
+            return Response::json(['success' => false, 'message' => 'Arquivo muito grande. Máx. 5MB.'], 400);
+        }
+
+        $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $fileName = 'report_' . $loggedUser['id'] . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+        $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/uploads/reports/';
+
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+
+        if (move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
+            return Response::json([
+                'success' => true,
+                'url' => '/uploads/reports/' . $fileName,
+            ]);
+        }
+
+        return Response::json(['success' => false, 'message' => 'Erro ao fazer upload.'], 500);
     }
 
     public function delete($data, $loggedUser = null)

@@ -242,7 +242,7 @@ class AdminUserController
                 $actionLabel = $status == 1 ? 'Verificado/Aprovado' : 'Removida Verificação';
                 $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'VERIFY_USER', "$actionLabel usuário #$id", $id, 'USER');
                 if ($status == 1) {
-                    $this->notif->notify($id, 'Perfil Verificado!', 'Sua conta foi aprovada manualmente pelo administrador.');
+                    $this->notif->notify($id, 'Perfil Verificado!', 'Sua conta foi aprovada manualmente pelo administrador.', '/dashboard/perfil');
                 }
                 return Response::json(['success' => true]);
             }

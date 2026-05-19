@@ -15,8 +15,8 @@ class ReportRepository
 
     public function create($data)
     {
-        $sql = "INSERT INTO reports (reporter_id, target_user_id, target_type, target_id, reason, description, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW())";
+        $sql = "INSERT INTO reports (reporter_id, target_user_id, target_type, target_id, reason, description, images, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NOW())";
         $stmt = $this->db->prepare($sql);
         $result = $stmt->execute([
             $data['reporter_id'],
@@ -25,6 +25,7 @@ class ReportRepository
             $data['target_id'],
             $data['reason'],
             $data['description'] ?? null,
+            $data['images'] ?? null,
         ]);
 
         return $result ? $this->db->lastInsertId() : false;

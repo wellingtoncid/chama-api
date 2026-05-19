@@ -311,6 +311,9 @@ try {
     $router->get('/api/chat/rooms', 'ChatController@listRooms');
     $router->get('/api/chat/room/:id', 'ChatController@getRoom');
     $router->post('/api/chat/init', 'ChatController@initChat');
+    $router->post('/api/chat/mark-unread', 'ChatController@markUnread');
+    $router->post('/api/chat/delete', 'ChatController@deleteChat');
+    $router->post('/api/chat/block', 'ChatController@blockUser');
 
     // --- SUPORTE (USUÁRIOS) ---
     $router->get('/api/my-tickets', 'SupportController@myTickets');
@@ -543,6 +546,7 @@ try {
 
     // Reports / Denúncias (usuários)
     $router->post('/api/reports', 'ReportController@create');
+    $router->post('/api/upload-temp', 'ReportController@uploadTemp');
     $router->get('/api/my-reports', 'ReportController@listMine');
 
     // Affiliate / Afiliados (Marketplace)

@@ -17,9 +17,6 @@ class ChatController
         $this->notification = new NotificationService($db);
     }
 
-    /**
-     * Envia mensagem e notifica o destinatário
-     */
     public function sendMessage($data, $user)
     {
         if (!$user) {
@@ -36,7 +33,6 @@ class ChatController
 
         $msgId = $this->repo->saveMessage($roomId, $user['id'], $message);
 
-        // Dispara notificação push/interna
         $this->notification->send(
             (int)$receiverId,
             'Nova mensagem de ' . ($user['name'] ?? 'Usuário'),
@@ -53,9 +49,6 @@ class ChatController
         ]);
     }
 
-    /**
-     * Carrega o histórico e limpa o contador de não lidas
-     */
     public function getMessages($data, $user)
     {
         if (!$user) {
@@ -69,8 +62,6 @@ class ChatController
         }
 
         $messages = $this->repo->getMessages($roomId);
-
-        // Sincroniza o status de lido
         $this->repo->markAsRead($roomId, $user['id']);
 
         return Response::json([
@@ -79,9 +70,6 @@ class ChatController
         ]);
     }
 
-    /**
-     * Lista o "Inbox" do usuário com contagem de não lidas
-     */
     public function listRooms($data, $user)
     {
         if (!$user) {
@@ -97,9 +85,6 @@ class ChatController
         ]);
     }
 
-    /**
-     * Retorna informações de uma sala específica
-     */
     public function getRoom($data, $user)
     {
         if (!$user) {
@@ -119,25 +104,6 @@ class ChatController
         return Response::json(['success' => true, 'data' => $room]);
     }
 
-    /**
-     * Permite ocultar conversas da lista principal
-     */
-    public function archiveRoom($data, $user)
-    {
-        if (!$user) {
-            return Response::json(['success' => false], 401);
-        }
-
-        $roomId = $data['room_id'] ?? null;
-        // Precisamos adicionar o método archive no Repository se for usar
-        // $success = $this->repo->updateRoomStatus($roomId, 'archived');
-
-        return Response::json(['success' => true, 'message' => 'Conversa arquivada']);
-    }
-
-    /**
-     * Inicializa ou recupera uma conversa entre motorista e anunciante
-     */
     public function initChat($data, $user)
     {
         if (!$user) {
@@ -145,24 +111,74 @@ class ChatController
         }
 
         $freightId = $data['freight_id'] ?? null;
-        $sellerId = $data['seller_id'] ?? null; // ID do dono do frete
-        $buyerId = $user['id']; // O motorista logado
+        $sellerId = $data['seller_id'] ?? null;
+        $buyerId = $user['id'];
 
         if (!$freightId || !$sellerId) {
             return Response::json(['success' => false, 'message' => 'Dados inválidos'], 400);
         }
 
-        // Evita que o motorista abra chat com ele mesmo
         if ($buyerId == $sellerId) {
             return Response::json(['success' => false, 'message' => 'Você é o dono deste frete'], 400);
         }
 
-        // Usa o método que já existe no seu Repository para buscar ou criar a sala
         $roomId = $this->repo->getOrCreateRoom($freightId, $buyerId, $sellerId);
 
         return Response::json([
             'success' => true,
             'room_id' => $roomId,
         ]);
+    }
+
+    public function markUnread($data, $user)
+    {
+        if (!$user) {
+            return Response::json(['success' => false], 401);
+        }
+
+        $roomId = $data['room_id'] ?? null;
+        if (!$roomId) {
+            return Response::json(['success' => false, 'message' => 'Sala não informada'], 400);
+        }
+
+        $this->repo->markAsUnread($roomId, $user['id']);
+
+        return Response::json(['success' => true, 'message' => 'Mensagens marcadas como não lidas']);
+    }
+
+    public function deleteChat($data, $user)
+    {
+        if (!$user) {
+            return Response::json(['success' => false], 401);
+        }
+
+        $roomId = $data['room_id'] ?? null;
+        if (!$roomId) {
+            return Response::json(['success' => false, 'message' => 'Sala não informada'], 400);
+        }
+
+        $this->repo->hideRoom($roomId, $user['id']);
+
+        return Response::json(['success' => true, 'message' => 'Conversa excluída']);
+    }
+
+    public function blockUser($data, $user)
+    {
+        if (!$user) {
+            return Response::json(['success' => false], 401);
+        }
+
+        $userId = $data['user_id'] ?? null;
+        if (!$userId) {
+            return Response::json(['success' => false, 'message' => 'Usuário não informado'], 400);
+        }
+
+        if ($userId == $user['id']) {
+            return Response::json(['success' => false, 'message' => 'Você não pode bloquear a si mesmo'], 400);
+        }
+
+        $this->repo->blockUser($user['id'], $userId);
+
+        return Response::json(['success' => true, 'message' => 'Usuário bloqueado']);
     }
 }

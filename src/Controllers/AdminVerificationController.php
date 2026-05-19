@@ -69,7 +69,7 @@ class AdminVerificationController
         if ($repo->updateDocumentStatus($docId, $status, $reason)) {
             $repo->saveLog($loggedUser['id'], $loggedUser['name'], 'DOC_REVIEW', "Doc #{$docId} avaliado como {$status}", $doc['entity_id'], 'USER');
             $msg = ($status === 'APPROVED') ? "Seu documento ({$doc['document_type']}) foi aprovado!" : "Seu documento ({$doc['document_type']}) foi recusado. Motivo: {$reason}";
-            $this->notif->notify($doc['entity_id'], 'Verificação de Documentos', $msg);
+            $this->notif->notify($doc['entity_id'], 'Verificação de Documentos', $msg, '/dashboard/perfil');
             return Response::json(['success' => true]);
         }
         return Response::json(['success' => false]);

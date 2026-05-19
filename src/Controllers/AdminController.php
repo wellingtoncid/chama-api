@@ -135,7 +135,7 @@ class AdminController
         if ($this->repo->updateFreightStatus($id, $status, $approveFeatured)) {
             $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'FREIGHT_STATUS', "Frete #{$id} -> {$status}", $id, 'FREIGHT');
             if ($status === 'OPEN') {
-                $this->notif->notify($freight['user_id'], 'Frete Online!', 'Seu anúncio foi aprovado.');
+                $this->notif->notify($freight['user_id'], 'Frete Online!', 'Seu anúncio foi aprovado.', '/dashboard/logistica');
                 $this->triggerMatches($freight);
             }
             return Response::json(['success' => true]);
@@ -147,7 +147,7 @@ class AdminController
     {
         $drivers = $this->repo->findCompatibleDrivers($freight['vehicle_type'], $freight['body_type'], $freight['origin_state']);
         foreach ($drivers as $driver) {
-            $this->notif->notify($driver['user_id'], 'Carga compatível!', "Nova carga de {$freight['product']} disponível.");
+            $this->notif->notify($driver['user_id'], 'Carga compatível!', "Nova carga de {$freight['product']} disponível.", '/dashboard/fretes');
         }
     }
 
@@ -466,7 +466,7 @@ class AdminController
             $this->db->prepare("INSERT INTO credit_transactions (user_id, amount, type, description, created_at) VALUES (?, ?, 'recharge', ?, NOW())")->execute([$userId, $amount, $reason . " (Por: {$loggedUser['name']})"]);
             $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'MANUAL_CREDIT', "Adicionou {$amount} créditos ao usuário #{$userId}", $userId, 'USER');
             $this->db->commit();
-            $this->notif->notify($userId, 'Créditos Adicionados!', "Você recebeu {$amount} créditos.");
+            $this->notif->notify($userId, 'Créditos Adicionados!', "Você recebeu {$amount} créditos.", '/dashboard/planos');
             return Response::json(['success' => true]);
         } catch (Exception $e) {
             if ($this->db->inTransaction()) {
@@ -521,7 +521,7 @@ class AdminController
         $message = $data['message'];
         if ($this->repo->addTicketMessage($ticketId, $loggedUser['id'], $message, true)) {
             $ticket = $this->repo->getTicketById($ticketId);
-            $this->notif->notify($ticket['user_id'], 'Suporte respondeu!', 'Verifique seu chamado: ' . $ticket['subject']);
+            $this->notif->notify($ticket['user_id'], 'Suporte respondeu!', 'Verifique seu chamado: ' . $ticket['subject'], '/dashboard/suporte');
             return Response::json(['success' => true]);
         }
         return Response::json(['success' => false]);

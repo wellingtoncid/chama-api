@@ -146,7 +146,7 @@ class AffiliateController
         ], 201);
     }
 
-    public function getMyInterest($loggedUser)
+    public function getMyInterest($data, $loggedUser)
     {
         if (!$loggedUser) {
             return Response::json([
@@ -192,7 +192,7 @@ class AffiliateController
         ]);
     }
 
-    public function checkAccess($loggedUser)
+    public function checkAccess($data, $loggedUser)
     {
         if (!$loggedUser || !isset($loggedUser['id'])) {
             return Response::json([

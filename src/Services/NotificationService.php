@@ -220,7 +220,7 @@ class NotificationService
     {
         try {
             $stmt = $this->db->prepare('
-                SELECT * FROM notifications
+                SELECT *, action_url AS link FROM notifications
                 WHERE user_id = ? AND is_read = 0
                 ORDER BY created_at DESC
                 LIMIT 50
@@ -235,7 +235,7 @@ class NotificationService
 
     public function getUserNotifications($userId, $limit = 20)
     {
-        $stmt = $this->db->prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?');
+        $stmt = $this->db->prepare('SELECT *, action_url AS link FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?');
         $stmt->execute([$userId, $limit]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
@@ -263,9 +263,9 @@ class NotificationService
     /**
      * Adapter para AdminController (mantém compatibilidade com chamadas existentes)
      */
-    public function notify(int $userId, string $title, string $message): bool
+    public function notify(int $userId, string $title, string $message, ?string $actionUrl = null): bool
     {
-        return $this->send($userId, $title, $message);
+        return $this->send($userId, $title, $message, 'system', 'normal', $actionUrl);
     }
 
     /**
