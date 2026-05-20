@@ -110,12 +110,13 @@ class AdminPlanController
                     'price_daily' => (float)($data['price_daily'] ?? 0),
                     'duration_days' => (int)($data['duration_days'] ?? 30),
                     'is_active' => isset($data['is_active']) ? 1 : 0,
+                    'is_public' => (int)($data['is_public'] ?? 1),
                 ];
                 if ($id > 0) {
-                    $sql = 'UPDATE pricing_rules SET module_key = :module_key, feature_key = :feature_key, feature_name = :feature_name, pricing_type = :pricing_type, free_limit = :free_limit, price_per_use = :price_per_use, price_monthly = :price_monthly, price_daily = :price_daily, duration_days = :duration_days, is_active = :is_active WHERE id = :id';
+                    $sql = 'UPDATE pricing_rules SET module_key = :module_key, feature_key = :feature_key, feature_name = :feature_name, pricing_type = :pricing_type, free_limit = :free_limit, price_per_use = :price_per_use, price_monthly = :price_monthly, price_daily = :price_daily, duration_days = :duration_days, is_active = :is_active, is_public = :is_public WHERE id = :id';
                     $fields['id'] = $id;
                 } else {
-                    $sql = 'INSERT INTO pricing_rules (module_key, feature_key, feature_name, pricing_type, free_limit, price_per_use, price_monthly, price_daily, duration_days, is_active) VALUES (:module_key, :feature_key, :feature_name, :pricing_type, :free_limit, :price_per_use, :price_monthly, :price_daily, :duration_days, :is_active)';
+                    $sql = 'INSERT INTO pricing_rules (module_key, feature_key, feature_name, pricing_type, free_limit, price_per_use, price_monthly, price_daily, duration_days, is_active, is_public) VALUES (:module_key, :feature_key, :feature_name, :pricing_type, :free_limit, :price_per_use, :price_monthly, :price_daily, :duration_days, :is_active, :is_public)';
                 }
                 $stmt = $this->db->prepare($sql);
                 $stmt->execute($fields);

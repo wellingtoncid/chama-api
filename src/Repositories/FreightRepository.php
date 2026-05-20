@@ -36,7 +36,7 @@ class FreightRepository
             if ($userId !== null && (int)$userId > 0) {
                 $where = " WHERE f.deleted_at IS NULL";
             } else {
-                $where = " WHERE f.deleted_at IS NULL AND f.status = 'OPEN'";
+                $where = " WHERE f.deleted_at IS NULL AND f.status = 'OPEN' AND (f.expires_at IS NULL OR f.expires_at > NOW())";
             }
 
             if ($statusFilter) {
@@ -539,7 +539,7 @@ class FreightRepository
     public function getDriverStats($userId)
     {
         $sql = "SELECT
-            (SELECT COUNT(*) FROM freights WHERE deleted_at IS NULL AND status = 'OPEN') as total_open,
+            (SELECT COUNT(*) FROM freights WHERE deleted_at IS NULL AND status = 'OPEN' AND (expires_at IS NULL OR expires_at > NOW())) as total_open,
             (SELECT COUNT(*) FROM favorites WHERE user_id = ? AND target_type = 'FREIGHT') as total_favs,
             (SELECT COUNT(*) FROM user_alerts WHERE user_id = ? AND type = 'INVITATION' AND status = 'unread') as total_invitations";
 
@@ -563,6 +563,7 @@ class FreightRepository
                 FROM freights f
                 WHERE f.deleted_at IS NULL
                 AND f.status = 'OPEN'
+                AND (f.expires_at IS NULL OR f.expires_at > NOW())
                 AND f.vehicle_type LIKE ?
                 AND f.body_type LIKE ?
                 ORDER BY f.created_at DESC LIMIT 20";
@@ -590,6 +591,7 @@ class FreightRepository
                     WHERE fav.user_id = ?
                     AND fav.target_type = 'FREIGHT'
                     AND f.deleted_at IS NULL
+                    AND (f.expires_at IS NULL OR f.expires_at > NOW())
                     ORDER BY fav.created_at DESC";
 
             $stmt = $this->db->prepare($sql);
@@ -1211,6 +1213,7 @@ class FreightRepository
                 WHERE user_id = :uid
                 AND status = 'OPEN'
                 AND (deleted_at IS NULL)
+                AND (expires_at IS NULL OR expires_at > NOW())
                 ORDER BY created_at DESC";
 
         $stmt = $this->db->prepare($sql);

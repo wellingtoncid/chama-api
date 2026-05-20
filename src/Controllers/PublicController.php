@@ -185,6 +185,10 @@ class PublicController
 
             // Marketplace: TODO MUNDO pode ter listings (driver, company, advertiser)
             $listings = $this->listingRepo->findByUser($userId);
+            $listings = array_filter($listings, function ($l) {
+                return $l['status'] === 'active' && (empty($l['expires_at']) || strtotime($l['expires_at']) > time());
+            });
+            $listings = array_values($listings);
             foreach ($listings as &$l) {
                 $l['type'] = 'marketplace';
             }

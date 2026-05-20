@@ -570,8 +570,8 @@ class AdRepository
         // Mapeamento de posições permitidas por tipo de plano
         $allowedPositions = [
             'sidebar' => ['sidebar'],
-            'freight_list' => ['sidebar', 'freight_list', 'infeed_wide', 'infeed_compact'],
-            'total' => ['sidebar', 'freight_list', 'infeed_wide', 'infeed_compact', 'footer', 'spotlight'],
+            'freight_list' => ['sidebar', 'freight_list', 'infeed_wide', 'marketplace_list', 'groups_list'],
+            'total' => ['sidebar', 'freight_list', 'infeed_wide', 'marketplace_list', 'groups_list', 'footer', 'spotlight', 'chat_header', 'popup', 'header'],
         ];
 
         $allowed = $allowedPositions[$planType] ?? ['sidebar'];

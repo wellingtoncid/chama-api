@@ -771,7 +771,8 @@ class UserController
                     ad_size,
                     icon_key,
                     price_monthly,
-                    duration_days
+                    duration_days,
+                    is_public
                 FROM pricing_rules
                 WHERE module_key = 'advertiser'
                 AND is_active = 1
