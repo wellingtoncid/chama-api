@@ -214,10 +214,17 @@ try {
 
     // --- ARTIGOS ---
     $router->get('/api/articles', 'ArticleController@index');
-    $router->get('/api/articles/:slug', 'ArticleController@show');
 
     if ($loggedUser) {
         $router->get('/api/articles/me', 'ArticleController@myArticles');
+    }
+
+    $router->get('/api/articles/user/:userId', 'ArticleController@byAuthor');
+
+    // IMPORTANTE: :slug deve vir DEPOIS de /me e /user/, senão "me"/"user" casa como slug
+    $router->get('/api/articles/:slug', 'ArticleController@show');
+
+    if ($loggedUser) {
 
         if (Auth::hasPermission('articles.create')) {
             $router->post('/api/articles', 'ArticleController@store');
@@ -405,6 +412,7 @@ try {
         $router->post('/api/admin-manage-user', 'AdminUserController@manageUsers');
         $router->post('/api/admin-verify-user', 'AdminUserController@verifyUser');
         $router->post('/api/admin-delete-user', 'AdminUserController@deleteUser');
+        $router->post('/api/admin/user-modules', 'AdminUserController@manageUserModules');
     }
 
     // Gestão de Fretes - permissão: freight.view, freight.edit

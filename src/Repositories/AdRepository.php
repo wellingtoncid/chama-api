@@ -2,6 +2,7 @@
 
 namespace App\Repositories;
 
+use App\Core\Auth;
 use PDO;
 
 class AdRepository
@@ -367,6 +368,14 @@ class AdRepository
      */
     public function checkAdPositionEligibility($userId, $featureKey)
     {
+        // Equipe interna pode criar anúncios sem restrições
+        $stmt = $this->db->prepare('SELECT role FROM users WHERE id = ?');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user && Auth::isInternal($user['role'])) {
+            return ['allowed' => true, 'reason' => 'Equipe interna - sem custo', 'requires_payment' => false];
+        }
+
         $position = $this->getPositionFromFeature($featureKey);
 
         // Busca a regra de preço

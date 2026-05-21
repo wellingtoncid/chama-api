@@ -125,7 +125,7 @@ class Auth
                 return false;
             }
 
-            if (strtolower($userData['role']) === 'admin') {
+            if (strtolower($userData['role']) === 'admin' || self::isInternal($userData['role'])) {
                 return true;
             }
 
@@ -190,7 +190,7 @@ class Auth
 
             $role = strtolower($userData['role']);
 
-            if ($role === 'admin') {
+            if ($role === 'admin' || self::isInternal($role)) {
                 return true;
             }
 
@@ -236,6 +236,28 @@ class Auth
             exit;
         }
         return $user;
+    }
+
+    /**
+     * Verifica se o role do usuário é interno (equipe Chama Frete)
+     */
+    public static function isInternal(?string $role = null): bool
+    {
+        if ($role === null) {
+            $user = self::getAuthenticatedUser();
+            if (!$user || empty($user['role'])) {
+                return false;
+            }
+            $role = $user['role'];
+        }
+        try {
+            $stmt = self::getDb()->prepare("SELECT 1 FROM roles WHERE slug = ? AND type = 'internal'");
+            $stmt->execute([strtolower($role)]);
+            return (bool)$stmt->fetch();
+        } catch (\Exception $e) {
+            error_log('isInternal check error: ' . $e->getMessage());
+            return false;
+        }
     }
 
     public static function requireRole($roles): array

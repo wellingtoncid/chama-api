@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Core\Auth;
 use PDO;
 
 class AccessControlService
@@ -19,6 +20,21 @@ class AccessControlService
      */
     public function canPublish(int $userId, string $moduleKey): array
     {
+        // Equipe interna não tem limites de publicação
+        $stmt = $this->db->prepare('SELECT role FROM users WHERE id = ?');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user && Auth::isInternal($user['role'])) {
+            return [
+                'allowed' => true,
+                'reason' => 'Equipe interna - sem limites',
+                'limit' => -1,
+                'used' => 0,
+                'remaining' => -1,
+                'module_key' => $moduleKey,
+            ];
+        }
+
         $moduleToCategory = [
             'freights' => 'freight_subscription',
             'marketplace' => 'marketplace_subscription',
@@ -115,6 +131,22 @@ class AccessControlService
      */
     public function getUsageStats(int $userId, string $moduleKey): array
     {
+        // Equipe interna não tem limites de uso
+        $stmt = $this->db->prepare('SELECT role FROM users WHERE id = ?');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user && Auth::isInternal($user['role'])) {
+            return [
+                'module_key' => $moduleKey,
+                'month' => (int)date('n'),
+                'year' => (int)date('Y'),
+                'used' => 0,
+                'limit' => -1,
+                'remaining' => -1,
+                'plan_name' => 'Equipe Interna',
+            ];
+        }
+
         $used = $this->getCurrentMonthUsage($userId, $moduleKey);
 
         $moduleToCategory = [

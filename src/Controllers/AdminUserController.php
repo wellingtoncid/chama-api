@@ -354,4 +354,42 @@ class AdminUserController
         $notes = $stmt->fetchAll(PDO::FETCH_ASSOC);
         return Response::json(['success' => true, 'data' => $notes]);
     }
+
+    /**
+     * Admin ativa/desativa módulo de qualquer usuário
+     * POST /api/admin/user-modules
+     */
+    public function manageUserModules($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $userId = (int)($data['user_id'] ?? 0);
+        $moduleKey = $data['module_key'] ?? '';
+        $action = $data['action'] ?? 'activate';
+
+        if (!$userId || !$moduleKey) {
+            return Response::json(['success' => false, 'message' => 'user_id e module_key são obrigatórios'], 400);
+        }
+
+        try {
+            if ($action === 'activate') {
+                $stmt = $this->db->prepare("
+                    INSERT INTO user_modules (user_id, module_key, status, requires_approval, approval_status, activated_at)
+                    VALUES (:user_id, :module_key, 'active', 0, 'approved', NOW())
+                    ON DUPLICATE KEY UPDATE status = 'active', requires_approval = 0, approval_status = 'approved', activated_at = NOW()
+                ");
+                $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+                return Response::json(['success' => true, 'message' => 'Módulo ativado com sucesso!']);
+            } elseif ($action === 'deactivate') {
+                $stmt = $this->db->prepare("
+                    UPDATE user_modules SET status = 'inactive' WHERE user_id = :user_id AND module_key = :module_key
+                ");
+                $stmt->execute([':user_id' => $userId, ':module_key' => $moduleKey]);
+                return Response::json(['success' => true, 'message' => 'Módulo desativado!']);
+            }
+            return Response::json(['success' => false, 'message' => 'Ação inválida'], 400);
+        } catch (\Throwable $e) {
+            error_log('ERRO manageUserModules: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro interno'], 500);
+        }
+    }
 }

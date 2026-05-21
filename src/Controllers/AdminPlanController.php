@@ -109,7 +109,7 @@ class AdminPlanController
                     'price_monthly' => (float)($data['price_monthly'] ?? 0),
                     'price_daily' => (float)($data['price_daily'] ?? 0),
                     'duration_days' => (int)($data['duration_days'] ?? 30),
-                    'is_active' => isset($data['is_active']) ? 1 : 0,
+                    'is_active' => (int)($data['is_active'] ?? 0),
                     'is_public' => (int)($data['is_public'] ?? 1),
                 ];
                 if ($id > 0) {

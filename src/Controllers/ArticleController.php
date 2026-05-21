@@ -417,6 +417,33 @@ class ArticleController
     }
 
     /**
+     * GET /api/articles/user/:userId - Get published articles by user (public)
+     */
+    public function byAuthor($data)
+    {
+        $userId = (int)($data['userId'] ?? 0);
+        if (!$userId) {
+            return Response::json(['success' => false, 'message' => 'ID do usuário é obrigatório'], 400);
+        }
+
+        $limit = min((int)($data['limit'] ?? 10), 50);
+        $offset = (int)($data['offset'] ?? 0);
+
+        $articles = $this->articleRepo->getPublishedByAuthor($userId, $limit, $offset);
+        $total = $this->articleRepo->countPublishedByAuthor($userId);
+
+        return Response::json([
+            'success' => true,
+            'data' => [
+                'articles' => $articles,
+                'total' => $total,
+                'limit' => $limit,
+                'offset' => $offset,
+            ],
+        ]);
+    }
+
+    /**
      * Helper: Generate slug from title
      */
     private function generateSlug($title)

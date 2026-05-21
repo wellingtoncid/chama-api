@@ -2,6 +2,7 @@
 
 namespace App\Controllers;
 
+use App\Core\Auth;
 use App\Core\Response;
 use App\Repositories\UserRepository;
 use App\Services\AccessControlService;
@@ -455,9 +456,22 @@ class UserController
         }
 
         try {
+            // Admin pode ver módulos de outro usuário via ?user_id=
             $userId = $loggedUser['id'];
-            $userType = strtoupper($loggedUser['user_type'] ?? 'DRIVER');
-            $role = strtoupper($loggedUser['role'] ?? '');
+            if (!empty($data['user_id']) && Auth::isInternal($loggedUser['role'] ?? '')) {
+                $userId = (int)$data['user_id'];
+            }
+
+            // Busca role do usuário alvo
+            $stmt = $this->db->prepare('SELECT role, user_type FROM users WHERE id = ?');
+            $stmt->execute([$userId]);
+            $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$targetUser) {
+                return Response::json(['success' => false, 'message' => 'Usuário não encontrado'], 404);
+            }
+
+            $userType = strtoupper($targetUser['user_type'] ?? 'DRIVER');
+            $role = strtoupper($targetUser['role'] ?? '');
 
             // Verifica se é empresa pelo role
             $isCompany = ($role === 'COMPANY');
@@ -465,7 +479,7 @@ class UserController
             $availableModules = [];
             $allowedModules = [];
 
-            if ($role === 'ADMIN') {
+            if (Auth::isInternal($role)) {
                 $availableModules = [
                     ['key' => 'freights', 'name' => 'Fretes', 'description' => 'Publicação e gestão de cargas'],
                     ['key' => 'marketplace', 'name' => 'Marketplace', 'description' => 'Compra e venda de itens'],
@@ -521,6 +535,9 @@ class UserController
             // Módulos que requerem aprovação do admin
             $approvalRequiredModules = ['quotes', 'advertiser'];
 
+            // Equipe interna tem todos os módulos ativos por padrão
+            $isInternalDefault = Auth::isInternal($role);
+
             // Para empresas, módulos permitidos são ativos por padrão
             $isCompanyDefault = $isCompany;
 
@@ -534,10 +551,11 @@ class UserController
                 $isActive = false;
                 if ($userMod) {
                     $isActive = $userMod['status'] === 'active';
-                } elseif ($isAllowed && !$requiresApproval) {
-                    // Para empresas, módulos permitidos são ativos por padrão (exceto os que requerem aprovação)
-                    // Para motoristas, fretes é obrigatório e ativo
-                    $isActive = $isCompanyDefault || $mod['key'] === 'freights';
+                } elseif ($isAllowed && (!$requiresApproval || $isInternalDefault)) {
+                    // Equipe interna: todos os módulos ativos por padrão (ignora requires_approval)
+                    // Empresas: módulos permitidos são ativos (exceto os que requerem aprovação)
+                    // Motoristas: fretes é obrigatório e ativo
+                    $isActive = $isInternalDefault || $isCompanyDefault || $mod['key'] === 'freights';
                 }
 
                 // Determina status de aprovação
@@ -593,9 +611,10 @@ class UserController
         $userType = strtoupper($loggedUser['user_type'] ?? 'DRIVER');
         $isCompany = ($role === 'COMPANY');
 
-        // Define módulos permitidos por tipo de usuário (chaves em inglês)
-        if ($role === 'ADMIN') {
+        // Equipe interna: todos os módulos liberados sem aprovação
+        if (Auth::isInternal($role)) {
             $allowedModules = ['freights', 'marketplace', 'quotes', 'advertiser', 'chat', 'financial', 'groups', 'plans', 'support', 'identity_verification'];
+            $approvalRequiredModules = [];
         } elseif ($isCompany) {
             // Empresas podem ativar: freights, marketplace, chat, groups, identity_verification
             // quotes e advertiser requerem aprovação

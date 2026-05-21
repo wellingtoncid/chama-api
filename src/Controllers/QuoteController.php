@@ -2,6 +2,7 @@
 
 namespace App\Controllers;
 
+use App\Core\Auth;
 use App\Core\Response;
 use App\Repositories\QuoteRepository;
 use App\Repositories\UserRepository;
@@ -25,6 +26,14 @@ class QuoteController
 
     private function userHasModule(int $userId, string $moduleKey, string $featureKey = null): bool
     {
+        // Equipe interna tem acesso a todos os módulos
+        $stmt = $this->db->prepare('SELECT role FROM users WHERE id = ?');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user && Auth::isInternal($user['role'])) {
+            return true;
+        }
+
         $sql = "SELECT id FROM user_modules
                 WHERE user_id = :user_id AND module_key = :module_key
                 AND status = 'active' AND (expires_at IS NULL OR expires_at > NOW())";

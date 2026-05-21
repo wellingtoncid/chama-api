@@ -400,6 +400,42 @@ class ArticleRepository
     }
 
     /**
+     * Get published articles by author (public profile)
+     */
+    public function getPublishedByAuthor($authorId, $limit = 10, $offset = 0)
+    {
+        $stmt = $this->db->prepare("
+            SELECT a.*, u.name as author_name, up.avatar_url as author_avatar, up.slug as author_slug,
+                   ac.name as category_name, ac.slug as category_slug
+            FROM articles a
+            LEFT JOIN users u ON a.author_id = u.id
+            LEFT JOIN user_profiles up ON a.author_id = up.user_id
+            LEFT JOIN article_categories ac ON a.category_id = ac.id
+            WHERE a.author_id = :author_id AND a.status = 'published' AND a.deleted_at IS NULL
+            ORDER BY a.published_at DESC
+            LIMIT :limit OFFSET :offset
+        ");
+        $stmt->bindValue(':author_id', (int)$authorId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', (int)$offset, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Count published articles by author
+     */
+    public function countPublishedByAuthor($authorId)
+    {
+        $stmt = $this->db->prepare("
+            SELECT COUNT(*) FROM articles
+            WHERE author_id = :author_id AND status = 'published' AND deleted_at IS NULL
+        ");
+        $stmt->execute([':author_id' => $authorId]);
+        return (int)$stmt->fetchColumn();
+    }
+
+    /**
      * Get expired paid articles
      */
     public function getExpiredPaidArticles()

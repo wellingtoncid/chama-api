@@ -214,7 +214,11 @@ class PermissionController
             $stmt->execute([$userId]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            $userPerms = $user ? json_decode($user['permissions'] ?? '[]', true) : [];
+            $raw = $user['permissions'] ?? '[]';
+            $userPerms = json_decode($raw, true);
+            if (!is_array($userPerms)) {
+                $userPerms = [];
+            }
 
             return Response::json([
                 'success' => true,
