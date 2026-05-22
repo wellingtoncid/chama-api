@@ -252,6 +252,20 @@ class AdController
     }
 
     /**
+     * Verifica e desativa anúncios de planos expirados
+     * GET /api/ads/expire-check (público - usado por cron)
+     */
+    public function expireCheck()
+    {
+        $deactivated = $this->adRepo->deactivateExpiredPlanAds();
+        return Response::json([
+            'success' => true,
+            'message' => "Verificação concluída. {$deactivated} anúncios desativados.",
+            'deactivated' => $deactivated,
+        ]);
+    }
+
+    /**
      * Retorna relatório de anúncios do usuário logado
      * GET /api/ads/my-report?period=weekly|monthly|all
      */

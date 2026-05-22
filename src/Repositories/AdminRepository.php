@@ -944,9 +944,11 @@ class AdminRepository
             }
 
             if (isset($data['id']) && $data['id'] > 0) {
-                $sql = 'UPDATE plans SET name=?, slug=?, type=?, price=?, limit_monthly=?, duration_days=?, category=?, description=?, features=?, is_highlighted=?, sort_order=?, active=? WHERE id=?';
+                $sql = 'UPDATE plans SET name=?, slug=?, type=?, advertiser_tier=?, price=?, limit_monthly=?, duration_days=?, category=?, description=?, features=?, is_highlighted=?, sort_order=?, active=? WHERE id=?';
                 return $this->db->prepare($sql)->execute([
-                    $data['name'], $slug, $data['type'], $data['price'],
+                    $data['name'], $slug, $data['type'],
+                    $data['advertiser_tier'] ?? 'none',
+                    $data['price'],
                     (int)($data['limit_monthly'] ?? 0), (int)($data['duration_days'] ?? 30),
                     $data['category'] ?? '', $data['description'] ?? '',
                     $data['features'] ?? '', (int)($data['is_highlighted'] ?? 0),
@@ -954,9 +956,11 @@ class AdminRepository
                     $data['id']
                 ]);
             } else {
-                $sql = 'INSERT INTO plans (name, slug, type, price, limit_monthly, duration_days, category, description, features, is_highlighted, sort_order, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)';
+                $sql = 'INSERT INTO plans (name, slug, type, advertiser_tier, price, limit_monthly, duration_days, category, description, features, is_highlighted, sort_order, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)';
                 return $this->db->prepare($sql)->execute([
-                    $data['name'], $slug, $data['type'], $data['price'],
+                    $data['name'], $slug, $data['type'],
+                    $data['advertiser_tier'] ?? 'none',
+                    $data['price'],
                     (int)($data['limit_monthly'] ?? 0), (int)($data['duration_days'] ?? 30),
                     $data['category'] ?? '', $data['description'] ?? '',
                     $data['features'] ?? '', (int)($data['is_highlighted'] ?? 0),

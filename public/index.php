@@ -77,6 +77,7 @@ try {
 
     // --- PERFIL DO USUÁRIO & SLUGS ---
     $router->get('/api/get-my-profile', 'UserController@getProfile');
+    $router->get('/api/ads/expire-check', 'AdController@expireCheck');
     $router->get('/api/company/summary', 'UserController@getCompanySummary');
     $router->get('/api/company/dashboard', 'DashboardController@getCompanyDashboard');
     $router->get('/api/user/modules', 'UserController@getUserModules');
@@ -84,6 +85,7 @@ try {
     $router->post('/api/user/modules/request', 'UserController@requestModuleAccess');
     $router->get('/api/pricing/rules', 'UserController@getPricingRules');
     $router->get('/api/ad-positions', 'UserController@getAdPositions');
+    $router->get('/api/advertisers/tiers', 'UserController@getAdvertisersTiers');
     $router->get('/api/site-settings', 'UserController@getSiteSettings');
     $router->get('/api/public/site-settings', 'UserController@getPublicLists');
     $router->get('/api/user/usage', 'UserController@getUserUsage');

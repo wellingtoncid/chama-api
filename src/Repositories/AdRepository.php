@@ -20,6 +20,7 @@ class AdRepository
      */
     public function findAds($position = '', $state = '', $search = '', $city = '', $limit = 10)
     {
+        $this->deactivateExpiredPlanAds();
         $params = [];
 
         $sql = "SELECT a.*,
@@ -561,10 +562,11 @@ class AdRepository
     }
 
     /**
-     * Verifica se posição é permitida pelo tipo do plano
-     * bronze -> sidebar apenas
-     * prata -> sidebar + freight_list
-     * ouro -> todas
+     * Verifica se posição é permitida pelo plano
+     * Lê de features.positions (JSON) primeiro, fallback para mapeamento por type
+     * supporter_connect -> sidebar apenas
+     * maintainer_premium -> sidebar + freight_list + infeed_wide + marketplace_list + groups_list
+     * sponsor_master -> todas
      */
     public function checkPlanPositionAllowed($userId, $position)
     {
@@ -574,23 +576,32 @@ class AdRepository
             return ['allowed' => true, 'reason' => 'Sem plano específico'];
         }
 
-        $planType = strtolower($plan['type'] ?? 'sidebar');
+        // Tenta ler posições do JSON features.positions
+        $allowed = null;
+        if (!empty($plan['features'])) {
+            $features = is_string($plan['features']) ? json_decode($plan['features'], true) : $plan['features'];
+            if (is_array($features) && isset($features['positions']) && is_array($features['positions'])) {
+                $allowed = $features['positions'];
+            }
+        }
 
-        // Mapeamento de posições permitidas por tipo de plano
-        $allowedPositions = [
-            'sidebar' => ['sidebar'],
-            'freight_list' => ['sidebar', 'freight_list', 'infeed_wide', 'marketplace_list', 'groups_list'],
-            'total' => ['sidebar', 'freight_list', 'infeed_wide', 'marketplace_list', 'groups_list', 'footer', 'spotlight', 'chat_header', 'popup', 'header'],
-        ];
-
-        $allowed = $allowedPositions[$planType] ?? ['sidebar'];
+        // Fallback: mapeamento por tipo do plano (backward compatibility)
+        if ($allowed === null) {
+            $planType = strtolower($plan['type'] ?? 'sidebar');
+            $allowedPositions = [
+                'sidebar' => ['sidebar'],
+                'freight_list' => ['sidebar', 'freight_list', 'infeed_wide', 'marketplace_list', 'groups_list'],
+                'total' => ['sidebar', 'freight_list', 'infeed_wide', 'marketplace_list', 'groups_list', 'footer', 'spotlight', 'chat_header', 'popup', 'header'],
+            ];
+            $allowed = $allowedPositions[$planType] ?? ['sidebar'];
+        }
 
         if (!in_array($position, $allowed)) {
             return [
                 'allowed' => false,
                 'reason' => "Plano {$plan['name']} não permite anúncios em {$position}. Upgrade para ter acesso a esta posição.",
                 'requires_payment' => true,
-                'current_plan' => $planType,
+                'current_plan' => $plan['type'] ?? 'sidebar',
                 'allowed_positions' => $allowed,
                 'requested_position' => $position,
             ];
@@ -599,7 +610,7 @@ class AdRepository
         return [
             'allowed' => true,
             'reason' => 'Posição permitida pelo plano',
-            'plan_type' => $planType,
+            'plan_type' => $plan['type'] ?? 'sidebar',
         ];
     }
 
@@ -736,6 +747,63 @@ class AdRepository
         } catch (\Exception $e) {
             error_log('Erro activateAd: ' . $e->getMessage());
             return false;
+        }
+    }
+
+    /**
+     * Desativa anúncios de usuários com planos de publicidade expirados
+     * Retorna o número de anúncios desativados
+     */
+    public function deactivateExpiredPlanAds(): int
+    {
+        try {
+            // Busca usuários com user_modules advertiser expirados
+            $stmt = $this->db->query("
+                SELECT um.user_id
+                FROM user_modules um
+                WHERE um.module_key = 'advertiser'
+                AND um.status = 'active'
+                AND um.expires_at IS NOT NULL
+                AND um.expires_at < NOW()
+            ");
+            $expiredUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($expiredUsers)) {
+                return 0;
+            }
+
+            $userIds = array_column($expiredUsers, 'user_id');
+            $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+
+            // Desativa anúncios ativos desses usuários
+            $stmt = $this->db->prepare("
+                UPDATE ads
+                SET status = 'expired', updated_at = NOW()
+                WHERE user_id IN ($placeholders)
+                AND status = 'active'
+            ");
+            $stmt->execute($userIds);
+            $deactivatedAds = $stmt->rowCount();
+
+            // Marca user_modules como expired
+            $stmt = $this->db->prepare("
+                UPDATE user_modules
+                SET status = 'expired', updated_at = NOW()
+                WHERE module_key = 'advertiser'
+                AND status = 'active'
+                AND expires_at IS NOT NULL
+                AND expires_at < NOW()
+            ");
+            $stmt->execute();
+
+            if ($deactivatedAds > 0) {
+                error_log("Auto-expirou {$deactivatedAds} anúncios de " . count($userIds) . " usuários com planos expirados.");
+            }
+
+            return $deactivatedAds;
+        } catch (\Exception $e) {
+            error_log('Erro deactivateExpiredPlanAds: ' . $e->getMessage());
+            return 0;
         }
     }
 }

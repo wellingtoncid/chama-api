@@ -807,6 +807,65 @@ class UserController
     }
 
     /**
+     * Rota: GET /api/advertisers/tiers - Lista anunciantes ativos agrupados por tier (público)
+     */
+    public function getAdvertisersTiers($data)
+    {
+        try {
+            $stmt = $this->db->query("
+                SELECT 
+                    p.advertiser_tier,
+                    p.name as plan_name,
+                    p.type as plan_type,
+                    p.sort_order,
+                    u.id as user_id,
+                    u.name as user_name,
+                    u.slug as user_slug,
+                    u.avatar as user_avatar,
+                    um.expires_at
+                FROM user_modules um
+                JOIN plans p ON p.id = um.plan_id
+                JOIN users u ON u.id = um.user_id
+                WHERE um.module_key = 'advertiser'
+                AND um.status = 'active'
+                AND (um.expires_at IS NULL OR um.expires_at >= NOW())
+                AND p.advertiser_tier IS NOT NULL
+                AND p.advertiser_tier != 'none'
+                ORDER BY p.sort_order ASC, u.name ASC
+            ");
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $grouped = [
+                'sponsor_master' => [],
+                'maintainer_premium' => [],
+                'supporter_connect' => [],
+            ];
+
+            foreach ($rows as $row) {
+                $tier = $row['advertiser_tier'];
+                if (!isset($grouped[$tier])) {
+                    continue;
+                }
+                $grouped[$tier][] = [
+                    'user_id' => (int)$row['user_id'],
+                    'name' => $row['user_name'],
+                    'slug' => $row['user_slug'],
+                    'avatar' => $row['user_avatar'],
+                    'plan_name' => $row['plan_name'],
+                    'expires_at' => $row['expires_at'],
+                ];
+            }
+
+            $grouped = array_filter($grouped, fn($g) => !empty($g));
+
+            return Response::json(['success' => true, 'data' => $grouped]);
+        } catch (\Throwable $e) {
+            error_log('ERRO getAdvertisersTiers: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro interno'], 500);
+        }
+    }
+
+    /**
      * Rota: GET /api/site-settings - Retorna configurações do site
      */
     public function getSiteSettings($data, $loggedUser)
