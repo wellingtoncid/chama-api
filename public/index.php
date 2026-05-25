@@ -533,6 +533,21 @@ try {
         $router->post('/api/admin-manage-plans', 'AdminPlanController@managePlans');
     }
 
+    // Cupons - permissão: admin/financeiro
+    if ($loggedUser && Auth::hasAnyRole(['admin', 'gerente', 'financeiro', 'supervisor'])) {
+        $router->get('/api/admin/coupons', 'CouponController@listAll');
+        $router->post('/api/admin/coupons', 'CouponController@create');
+        $router->put('/api/admin/coupons/:id', 'CouponController@update');
+        $router->delete('/api/admin/coupons/:id', 'CouponController@delete');
+        $router->post('/api/admin/coupons/generate-code', 'CouponController@generateCode');
+        $router->get('/api/admin/coupons/:id/uses', 'CouponController@getUses');
+    }
+
+    // Cupom - resgate pelo usuário (qualquer logado)
+    if ($loggedUser) {
+        $router->post('/api/coupons/redeem', 'CouponController@redeem');
+    }
+
     // Precificação - permissão: roles.manage
     if ($loggedUser && Auth::hasPermission('roles.manage')) {
         $router->get('/api/admin-pricing', 'AdminPlanController@managePricing');

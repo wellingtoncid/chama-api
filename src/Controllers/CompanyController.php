@@ -3,16 +3,19 @@
 namespace App\Controllers;
 
 use App\Core\Response;
+use App\Services\CreditService;
 use Exception;
 use PDO;
 
 class CompanyController
 {
     private $db;
+    private $creditService;
 
     public function __construct($db)
     {
         $this->db = $db;
+        $this->creditService = new CreditService($db);
     }
 
     public function getVerificationStatus($data, $loggedUser)
@@ -57,13 +60,13 @@ class CompanyController
             $hasPending = $verification && $verification['status'] === 'pending';
 
             $moduleStmt = $this->db->prepare("
-                SELECT is_active FROM user_modules
+                SELECT status FROM user_modules
                 WHERE user_id = ? AND module_key = 'company_pro'
             ");
             $moduleStmt->execute([$userId]);
             $module = $moduleStmt->fetch();
 
-            $hasContracted = $module && $module['is_active'] == 1;
+            $hasContracted = $module && $module['status'] === 'active';
 
             return Response::json([
                 'success' => true,
@@ -254,10 +257,7 @@ class CompanyController
                 ], 400);
             }
 
-            $stmt = $this->db->prepare('SELECT balance FROM users WHERE id = ?');
-            $stmt->execute([$userId]);
-            $userData = $stmt->fetch();
-            $balance = floatval($userData['balance'] ?? 0);
+            $balance = $this->creditService->getBalance($userId);
 
             if ($balance < $price) {
                 return Response::json([
@@ -266,36 +266,23 @@ class CompanyController
                 ], 400);
             }
 
-            $this->db->beginTransaction();
-
-            try {
-                $stmt = $this->db->prepare('UPDATE users SET balance = balance - ? WHERE id = ?');
-                $stmt->execute([$price, $userId]);
-
-                $stmt = $this->db->prepare("
-                    INSERT INTO transactions
-                    (user_id, amount, status, payment_method, module_key, feature_key, transaction_type, gateway_payload, created_at)
-                    VALUES (?, ?, 'pending', 'wallet', 'company_pro', 'identity_verification', 'monthly', '{\"source\": \"company_verification\"}', NOW())
-                ");
-                $stmt->execute([$userId, $price]);
-                $transactionId = $this->db->lastInsertId();
-
-                $this->db->commit();
-
+            $debited = $this->creditService->debit($userId, $price, 'company_pro', 'identity_verification', $userId);
+            if (!$debited) {
                 return Response::json([
-                    'success' => true,
-                    'message' => 'Pagamento processado. Agora você pode enviar seus documentos para verificação.',
-                    'data' => [
-                        'transaction_id' => $transactionId,
-                        'amount_charged' => $price,
-                        'new_balance' => $balance - $price,
-                        'requires_verification' => true,
-                    ],
-                ]);
-            } catch (Exception $e) {
-                $this->db->rollBack();
-                throw $e;
+                    'success' => false,
+                    'message' => 'Erro ao debitar da carteira.',
+                ], 500);
             }
+
+            return Response::json([
+                'success' => true,
+                'message' => 'Pagamento processado. Agora você pode enviar seus documentos para verificação.',
+                'data' => [
+                    'amount_charged' => $price,
+                    'new_balance' => $this->creditService->getBalance($userId),
+                    'requires_verification' => true,
+                ],
+            ]);
         } catch (Exception $e) {
             error_log('purchaseVerification error: ' . $e->getMessage());
             return Response::json([

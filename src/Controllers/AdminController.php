@@ -450,32 +450,29 @@ class AdminController
     {
         $this->authorize($loggedUser);
         $userId = $data['user_id'] ?? null;
-        $amount = (int)($data['amount'] ?? 0);
-        $reason = $data['reason'] ?? 'Adição manual via painel';
+        $amount = (float)($data['amount'] ?? 0);
+        $reason = $data['reason'] ?? 'Crédito administrativo';
         if (!$userId || $amount <= 0) {
             return Response::json(['success' => false, 'message' => 'Dados inválidos']);
         }
         try {
-            $this->db->beginTransaction();
-            $stmtCheck = $this->db->prepare('SELECT id FROM users WHERE id = ?');
-            $stmtCheck->execute([$userId]);
+            $stmtCheck = $this->db->prepare('SELECT id FROM users WHERE id = :id');
+            $stmtCheck->execute([':id' => $userId]);
             if (!$stmtCheck->fetch()) {
-                throw new Exception('Usuário não encontrado');
+                return Response::json(['success' => false, 'message' => 'Usuário não encontrado']);
             }
-            $this->db->prepare('UPDATE users SET ad_credits = ad_credits + :amount WHERE id = :id')->execute([':amount' => $amount, ':id' => $userId]);
-            $this->db->prepare("INSERT INTO credit_transactions (user_id, amount, type, description, created_at) VALUES (?, ?, 'recharge', ?, NOW())")->execute([$userId, $amount, $reason . " (Por: {$loggedUser['name']})"]);
-            $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'MANUAL_CREDIT', "Adicionou {$amount} créditos ao usuário #{$userId}", $userId, 'USER');
-            $this->db->commit();
-            $this->notif->notify($userId, 'Créditos Adicionados!', "Você recebeu {$amount} créditos.", '/dashboard/planos');
-            return Response::json(['success' => true]);
+
+            $description = $reason . " (por {$loggedUser['name']})";
+            $this->creditService->credit($userId, $amount, $description);
+            $newBalance = $this->creditService->getBalance($userId);
+
+            $this->repo->saveLog($loggedUser['id'], $loggedUser['name'], 'WALLET_CREDIT', "Creditou R\$ {$amount} na carteira do usuário #{$userId}: {$reason}", $userId, 'USER');
+            $this->notif->notify($userId, 'Crédito na Carteira!', "Você recebeu R\$ " . number_format($amount, 2, ',', '.') . " de crédito administrativo.", '/dashboard/financeiro');
+            return Response::json(['success' => true, 'message' => "R\$ {$amount} creditados na carteira do usuário #{$userId}", 'new_balance' => $newBalance]);
         } catch (Exception $e) {
-            if ($this->db->inTransaction()) {
-                $this->db->rollBack();
-            }
-            return Response::json(['success' => false]);
+            return Response::json(['success' => false, 'message' => 'Erro ao creditar: ' . $e->getMessage()]);
         }
     }
-
     // ===================== GESTÃO DE FRETES (ADMIN) =====================
 
     public function manageFreights($data, $loggedUser)

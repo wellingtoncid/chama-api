@@ -539,6 +539,37 @@ class PaymentController
                 ]);
             }
 
+            // === OPÇÃO: Pagamento via Carteira ===
+            $paymentMethod = $data['payment_method'] ?? 'mercadopago';
+            if ($paymentMethod === 'wallet') {
+                $balance = $this->creditService->getBalance($userId);
+
+                if ($balance < $amount) {
+                    return Response::json([
+                        'success' => false,
+                        'message' => 'Saldo insuficiente. Seu saldo: R$ ' . number_format($balance, 2, ',', '.') . '. Necessário: R$ ' . number_format($amount, 2, ',', '.'),
+                        'insufficient_balance' => true,
+                        'required' => $amount,
+                        'available' => $balance,
+                    ], 400);
+                }
+
+                $debited = $this->creditService->debit($userId, $amount, 'planos', "assinatura_{$plan['slug']}", $planId);
+                if (!$debited) {
+                    return Response::json(['success' => false, 'message' => 'Erro ao debitar da carteira'], 500);
+                }
+
+                $this->activatePlan($userId, $plan);
+
+                return Response::json([
+                    'success' => true,
+                    'payment_method' => 'wallet',
+                    'message' => 'Plano ativado com sucesso via carteira!',
+                    'new_balance' => $this->creditService->getBalance($userId),
+                    'plan_name' => $plan['name'],
+                ]);
+            }
+
             // Se não há token do MercadoPago, ativa direto em modo dev
             $mpToken = $_ENV['MP_ACCESS_TOKEN'] ?? getenv('MP_ACCESS_TOKEN') ?: '';
 

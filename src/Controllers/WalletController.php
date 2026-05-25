@@ -30,8 +30,18 @@ class WalletController
             return Response::json(['success' => false, 'message' => 'Não autorizado'], 401);
         }
 
-        $balance = $this->creditService->getBalance($loggedUser['id']);
-        $transactions = $this->creditService->getTransactions($loggedUser['id'], 20);
+        // Admin pode ver saldo de outro usuário via ?user_id=
+        $targetId = $loggedUser['id'];
+        if (!empty($data['user_id']) && (int)$data['user_id'] !== $targetId) {
+            $role = strtolower($loggedUser['role'] ?? '');
+            $allowedRoles = ['admin', 'gerente', 'financeiro', 'supervisor', 'coordenador'];
+            if (in_array($role, $allowedRoles)) {
+                $targetId = (int)$data['user_id'];
+            }
+        }
+
+        $balance = $this->creditService->getBalance($targetId);
+        $transactions = $this->creditService->getTransactions($targetId, 20);
 
         return Response::json([
             'success' => true,
