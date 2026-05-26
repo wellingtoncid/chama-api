@@ -21,15 +21,20 @@ class AdRepository
     public function findAds($position = '', $state = '', $search = '', $city = '', $limit = 10)
     {
         $this->deactivateExpiredPlanAds();
+        $this->expireOverdueAds();
         $params = [];
 
         $sql = "SELECT a.*,
                 COALESCE(a.destination_url, '') as link_url,
                 COALESCE(u.ad_credits, 0) as ad_credits,
                 u.name as advertiser_name,
-                u.is_verified as advertiser_verified
+                u.is_verified as advertiser_verified,
+                p.advertiser_tier,
+                p.name as plan_name
                 FROM ads a
                 LEFT JOIN users u ON a.user_id = u.id
+                LEFT JOIN user_modules um ON a.user_id = um.user_id AND um.module_key = 'advertiser' AND um.status = 'active'
+                LEFT JOIN plans p ON um.plan_id = p.id
                 WHERE a.status = 'active'
                 AND (a.expires_at IS NULL OR a.expires_at >= CURDATE())";
 
@@ -58,10 +63,17 @@ class AdRepository
         }
 
         // ORDENAÇÃO INTELIGENTE:
-        // 1. Prioridade manual do sistema (coluna priority)
-        // 2. Localização (Cidade exata > Estado > Nacional)
-        // 3. Aleatório (para não viciar sempre nos mesmos anúncios)
+        // 1. Plano do anunciante (sponsor_master > maintainer_premium > supporter_connect > sem plano)
+        // 2. Prioridade manual do sistema (coluna priority)
+        // 3. Localização (Cidade exata > Estado > Nacional)
+        // 4. Aleatório (para não viciar sempre nos mesmos anúncios)
         $sql .= ' ORDER BY
+                    CASE p.advertiser_tier
+                        WHEN \'sponsor_master\' THEN 0
+                        WHEN \'maintainer_premium\' THEN 1
+                        WHEN \'supporter_connect\' THEN 2
+                        ELSE 3
+                    END ASC,
                     a.priority DESC,
                     (CASE WHEN a.location_city = :order_city THEN 1
                         WHEN a.location_state = :order_state THEN 2
@@ -311,6 +323,9 @@ class AdRepository
 
     public function getAdsByUserId($userId)
     {
+        $this->deactivateExpiredPlanAds();
+        $this->expireOverdueAds($userId);
+
         $sql = 'SELECT
                     a.id,
                     a.title,
@@ -477,7 +492,7 @@ class AdRepository
     public function getUserAdvertisingPlan($userId)
     {
         $stmt = $this->db->prepare("
-            SELECT p.*, um.expires_at as plan_expires_at
+            SELECT p.*, um.expires_at as plan_expires_at, um.created_at as plan_created_at
             FROM user_modules um
             JOIN plans p ON p.type = um.module_key OR p.category = 'advertising'
             WHERE um.user_id = :user_id
@@ -493,7 +508,7 @@ class AdRepository
         // Se não encontrou pelo module_key, tenta buscar qualquer plano ativo de publicidade
         if (!$plan) {
             $stmt = $this->db->prepare("
-                SELECT p.*, um.expires_at as plan_expires_at
+                SELECT p.*, um.expires_at as plan_expires_at, um.created_at as plan_created_at
                 FROM user_modules um
                 JOIN plans p ON p.id = um.plan_id
                 WHERE um.user_id = :user_id
@@ -512,6 +527,8 @@ class AdRepository
 
     /**
      * Verifica se usuário atingiu limite de anúncios do plano
+     * Suporta position_limits do features JSON para controle por posição
+     * Conta anúncios criados no período de faturamento (desde a contratação)
      */
     public function checkPlanAdLimit($userId, $position = null)
     {
@@ -521,16 +538,44 @@ class AdRepository
             return ['allowed' => true, 'reason' => 'Sem plano específico, usa regras padrão'];
         }
 
-        $limit = (int)$plan['limit_monthly'];
+        // Check for per-position limit in features JSON
+        $perPositionLimit = null;
+        if ($position && !empty($plan['features'])) {
+            $features = is_string($plan['features']) ? json_decode($plan['features'], true) : $plan['features'];
+            if (is_array($features)) {
+                $hasPositionLimits = isset($features['position_limits']) && is_array($features['position_limits']);
+                $inPositions = isset($features['positions']) && is_array($features['positions']) && in_array($position, $features['positions']);
 
-        // 0 = ilimitado (nossa convenção: limite > 500 = ilimitado na prática)
+                if ($hasPositionLimits && isset($features['position_limits'][$position])) {
+                    $perPositionLimit = (int)$features['position_limits'][$position];
+                } elseif ($inPositions) {
+                    $perPositionLimit = 1; // Default: 1 per billing period
+                }
+            }
+        }
+
+        $limit = $perPositionLimit !== null ? $perPositionLimit : (int)$plan['limit_monthly'];
+
+        // 0 = ilimitado
         if ($limit === 0 || $limit > 500) {
             return ['allowed' => true, 'reason' => 'Plano com anúncios ilimitados'];
         }
 
-        // Conta anúncios ativos do usuário
-        $sql = "SELECT COUNT(*) as total FROM ads WHERE user_id = :user_id AND status = 'active'";
-        $params = [':user_id' => $userId];
+        // Determina início do período de faturamento atual
+        $durationDays = (int)($plan['duration_days'] ?? 30);
+        if (!empty($plan['plan_expires_at'])) {
+            $periodStart = date('Y-m-d H:i:s', strtotime("-{$durationDays} days", strtotime($plan['plan_expires_at'])));
+        } elseif (!empty($plan['plan_created_at'])) {
+            // Sem expiração: conta desde a criação da assinatura
+            $periodStart = $plan['plan_created_at'];
+        } else {
+            // Fallback: últimos 30 dias
+            $periodStart = date('Y-m-d H:i:s', strtotime('-30 days'));
+        }
+
+        // Conta anúncios criados no período de faturamento (exclui soft-deleted)
+        $sql = "SELECT COUNT(*) as total FROM ads WHERE user_id = :user_id AND deleted_at IS NULL AND created_at >= :period_start";
+        $params = [':user_id' => $userId, ':period_start' => $periodStart];
 
         if ($position) {
             $sql .= ' AND position = :position';
@@ -544,10 +589,14 @@ class AdRepository
         if ($used >= $limit) {
             return [
                 'allowed' => false,
-                'reason' => "Limite de {$limit} anúncios ativos atingido. Upgrade seu plano ou remova anúncios existentes.",
-                'requires_payment' => true,
+                'reason' => $perPositionLimit !== null
+                    ? "Limite de {$limit} anúncio(s) neste período para esta posição. Remova anúncios existentes ou aguarde o próximo ciclo."
+                    : "Limite de {$limit} anúncios ativos atingido. Upgrade seu plano ou remova anúncios existentes.",
+                'requires_payment' => false,
                 'limit' => $limit,
                 'used' => $used,
+                'remaining' => max(0, $limit - $used),
+                'period_start' => $periodStart,
                 'plan_name' => $plan['name'] ?? 'Plano atual',
             ];
         }
@@ -557,7 +606,9 @@ class AdRepository
             'reason' => 'Dentro do limite do plano',
             'limit' => $limit,
             'used' => $used,
-            'remaining' => $limit - $used,
+            'remaining' => max(0, $limit - $used),
+            'period_start' => $periodStart,
+            'plan_name' => $plan['name'] ?? 'Plano atual',
         ];
     }
 
@@ -804,6 +855,54 @@ class AdRepository
         } catch (\Exception $e) {
             error_log('Erro deactivateExpiredPlanAds: ' . $e->getMessage());
             return 0;
+        }
+    }
+
+    /**
+     * Expira anúncios individuais cujo expires_at já passou
+     */
+    public function expireOverdueAds($userId = null): int
+    {
+        try {
+            $sql = "UPDATE ads SET status = 'expired', updated_at = NOW()
+                    WHERE status = 'active'
+                    AND expires_at IS NOT NULL
+                    AND expires_at < NOW()
+                    AND deleted_at IS NULL";
+            $params = [];
+
+            if ($userId !== null) {
+                $sql .= ' AND user_id = :user_id';
+                $params[':user_id'] = $userId;
+            }
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($params);
+            $expired = $stmt->rowCount();
+
+            if ($expired > 0) {
+                error_log("Expirou {$expired} anúncios por vencimento de expires_at" . ($userId ? " (user {$userId})" : ''));
+            }
+
+            return $expired;
+        } catch (\Exception $e) {
+            error_log('Erro expireOverdueAds: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Define prioridade manual de um anúncio
+     */
+    public function setPriority($id, $priority)
+    {
+        try {
+            $stmt = $this->db->prepare("UPDATE ads SET priority = ? WHERE id = ?");
+            $stmt->execute([(int)$priority, (int)$id]);
+            return true;
+        } catch (\Exception $e) {
+            error_log('Erro setPriority: ' . $e->getMessage());
+            return false;
         }
     }
 }

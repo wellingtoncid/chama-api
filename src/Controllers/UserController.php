@@ -820,12 +820,13 @@ class UserController
                     p.sort_order,
                     u.id as user_id,
                     u.name as user_name,
-                    u.slug as user_slug,
-                    u.avatar as user_avatar,
+                    COALESCE(NULLIF(up.slug, ''), CONCAT('usuario-', u.id)) as slug,
+                    NULLIF(up.avatar_url, '') as avatar,
                     um.expires_at
                 FROM user_modules um
                 JOIN plans p ON p.id = um.plan_id
                 JOIN users u ON u.id = um.user_id
+                LEFT JOIN user_profiles up ON u.id = up.user_id
                 WHERE um.module_key = 'advertiser'
                 AND um.status = 'active'
                 AND (um.expires_at IS NULL OR um.expires_at >= NOW())
@@ -849,8 +850,8 @@ class UserController
                 $grouped[$tier][] = [
                     'user_id' => (int)$row['user_id'],
                     'name' => $row['user_name'],
-                    'slug' => $row['user_slug'],
-                    'avatar' => $row['user_avatar'],
+                    'slug' => $row['slug'],
+                    'avatar' => $row['avatar'],
                     'plan_name' => $row['plan_name'],
                     'expires_at' => $row['expires_at'],
                 ];
@@ -998,7 +999,7 @@ class UserController
             $stmt = $this->db->query('
                 SELECT id, name, slug, price, price_quarterly, price_semiannual, price_yearly,
                        duration_days, type, billing_type, description, features, active,
-                       is_highlighted, category
+                       is_highlighted, category, advertiser_tier
                 FROM plans
                 WHERE active = 1
                 ORDER BY sort_order ASC, price ASC
@@ -1009,10 +1010,17 @@ class UserController
             foreach ($plans as &$plan) {
                 if ($plan['features'] && is_string($plan['features'])) {
                     $decoded = json_decode($plan['features'], true);
-                    if (is_array($decoded) && !empty($decoded) && isset($decoded[0])) {
-                        $plan['features'] = array_values($decoded);
-                    } elseif (is_array($decoded) && isset($decoded['features']) && is_array($decoded['features'])) {
-                        $plan['features'] = $decoded['features'];
+                    if (is_array($decoded) && !empty($decoded)) {
+                        if (isset($decoded[0])) {
+                            // Indexed array - legacy format
+                            $plan['features'] = $decoded;
+                        } elseif (isset($decoded['features']) && is_array($decoded['features'])) {
+                            // Nested under 'features' key - legacy format
+                            $plan['features'] = $decoded['features'];
+                        } else {
+                            // Associative object - e.g. {"positions": [...], "freights_per_month": 5}
+                            $plan['features'] = $decoded;
+                        }
                     }
                 }
                 if (!isset($plan['features']) || !is_array($plan['features'])) {

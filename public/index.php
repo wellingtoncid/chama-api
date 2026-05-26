@@ -161,7 +161,7 @@ try {
     $router->delete('/api/partners/:id', 'AdController@deletePartner');
 
     $router->post('/api/log-ad-click', 'MetricsController@registerEvent');
-    $router->post('/api/register-ad-event', 'AdController@trackClick');
+    $router->post('/api/register-ad-event', 'AdController@recordClick');
 
     $router->post('/api/ads/click/:id', 'AdController@recordClick');
     $router->get('/api/ads/report/:id', 'AdController@getReport');

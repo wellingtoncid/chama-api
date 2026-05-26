@@ -210,6 +210,11 @@ class AdminController
             }
             return Response::json(['success' => $success]);
         }
+        if ($action === 'set_priority' && $id) {
+            $priority = isset($data['priority']) ? (int)$data['priority'] : 1;
+            $success = $this->adRepo->setPriority($id, $priority);
+            return Response::json(['success' => $success]);
+        }
         return Response::json(['success' => $this->repo->toggleAdStatus($id)]);
     }
 
