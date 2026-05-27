@@ -429,6 +429,21 @@ class FreightController
         ]);
     }
 
+    public function getUserClickHistory($data, $loggedUser)
+    {
+        $userId = $loggedUser['id'] ?? $data['user_id'] ?? null;
+
+        if (!$userId) {
+            return Response::json(['success' => false, 'message' => 'Usuário não identificado'], 400);
+        }
+
+        $history = $this->repo->getUserClickHistory($userId);
+        return Response::json([
+            'success' => true,
+            'data' => $history,
+        ]);
+    }
+
     /**
      * Unificação: Decide se abre WhatsApp, Chat Interno ou pede Escolha
      */
@@ -751,43 +766,57 @@ class FreightController
         return $stmt->execute([$driverId, $message, $link]);
     }
 
-    public function respondInvitation(Request $request)
+    public function respondInvitation($data, $loggedUser)
     {
-        $alertId = $request->input('alert_id');
-        $action = $request->input('action'); // 'accept' ou 'decline'
+        $alertId = $data['alert_id'] ?? null;
+        $action = $data['action'] ?? null;
 
-        // Chama o repository
-        $success = $this->freightRepository->respondToInvitation($alertId, $action);
+        if (!$alertId || !$action) {
+            return Response::json(['success' => false, 'message' => 'Dados incompletos'], 400);
+        }
+
+        $success = $this->repo->respondToInvitation($alertId, $action);
 
         if ($success) {
-            return response()->json(['success' => true, 'message' => 'Resposta registrada!']);
+            return Response::json(['success' => true, 'message' => 'Resposta registrada!']);
         } else {
-            return response()->json(['success' => false, 'message' => 'Erro ao processar convite.'], 500);
+            return Response::json(['success' => false, 'message' => 'Erro ao processar convite.'], 500);
         }
     }
 
     // Endpoint: my-active-freight
-    public function myActiveFreight(Request $request)
+    public function myActiveFreight($data, $loggedUser)
     {
-        $userId = $request->input('user_id');
+        $userId = $loggedUser['id'] ?? $data['user_id'] ?? null;
 
         if (!$userId) {
-            return response()->json(['error' => 'Usuário não identificado'], 400);
+            return Response::json(['success' => false, 'message' => 'Usuário não identificado'], 400);
         }
 
-        $data = $this->freightRepository->getActiveFreight($userId);
-        return response()->json($data ?: null);
+        $freight = $this->repo->getActiveFreight($userId);
+        return Response::json([
+            'success' => true,
+            'data' => $freight ?: null,
+        ]);
     }
 
     // Endpoint: user-alerts
-    public function userAlerts(Request $request)
+    public function userAlerts($data, $loggedUser)
     {
-        $userId = $request->input('user_id');
-        $type = $request->input('type', 'INVITATION');
-        $status = $request->input('status', 'unread');
+        $userId = $loggedUser['id'] ?? $data['user_id'] ?? null;
 
-        $data = $this->freightRepository->getUserAlerts($userId, $type, $status);
-        return response()->json($data);
+        if (!$userId) {
+            return Response::json(['success' => false, 'message' => 'Usuário não identificado'], 400);
+        }
+
+        $type = $data['type'] ?? 'INVITATION';
+        $status = $data['status'] ?? 'unread';
+
+        $alerts = $this->repo->getUserAlerts($userId, $type, $status);
+        return Response::json([
+            'success' => true,
+            'data' => $alerts,
+        ]);
     }
 
     /**

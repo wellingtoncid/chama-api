@@ -139,6 +139,7 @@ try {
     $router->get('/api/user-alerts', 'FreightController@userAlerts');
     $router->get('/api/my-active-freight', 'FreightController@myActiveFreight');
     $router->get('/api/driver-stats', 'FreightController@getdriverstats');
+    $router->get('/api/admin-click-logs', 'FreightController@getUserClickHistory');
     $router->get('/api/top-ads-freight', 'FreightController@getTopAdvertisersFreight');
     $router->get('/api/freight-tracking', 'FreightController@getFreightTracking');
     $router->get('/api/freight/:id/matching-drivers', 'FreightController@findMatchingDrivers');

@@ -1349,4 +1349,17 @@ class FreightRepository
             return ['success' => false, 'message' => $e->getMessage()];
         }
     }
+
+    public function getUserClickHistory($userId)
+    {
+        $sql = "SELECT DISTINCT f.*, cl.created_at as clicked_at
+                FROM click_logs cl
+                INNER JOIN freights f ON cl.target_id = f.id AND cl.target_type = 'FREIGHT'
+                WHERE cl.user_id = ?
+                ORDER BY cl.created_at DESC
+                LIMIT 50";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
 }

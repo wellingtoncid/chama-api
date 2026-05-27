@@ -910,7 +910,18 @@ class UserController
             $settings = $stmt->fetchAll(PDO::FETCH_ASSOC);
             $result = [];
             foreach ($settings as $s) {
-                $result[$s['setting_key']] = $s['setting_value'];
+                $decoded = json_decode($s['setting_value'], true);
+                if (is_array($decoded) && count($decoded) > 0 && is_array($decoded[0])) {
+                    if (isset($decoded[0]['value'])) {
+                        $result[$s['setting_key']] = json_encode(array_column($decoded, 'value'), JSON_UNESCAPED_UNICODE);
+                    } elseif (isset($decoded[0]['label'])) {
+                        $result[$s['setting_key']] = json_encode(array_column($decoded, 'label'), JSON_UNESCAPED_UNICODE);
+                    } else {
+                        $result[$s['setting_key']] = $s['setting_value'];
+                    }
+                } else {
+                    $result[$s['setting_key']] = $s['setting_value'];
+                }
             }
 
             return Response::json([
