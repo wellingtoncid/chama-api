@@ -363,11 +363,6 @@ class AdRepository
     /**
      * Busca pacotes de créditos ativos no sistema
      */
-    public function getPackages()
-    {
-        return $this->db->query('SELECT * FROM ad_packages WHERE active = 1 ORDER BY price ASC')
-                        ->fetchAll(\PDO::FETCH_ASSOC);
-    }
 
     /**
      * Mapeia feature_key para position (mantido para compatibilidade)

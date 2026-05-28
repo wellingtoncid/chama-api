@@ -190,11 +190,13 @@ class FreightRepository
         $sql = 'INSERT INTO freights (
                     user_id, account_id, origin_city, origin_state, dest_city,
                     dest_state, product, weight, vehicle_type, body_type, description,
-                    status, price, expires_at, is_featured, slug, created_at
+                    status, price, expires_at, is_featured, slug, created_at,
+                    equipment_needed, certifications_needed
                 ) VALUES (
                     :user_id, :account_id, :origin_city, :origin_state, :dest_city, :dest_state,
                     :product, :weight, :vehicle_type, :body_type, :description,
-                    :status, :price, :expires_at, :is_featured, :slug, NOW()
+                    :status, :price, :expires_at, :is_featured, :slug, NOW(),
+                    :equipment_needed, :certifications_needed
                 )';
 
         try {
@@ -217,6 +219,8 @@ class FreightRepository
             $stmt->bindValue(':expires_at', $data['expires_at']);
             $stmt->bindValue(':is_featured', (int)$data['is_featured'], PDO::PARAM_INT);
             $stmt->bindValue(':slug', $data['slug']);
+            $stmt->bindValue(':equipment_needed', $data['equipment_needed'] ?? '[]');
+            $stmt->bindValue(':certifications_needed', $data['certifications_needed'] ?? '[]');
 
             if ($stmt->execute()) {
                 return $this->db->lastInsertId();
@@ -244,7 +248,9 @@ class FreightRepository
                     body_type = :body_type,
                     description = :description,
                     price = :price,
-                    slug = :slug
+                    slug = :slug,
+                    equipment_needed = :equipment_needed,
+                    certifications_needed = :certifications_needed
                 WHERE id = :id';
 
         try {
@@ -264,6 +270,8 @@ class FreightRepository
             $stmt->bindValue(':description', $data['description']);
             $stmt->bindValue(':price', $data['price']);
             $stmt->bindValue(':slug', $data['slug'] ?? '');
+            $stmt->bindValue(':equipment_needed', $data['equipment_needed'] ?? '[]');
+            $stmt->bindValue(':certifications_needed', $data['certifications_needed'] ?? '[]');
 
             return $stmt->execute();
         } catch (\Exception $e) {
@@ -550,12 +558,26 @@ class FreightRepository
 
     public function getSmartMatchFreights($userId)
     {
-        $stmtP = $this->db->prepare('SELECT vehicle_type, body_type FROM user_profiles WHERE user_id = :id');
+        $stmtP = $this->db->prepare(
+            'SELECT vehicle_type, body_type, available_equipment, extended_attributes
+             FROM user_profiles WHERE user_id = :id'
+        );
         $stmtP->execute([':id' => $userId]);
         $profile = $stmtP->fetch();
 
         if (!$profile || empty($profile['vehicle_type'])) {
             return []; // Retorna vazio se o motorista não preencheu o perfil
+        }
+
+        // Extrai certifications do extended_attributes
+        $driverEquipment = [];
+        if (!empty($profile['available_equipment'])) {
+            $driverEquipment = json_decode($profile['available_equipment'], true) ?? [];
+        }
+        $driverCertifications = [];
+        if (!empty($profile['extended_attributes'])) {
+            $extras = json_decode($profile['extended_attributes'], true) ?? [];
+            $driverCertifications = $extras['certifications'] ?? [];
         }
 
         // Usamos LIKE para evitar problemas com espaços ou letras maiúsculas/minúsculas
@@ -574,7 +596,37 @@ class FreightRepository
             '%' . $profile['vehicle_type'] . '%',
             '%' . $profile['body_type'] . '%',
         ]);
-        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        $freights = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        // Enriquece com equipment/certification match score
+        foreach ($freights as &$freight) {
+            $freightEquipment = !empty($freight['equipment_needed'])
+                ? (json_decode($freight['equipment_needed'], true) ?? [])
+                : [];
+            $freightCertifications = !empty($freight['certifications_needed'])
+                ? (json_decode($freight['certifications_needed'], true) ?? [])
+                : [];
+
+            $equipmentMatch = 0;
+            if (!empty($freightEquipment) && !empty($driverEquipment)) {
+                $equipmentMatch = count(array_intersect($freightEquipment, $driverEquipment));
+            }
+            $certMatch = 0;
+            if (!empty($freightCertifications) && !empty($driverCertifications)) {
+                $certMatch = count(array_intersect($freightCertifications, $driverCertifications));
+            }
+
+            $freight['equipment_match_count'] = $equipmentMatch;
+            $freight['certification_match_count'] = $certMatch;
+            $freight['smart_match_score'] = $equipmentMatch * 5 + $certMatch * 3;
+        }
+
+        // Ordena por match score
+        usort($freights, function ($a, $b) {
+            return ($b['smart_match_score'] ?? 0) - ($a['smart_match_score'] ?? 0);
+        });
+
+        return $freights;
     }
 
     public function getFavoritesByUser($userId)

@@ -242,14 +242,6 @@ class AdController
     /**
      * Retorna os pacotes de anúncios para a tela de compra
      */
-    public function getPackages()
-    {
-        $packages = $this->adRepo->getPackages();
-        return Response::json([
-            'success' => true,
-            'data' => $packages,
-        ]);
-    }
 
     /**
      * Verifica e desativa anúncios de planos expirados

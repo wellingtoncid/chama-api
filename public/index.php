@@ -88,6 +88,7 @@ try {
     $router->get('/api/advertisers/tiers', 'UserController@getAdvertisersTiers');
     $router->get('/api/site-settings', 'UserController@getSiteSettings');
     $router->get('/api/public/site-settings', 'UserController@getPublicLists');
+    $router->get('/api/public/lists', 'UserController@getPublicListsNew');
     $router->get('/api/user/usage', 'UserController@getUserUsage');
     $router->get('/api/plans', 'UserController@getPlans');
     $router->post('/api/update-profile', 'UserController@updateProfile');
@@ -130,7 +131,7 @@ try {
     $router->post('/api/finish-freight', 'FreightController@finishFreight');
     $router->get('/api/suggested-drivers', 'FreightController@getSuggestedDrivers');
     $router->get('/api/confirm-match', 'FreightController@confirmMatch');
-    $router->get('/api/get-interested-drivers', 'FreightController@getInterested');
+    $router->get('/api/get-interested-drivers', 'FreightController@listInterests');
     $router->post('/api/accept-driver', 'FreightController@acceptDriver');
     $router->post('/api/contact-advertiser', 'FreightController@contact');
     $router->get('/api/list-interests', 'FreightController@listInterests');
@@ -611,6 +612,11 @@ try {
         $router->get('/api/admin-audit-logs', 'AdminController@listLogs');
         $router->get('/api/admin-settings', 'AdminController@getSettings');
         $router->post('/api/admin-update-settings', 'AdminController@updateSettings');
+        // Lookup lists CRUD
+        $router->get('/api/admin/lists/:type', 'AdminController@listItems');
+        $router->post('/api/admin/lists/:type', 'AdminController@createItem');
+        $router->put('/api/admin/lists/:type/:id', 'AdminController@updateItem');
+        $router->delete('/api/admin/lists/:type/:id', 'AdminController@deleteItem');
         $router->get('/api/admin-activity', 'AdminController@getActivityLogs');
         $router->get('/api/admin/freight-matching', 'AdminController@findMatchingDrivers');
         $router->post('/api/admin/driver-location', 'AdminController@updateDriverLocation');

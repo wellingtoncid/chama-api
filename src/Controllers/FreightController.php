@@ -218,6 +218,13 @@ class FreightController
             $uniqueSuffix = bin2hex(random_bytes(3));
             $finalSlug = $this->generateSlug($slugBase, $uniqueSuffix);
 
+            $equipmentNeeded = isset($data['equipment_needed'])
+                ? (is_string($data['equipment_needed']) ? $data['equipment_needed'] : json_encode($data['equipment_needed'], JSON_UNESCAPED_UNICODE))
+                : '[]';
+            $certificationsNeeded = isset($data['certifications_needed'])
+                ? (is_string($data['certifications_needed']) ? $data['certifications_needed'] : json_encode($data['certifications_needed'], JSON_UNESCAPED_UNICODE))
+                : '[]';
+
             $payload = [
                 'user_id'      => $userId,
                 'account_id'   => $user['account_id'] ?? null,
@@ -236,6 +243,8 @@ class FreightController
                 'expires_at'   => date('Y-m-d H:i:s', strtotime("+$expiresDays days")),
                 'is_featured'  => $isFeatured ? 1 : 0,
                 'is_urgent'    => $isUrgent ? 1 : 0,
+                'equipment_needed' => $equipmentNeeded,
+                'certifications_needed' => $certificationsNeeded,
             ];
 
             $id = $this->repo->save($payload);
@@ -744,9 +753,16 @@ class FreightController
         }
     }
 
-    public function inviteDriver($freightId, $driverId, $companyId)
+    public function inviteDriver($data, $loggedUser)
     {
-        // 1. Busca os detalhes do frete para a mensagem
+        $freightId = (int)($data['freight_id'] ?? 0);
+        $driverId = (int)($data['driver_id'] ?? 0);
+        $companyId = (int)$loggedUser['id'];
+
+        if (!$freightId || !$driverId) {
+            return Response::json(['success' => false, 'message' => 'Dados incompletos: freight_id e driver_id são obrigatórios'], 400);
+        }
+
         $stmtF = $this->db->prepare('SELECT product, origin_city, dest_city FROM freights WHERE id = :id');
         $stmtF->execute([':id' => $freightId]);
         $f = $stmtF->fetch();
@@ -756,14 +772,14 @@ class FreightController
 
         $message = "A empresa {$company['name']} te convidou para transportar {$f['product']} de {$f['origin_city']} para {$f['dest_city']}.";
 
-        // 2. Insere na tabela de alertas que você já possui
         $sql = "INSERT INTO user_alerts (user_id, type, message, link, status, created_at)
                 VALUES (?, 'INVITATION', ?, ?, 'unread', NOW())";
 
         $stmt = $this->db->prepare($sql);
-        $link = '/frete/' . $freightId; // Link para ele ver o frete
+        $link = '/frete/' . $freightId;
 
-        return $stmt->execute([$driverId, $message, $link]);
+        $stmt->execute([$driverId, $message, $link]);
+        return Response::json(['success' => true, 'message' => 'Convite enviado com sucesso!']);
     }
 
     public function respondInvitation($data, $loggedUser)
@@ -773,6 +789,15 @@ class FreightController
 
         if (!$alertId || !$action) {
             return Response::json(['success' => false, 'message' => 'Dados incompletos'], 400);
+        }
+
+        // Ownership check: verifica se o alerta pertence ao usuário logado
+        $stmt = $this->db->prepare('SELECT user_id FROM user_alerts WHERE id = ?');
+        $stmt->execute([$alertId]);
+        $alert = $stmt->fetch();
+
+        if (!$alert || (int)$alert['user_id'] !== (int)$loggedUser['id']) {
+            return Response::json(['success' => false, 'message' => 'Convite não encontrado ou acesso negado'], 403);
         }
 
         $success = $this->repo->respondToInvitation($alertId, $action);
@@ -923,8 +948,7 @@ class FreightController
             }
 
             // 4. Execução do Soft Delete
-            // O repositório deve setar status = 'DELETED' ou preencher deleted_at = NOW()
-            $success = $this->repo->softDelete($id);
+            $success = $this->repo->softDelete($id, $loggedUser['id']);
 
             if ($success) {
                 return Response::json([
@@ -978,6 +1002,13 @@ class FreightController
             }
 
             // 2. Preparação dos dados
+            $equipmentNeeded = isset($data['equipment_needed'])
+                ? (is_string($data['equipment_needed']) ? $data['equipment_needed'] : json_encode($data['equipment_needed'], JSON_UNESCAPED_UNICODE))
+                : ($currentFreight['equipment_needed'] ?? '[]');
+            $certificationsNeeded = isset($data['certifications_needed'])
+                ? (is_string($data['certifications_needed']) ? $data['certifications_needed'] : json_encode($data['certifications_needed'], JSON_UNESCAPED_UNICODE))
+                : ($currentFreight['certifications_needed'] ?? '[]');
+
             $payload = [
                 'origin_city'  => trim($data['origin_city'] ?? $currentFreight['origin_city']),
                 'origin_state' => strtoupper(trim($data['origin_state'] ?? $currentFreight['origin_state'])),
@@ -989,6 +1020,8 @@ class FreightController
                 'body_type'    => $data['body_type'] ?? $currentFreight['body_type'],
                 'description'  => strip_tags($data['description'] ?? $currentFreight['description']),
                 'price'        => (float)($data['price'] ?? $currentFreight['price']),
+                'equipment_needed' => $equipmentNeeded,
+                'certifications_needed' => $certificationsNeeded,
             ];
 
             if ($is_admin && isset($data['user_id'])) {
@@ -1123,47 +1156,61 @@ class FreightController
         return Response::json(['success' => true, 'data' => $suggestions]);
     }
 
-    public function confirmMatch($freightId, $driverId, $companyId, $agreedAmount)
+    public function confirmMatch($data, $loggedUser)
     {
+        $freightId = (int)($data['freight_id'] ?? 0);
+        $driverId = (int)($data['driver_id'] ?? 0);
+        $agreedAmount = (float)($data['amount'] ?? 0);
+        $companyId = (int)$loggedUser['id'];
+
+        if (!$freightId || !$driverId || !$agreedAmount) {
+            return Response::json(['success' => false, 'message' => 'Dados incompletos: freight_id, driver_id e amount são obrigatórios'], 400);
+        }
+
         try {
             $this->db->beginTransaction();
 
-            // 1. Registrar na tabela financeira (Documentação Jurídica do Valor)
             $sqlPay = "INSERT INTO freight_payments
                     (freight_id, payer_id, payee_id, amount, status, description, created_at)
                     VALUES (?, ?, ?, ?, 'escrow', 'Acordo digital firmado entre as partes.', NOW())";
             $stmtPay = $this->db->prepare($sqlPay);
             $stmtPay->execute([$freightId, $companyId, $driverId, $agreedAmount]);
 
-            // 2. Registrar na tabela de tracking (Ciclo de Vida)
             $sqlTrack = "INSERT INTO freight_tracking
                         (freight_id, driver_id, company_id, status, description, created_at)
                         VALUES (?, ?, ?, 'MATCH_CONFIRMED', 'Aperto de mão digital realizado.', NOW())";
             $stmtTrack = $this->db->prepare($sqlTrack);
             $stmtTrack->execute([$freightId, $driverId, $companyId]);
 
-            // 3. Atualizar o frete para 'em andamento'
             $sqlFreight = "UPDATE freights SET status = 'IN_PROGRESS' WHERE id = ?";
             $stmtFreight = $this->db->prepare($sqlFreight);
             $stmtFreight->execute([$freightId]);
 
             $this->db->commit();
-            return ['success' => true, 'message' => 'Acordo firmado com sucesso!'];
+            return Response::json(['success' => true, 'message' => 'Acordo firmado com sucesso!']);
 
         } catch (\Exception $e) {
             $this->db->rollBack();
-            return ['success' => false, 'message' => $e->getMessage()];
+            return Response::json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 
-    public function getSuggestedDrivers($freightId)
+    public function getSuggestedDrivers($data, $loggedUser)
     {
-        // Busca os requisitos da carga postada
+        $freightId = (int)($data['freight_id'] ?? 0);
+
+        if (!$freightId) {
+            return Response::json(['success' => false, 'message' => 'ID do frete é obrigatório'], 400);
+        }
+
         $stmtF = $this->db->prepare('SELECT origin_city, vehicle_type, body_type FROM freights WHERE id = :id');
         $stmtF->execute([':id' => $freightId]);
         $freight = $stmtF->fetch();
 
-        // Busca motoristas compatíveis
+        if (!$freight) {
+            return Response::json(['success' => false, 'message' => 'Frete não encontrado'], 404);
+        }
+
         $sql = "SELECT
                     u.id, u.name, u.whatsapp,
                     up.avatar_url, up.vehicle_type, up.body_type,
@@ -1171,7 +1218,7 @@ class FreightController
                     (SELECT AVG(rating) FROM reviews WHERE related_id = u.id) as rating
                 FROM users u
                 INNER JOIN user_profiles up ON u.id = up.user_id
-                WHERE u.user_type = 'DRIVER'
+                WHERE u.role = 'driver'
                 AND up.vehicle_type = :v_type
                 AND (u.city = :city OR up.preferred_region = :city)
                 ORDER BY rating DESC, total_reviews DESC
@@ -1183,7 +1230,7 @@ class FreightController
             ':city'   => $freight['origin_city'],
         ]);
 
-        return $stmt->fetchAll();
+        return Response::json(['success' => true, 'data' => $stmt->fetchAll()]);
     }
 
     /**
@@ -1360,6 +1407,14 @@ class FreightController
                 ]);
             }
 
+            // Parse equipment/certifications needed do frete
+            $freightEquipment = !empty($freight['equipment_needed'])
+                ? (json_decode($freight['equipment_needed'], true) ?? [])
+                : [];
+            $freightCertifications = !empty($freight['certifications_needed'])
+                ? (json_decode($freight['certifications_needed'], true) ?? [])
+                : [];
+
             // Busca motoristas compatíveis
             $query = "
                 SELECT
@@ -1373,6 +1428,7 @@ class FreightController
                     p.home_state,
                     p.service_radius_km,
                     p.available_equipment,
+                    p.extended_attributes,
                     p.rntrc_number,
                     p.avatar_url,
                     p.verification_status,
@@ -1434,14 +1490,45 @@ class FreightController
 
             $drivers = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
-            // Parse JSON e limpa dados
+            // Parse JSON e adiciona equipment/certification matching score
             foreach ($drivers as &$driver) {
                 $driver['available_equipment'] = isset($driver['available_equipment'])
                     ? json_decode($driver['available_equipment'], true) ?? []
                     : [];
+
+                // Equipment matching boost
+                $equipmentScore = 0;
+                if (!empty($freightEquipment) && !empty($driver['available_equipment'])) {
+                    $intersection = array_intersect($freightEquipment, $driver['available_equipment']);
+                    $equipmentScore = count($intersection) * 5;
+                }
+
+                // Certification matching boost
+                $certScore = 0;
+                $driverCertifications = [];
+                if (!empty($driver['extended_attributes'])) {
+                    $extras = json_decode($driver['extended_attributes'], true) ?? [];
+                    $driverCertifications = $extras['certifications'] ?? [];
+                }
+                if (!empty($freightCertifications) && !empty($driverCertifications)) {
+                    $intersection = array_intersect($freightCertifications, $driverCertifications);
+                    $certScore = count($intersection) * 3;
+                }
+
+                $driver['match_score'] = (int)$driver['match_score'] + $equipmentScore + $certScore;
+                $driver['equipment_match_count'] = $equipmentScore / 5;
+                $driver['certification_match_count'] = $certScore / 3;
+                $driver['available_certifications'] = $driverCertifications;
+
                 // Não expõe dados sensíveis
                 unset($driver['rntrc_number']);
+                unset($driver['extended_attributes']);
             }
+
+            // Reordena com equipment/certification scores
+            usort($drivers, function ($a, $b) {
+                return $b['match_score'] - $a['match_score'];
+            });
 
             return Response::json([
                 'success' => true,

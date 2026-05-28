@@ -898,30 +898,26 @@ class UserController
 
     /**
      * Rota: GET /api/public/site-settings - Retorna listas públicas do site
+     * Lê da tabela lookup_lists, mantendo compatibilidade com formato anterior (arrays de strings)
      */
     public function getPublicLists($data, $loggedUser)
     {
         try {
-            $keys = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types'];
-            $placeholders = implode(',', array_fill(0, count($keys), '?'));
-            $stmt = $this->db->prepare("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ($placeholders)");
-            $stmt->execute($keys);
+            $stmt = $this->db->query(
+                'SELECT list_type, value, label FROM lookup_lists WHERE is_active = 1 ORDER BY list_type, sort_order ASC'
+            );
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            $settings = $stmt->fetchAll(PDO::FETCH_ASSOC);
             $result = [];
-            foreach ($settings as $s) {
-                $decoded = json_decode($s['setting_value'], true);
-                if (is_array($decoded) && count($decoded) > 0 && is_array($decoded[0])) {
-                    if (isset($decoded[0]['value'])) {
-                        $result[$s['setting_key']] = json_encode(array_column($decoded, 'value'), JSON_UNESCAPED_UNICODE);
-                    } elseif (isset($decoded[0]['label'])) {
-                        $result[$s['setting_key']] = json_encode(array_column($decoded, 'label'), JSON_UNESCAPED_UNICODE);
-                    } else {
-                        $result[$s['setting_key']] = $s['setting_value'];
-                    }
-                } else {
-                    $result[$s['setting_key']] = $s['setting_value'];
+            foreach ($rows as $r) {
+                $result[$r['list_type']][] = $r['value'];
+            }
+            // Garante que todas as 4 chaves existam mesmo se vazias
+            foreach (['vehicle_types', 'body_types', 'equipment_types', 'certification_types'] as $key) {
+                if (!isset($result[$key])) {
+                    $result[$key] = [];
                 }
+                $result[$key] = json_encode($result[$key], JSON_UNESCAPED_UNICODE);
             }
 
             return Response::json([
@@ -930,6 +926,41 @@ class UserController
             ]);
         } catch (\Throwable $e) {
             error_log('ERRO getPublicLists: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro interno'], 500);
+        }
+    }
+
+    /**
+     * Rota: GET /api/public/lists - Retorna listas como objetos {value, label, description}
+     */
+    public function getPublicListsNew($data, $loggedUser)
+    {
+        try {
+            $stmt = $this->db->query(
+                'SELECT list_type, value, label, description FROM lookup_lists WHERE is_active = 1 ORDER BY list_type, sort_order ASC'
+            );
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $result = [];
+            foreach ($rows as $r) {
+                $result[$r['list_type']][] = [
+                    'value' => $r['value'],
+                    'label' => $r['label'],
+                    'description' => $r['description'],
+                ];
+            }
+            foreach (['vehicle_types', 'body_types', 'equipment_types', 'certification_types'] as $key) {
+                if (!isset($result[$key])) {
+                    $result[$key] = [];
+                }
+            }
+
+            return Response::json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            error_log('ERRO getPublicListsNew: ' . $e->getMessage());
             return Response::json(['success' => false, 'message' => 'Erro interno'], 500);
         }
     }

@@ -262,6 +262,17 @@ class AdminController
         try {
             $key = $data['key'] ?? null;
             $value = $data['value'] ?? null;
+            // Bloqueia salvamento das 4 listas — agora gerenciadas via lookup_lists
+            $blockedListKeys = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types'];
+            foreach ($blockedListKeys as $bk) {
+                if (isset($data[$bk])) {
+                    return Response::json([
+                        'success' => false,
+                        'message' => 'Use /api/admin/lists/' . $bk . ' para gerenciar esta lista'
+                    ], 400);
+                }
+            }
+
             if (!$key && isset($data['site_name'])) {
                 $allowedKeys = [
                     'site_name', 'site_email', 'site_phone', 'site_whatsapp', 'site_logo', 'site_favicon',
@@ -269,7 +280,6 @@ class AdminController
                     'auto_approve_users', 'freight_expiration_days', 'commission_percent', 'min_withdraw',
                     'mp_client_id', 'mp_client_secret', 'mp_access_token', 'referral_enabled', 'referral_commission',
                     'default_plan', 'freight_free_limit', 'maintenance_mode',
-                    'vehicle_types', 'body_types', 'equipment_types', 'certification_types',
                     'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from_email', 'smtp_from_name',
                     'review_auto_approve_high_rating', 'review_auto_approve_threshold', 'review_auto_reject_bad_words',
                     'report_auto_dismiss_duplicate', 'affiliate_requests_enabled',
@@ -305,6 +315,116 @@ class AdminController
         $stmt->execute([$key, $stringValue]);
     }
 
+    // ===================== LOOKUP LISTS CRUD =====================
+
+    private function validateListType(string $type): bool
+    {
+        return in_array($type, ['vehicle_types', 'body_types', 'equipment_types', 'certification_types']);
+    }
+
+    public function listItems($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $type = $data['type'] ?? '';
+        if (!$this->validateListType($type)) {
+            return Response::json(['success' => false, 'message' => 'Tipo de lista inválido'], 400);
+        }
+        $stmt = $this->db->prepare(
+            'SELECT id, list_type, value, label, description, sort_order, is_active
+             FROM lookup_lists WHERE list_type = ? ORDER BY sort_order ASC'
+        );
+        $stmt->execute([$type]);
+        $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return Response::json(['success' => true, 'data' => $items]);
+    }
+
+    public function createItem($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $type = $data['type'] ?? '';
+        if (!$this->validateListType($type)) {
+            return Response::json(['success' => false, 'message' => 'Tipo de lista inválido'], 400);
+        }
+        $value = trim($data['value'] ?? '');
+        $label = trim($data['label'] ?? '');
+        if (empty($value) || empty($label)) {
+            return Response::json(['success' => false, 'message' => 'value e label são obrigatórios'], 400);
+        }
+        $description = trim($data['description'] ?? '') ?: null;
+        $sortOrder = (int)($data['sort_order'] ?? 0);
+        try {
+            $stmt = $this->db->prepare(
+                'INSERT INTO lookup_lists (list_type, value, label, description, sort_order, is_active)
+                 VALUES (?, ?, ?, ?, ?, 1)'
+            );
+            $stmt->execute([$type, $value, $label, $description, $sortOrder]);
+            return Response::json(['success' => true, 'id' => (int)$this->db->lastInsertId()], 201);
+        } catch (\PDOException $e) {
+            if ($e->getCode() == 23000) {
+                return Response::json(['success' => false, 'message' => 'Já existe um item com este valor nesta lista'], 409);
+            }
+            error_log('ERRO createItem: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao criar item'], 500);
+        }
+    }
+
+    public function updateItem($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $type = $data['type'] ?? '';
+        $id = (int)($data['id'] ?? 0);
+        if (!$this->validateListType($type) || !$id) {
+            return Response::json(['success' => false, 'message' => 'Parâmetros inválidos'], 400);
+        }
+        $fields = [];
+        $params = [];
+        foreach (['value', 'label', 'description'] as $f) {
+            if (isset($data[$f])) {
+                $fields[] = "$f = ?";
+                $params[] = trim($data[$f]);
+            }
+        }
+        if (isset($data['sort_order'])) {
+            $fields[] = "sort_order = ?";
+            $params[] = (int)$data['sort_order'];
+        }
+        if (isset($data['is_active'])) {
+            $fields[] = "is_active = ?";
+            $params[] = (int)$data['is_active'];
+        }
+        if (empty($fields)) {
+            return Response::json(['success' => false, 'message' => 'Nenhum campo para atualizar'], 400);
+        }
+        $params[] = $id;
+        $params[] = $type;
+        try {
+            $stmt = $this->db->prepare(
+                'UPDATE lookup_lists SET ' . implode(', ', $fields) . ' WHERE id = ? AND list_type = ?'
+            );
+            $stmt->execute($params);
+            return Response::json(['success' => true, 'message' => 'Item atualizado']);
+        } catch (\PDOException $e) {
+            error_log('ERRO updateItem: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao atualizar item'], 500);
+        }
+    }
+
+    public function deleteItem($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $type = $data['type'] ?? '';
+        $id = (int)($data['id'] ?? 0);
+        if (!$this->validateListType($type) || !$id) {
+            return Response::json(['success' => false, 'message' => 'Parâmetros inválidos'], 400);
+        }
+        $stmt = $this->db->prepare('DELETE FROM lookup_lists WHERE id = ? AND list_type = ?');
+        $stmt->execute([$id, $type]);
+        if ($stmt->rowCount() === 0) {
+            return Response::json(['success' => false, 'message' => 'Item não encontrado'], 404);
+        }
+        return Response::json(['success' => true, 'message' => 'Item excluído']);
+    }
+
     // ===================== MATCHING DE MOTORISTAS =====================
 
     public function findMatchingDrivers($data, $loggedUser)
@@ -326,7 +446,7 @@ class AdminController
                 return Response::json(['success' => false, 'message' => 'Frete não possui coordenadas de origem. Use a página de edição para geolocalizar.'], 400);
             }
 
-            $query = "SELECT u.id AS driver_id, u.name AS driver_name, u.slug AS driver_slug, u.whatsapp AS driver_whatsapp, p.vehicle_type, p.body_type, p.home_city, p.home_state, p.service_radius_km, p.available_equipment, p.certifications, p.avatar_url, p.verification_status, p.profile_completeness,
+            $query = "SELECT u.id AS driver_id, u.name AS driver_name, u.slug AS driver_slug, u.whatsapp AS driver_whatsapp, p.vehicle_type, p.body_type, p.home_city, p.home_state, p.service_radius_km, p.available_equipment, JSON_EXTRACT(p.extended_attributes, '$.certifications') AS certifications, p.avatar_url, p.verification_status, p.profile_completeness,
                 ROUND(6371 * ACOS(COS(RADIANS(:origin_lat)) * COS(RADIANS(p.home_lat)) * COS(RADIANS(p.home_lng) - RADIANS(:origin_lng)) + SIN(RADIANS(:origin_lat)) * SIN(RADIANS(p.home_lat))), 2) AS distance_km,
                 CASE WHEN p.availability_status = 'available' THEN 30 ELSE 0 END + CASE WHEN p.vehicle_type = :vehicle_type THEN 30 ELSE 0 END + CASE WHEN p.body_type = :body_type THEN 20 ELSE 0 END + CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END AS match_score
                 FROM users u INNER JOIN user_profiles p ON u.id = p.user_id
