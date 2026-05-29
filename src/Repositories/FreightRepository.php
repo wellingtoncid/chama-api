@@ -549,10 +549,10 @@ class FreightRepository
         $sql = "SELECT
             (SELECT COUNT(*) FROM freights WHERE deleted_at IS NULL AND status = 'OPEN' AND (expires_at IS NULL OR expires_at > NOW())) as total_open,
             (SELECT COUNT(*) FROM favorites WHERE user_id = ? AND target_type = 'FREIGHT') as total_favs,
-            (SELECT COUNT(*) FROM user_alerts WHERE user_id = ? AND type = 'INVITATION' AND status = 'unread') as total_invitations";
+            (SELECT COUNT(*) FROM notifications WHERE user_id = ? AND type = 'INVITATION' AND is_read = 0) as total_invitations";
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$userId, $userId, $userId]);
+        $stmt->execute([$userId, $userId]);
         return $stmt->fetch(\PDO::FETCH_ASSOC);
     }
 
@@ -1294,7 +1294,7 @@ class FreightRepository
             $this->db->beginTransaction();
 
             // 1. Busca os dados do alerta/convite
-            $stmt = $this->db->prepare('SELECT user_id, link FROM user_alerts WHERE id = ?');
+            $stmt = $this->db->prepare('SELECT user_id, action_url as link FROM notifications WHERE id = ?');
             $stmt->execute([$alertId]);
             $alert = $stmt->fetch();
 
@@ -1318,13 +1318,13 @@ class FreightRepository
                 $company = $stmtCompany->fetch();
 
                 if ($company) {
-                    $this->db->prepare("INSERT INTO user_alerts (user_id, message, type) VALUES (?, 'O motorista aceitou seu convite!', 'MATCH')")
+                    $this->db->prepare("INSERT INTO notifications (user_id, type, message, is_read) VALUES (?, 'MATCH', 'O motorista aceitou seu convite!', 0)")
                             ->execute([$company['user_id']]);
                 }
             }
 
             // 4. Marca o alerta como lido/processado
-            $this->db->prepare("UPDATE user_alerts SET status = 'read' WHERE id = ?")->execute([$alertId]);
+            $this->db->prepare("UPDATE notifications SET is_read = 1 WHERE id = ?")->execute([$alertId]);
 
             $this->db->commit();
             return true;
@@ -1359,13 +1359,15 @@ class FreightRepository
      */
     public function getUserAlerts($userId, $type = 'INVITATION', $status = 'unread')
     {
-        $sql = 'SELECT id, message, link, status, created_at
-                FROM user_alerts
-                WHERE user_id = ? AND type = ? AND status = ?
+        $isRead = ($status === 'unread') ? 0 : 1;
+        $sql = 'SELECT id, message, action_url as link, created_at,
+                       CASE WHEN is_read = 0 THEN "unread" ELSE "read" END as status
+                FROM notifications
+                WHERE user_id = ? AND type = ? AND is_read = ?
                 ORDER BY created_at DESC';
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$userId, $type, $status]);
+        $stmt->execute([$userId, $type, $isRead]);
         return $stmt->fetchAll();
     }
 

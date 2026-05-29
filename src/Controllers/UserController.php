@@ -981,6 +981,23 @@ class UserController
             $freightsStats = $this->accessControlService->getUsageStats($userId, 'freights');
             $marketplaceStats = $this->accessControlService->getUsageStats($userId, 'marketplace');
 
+            // Busca recursos ativos do usuário (featured_profile, radar_highlight, etc.)
+            $stmt = $this->db->prepare('
+                SELECT feature_key, activated_at, expires_at
+                FROM user_features
+                WHERE user_id = ? AND status = \'active\' AND (expires_at IS NULL OR expires_at > NOW())
+            ');
+            $stmt->execute([$userId]);
+            $activeFeatures = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $features = [];
+            foreach ($activeFeatures as $f) {
+                $features[$f['feature_key']] = [
+                    'active' => true,
+                    'activated_at' => $f['activated_at'],
+                    'expires_at' => $f['expires_at'],
+                ];
+            }
+
             return Response::json([
                 'success' => true,
                 'data' => [
@@ -1002,6 +1019,7 @@ class UserController
                         'month' => $marketplaceStats['month'],
                         'year' => $marketplaceStats['year'],
                     ],
+                    'features' => $features,
                 ],
             ]);
         } catch (\Throwable $e) {

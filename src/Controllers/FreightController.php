@@ -772,8 +772,8 @@ class FreightController
 
         $message = "A empresa {$company['name']} te convidou para transportar {$f['product']} de {$f['origin_city']} para {$f['dest_city']}.";
 
-        $sql = "INSERT INTO user_alerts (user_id, type, message, link, status, created_at)
-                VALUES (?, 'INVITATION', ?, ?, 'unread', NOW())";
+        $sql = "INSERT INTO notifications (user_id, type, message, action_url, is_read, created_at)
+                VALUES (?, 'INVITATION', ?, ?, 0, NOW())";
 
         $stmt = $this->db->prepare($sql);
         $link = '/frete/' . $freightId;
@@ -792,7 +792,7 @@ class FreightController
         }
 
         // Ownership check: verifica se o alerta pertence ao usuário logado
-        $stmt = $this->db->prepare('SELECT user_id FROM user_alerts WHERE id = ?');
+        $stmt = $this->db->prepare('SELECT user_id FROM notifications WHERE id = ?');
         $stmt->execute([$alertId]);
         $alert = $stmt->fetch();
 
@@ -1433,6 +1433,8 @@ class FreightController
                     p.avatar_url,
                     p.verification_status,
                     p.profile_completeness,
+                    CASE WHEN uf_featured.id IS NOT NULL THEN 1 ELSE 0 END AS is_featured,
+                    CASE WHEN uf_radar.id IS NOT NULL THEN 1 ELSE 0 END AS is_radar_highlighted,
                     ROUND(
                         6371 * ACOS(
                             LEAST(1.0, GREATEST(-1.0,
@@ -1445,9 +1447,20 @@ class FreightController
                     CASE WHEN p.availability_status = 'available' THEN 30 ELSE 0 END +
                     CASE WHEN p.vehicle_type = :vehicle_type THEN 30 ELSE 0 END +
                     CASE WHEN p.body_type = :body_type THEN 20 ELSE 0 END +
-                    CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END AS match_score
+                    CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END +
+                    CASE WHEN uf_featured.id IS NOT NULL THEN 50 ELSE 0 END AS match_score
                 FROM users u
                 INNER JOIN user_profiles p ON u.id = p.user_id
+                LEFT JOIN user_features uf_featured
+                    ON u.id = uf_featured.user_id
+                    AND uf_featured.feature_key = 'featured_profile'
+                    AND uf_featured.status = 'active'
+                    AND (uf_featured.expires_at IS NULL OR uf_featured.expires_at > NOW())
+                LEFT JOIN user_features uf_radar
+                    ON u.id = uf_radar.user_id
+                    AND uf_radar.feature_key = 'radar_highlight'
+                    AND uf_radar.status = 'active'
+                    AND (uf_radar.expires_at IS NULL OR uf_radar.expires_at > NOW())
                 WHERE u.role = 'driver'
                     AND u.status = 'active'
                     AND p.availability_status = 'available'

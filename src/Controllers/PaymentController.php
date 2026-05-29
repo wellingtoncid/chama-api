@@ -136,6 +136,50 @@ class PaymentController
      * Cria pagamento por uso avulso de módulo
      * Prioriza saldo da carteira, fallback para MercadoPago
      */
+    private function resolveFeatureAmount(array $rule): array
+    {
+        $pricingType = $rule['pricing_type'] ?? 'per_use';
+        $amount = 0;
+        $durationDays = null;
+
+        switch ($pricingType) {
+            case 'monthly':
+                $amount = (float)($rule['price_monthly'] ?? 0);
+                $durationDays = $rule['duration_days'] ?? 30;
+                break;
+            case 'daily':
+                $amount = (float)($rule['price_daily'] ?? 0);
+                $durationDays = $rule['duration_days'] ?? 1;
+                break;
+            case 'one_time':
+                $amount = (float)($rule['price_per_use'] ?? 0);
+                $durationDays = $rule['duration_days'] ?? 365;
+                break;
+            default: // per_use
+                $amount = (float)($rule['price_per_use'] ?? 0);
+                $durationDays = 1;
+                break;
+        }
+
+        return ['amount' => $amount, 'duration_days' => $durationDays];
+    }
+
+    private function activateUserFeature(int $userId, string $moduleKey, string $featureKey, ?int $durationDays = 30): void
+    {
+        $expiresAt = $durationDays ? date('Y-m-d H:i:s', strtotime("+{$durationDays} days")) : null;
+
+        $stmt = $this->db->prepare('
+            INSERT INTO user_features (user_id, module_key, feature_key, status, activated_at, expires_at)
+            VALUES (?, ?, ?, \'active\', NOW(), ?)
+            ON DUPLICATE KEY UPDATE
+                status = \'active\',
+                activated_at = NOW(),
+                expires_at = VALUES(expires_at),
+                updated_at = NOW()
+        ');
+        $stmt->execute([$userId, $moduleKey, $featureKey, $expiresAt]);
+    }
+
     public function purchasePerUse($data, $loggedUser)
     {
         if (!$loggedUser || !isset($loggedUser['id'])) {
@@ -144,7 +188,7 @@ class PaymentController
 
         $moduleKey = $data['module_key'] ?? '';
         $featureKey = $data['feature_key'] ?? '';
-        $paymentMethod = $data['payment_method'] ?? 'auto'; // 'auto', 'wallet', 'mercadopago'
+        $paymentMethod = $data['payment_method'] ?? 'auto';
 
         if (empty($moduleKey) || empty($featureKey)) {
             return Response::json(['success' => false, 'message' => 'Módulo ou recurso inválido'], 400);
@@ -153,10 +197,8 @@ class PaymentController
         $userId = $loggedUser['id'];
 
         try {
-            // Módulos ativos por padrão
-            $defaultActiveModules = ['freights', 'marketplace'];
+            $defaultActiveModules = ['freights', 'marketplace', 'driver'];
 
-            // Verificar se o módulo está ativo para o usuário via repository
             $moduleAccess = $this->paymentRepo->findActiveModuleForUser($userId, $moduleKey);
 
             if (!$moduleAccess && !in_array($moduleKey, $defaultActiveModules)) {
@@ -168,7 +210,6 @@ class PaymentController
                 ], 403);
             }
 
-            // Se é módulo ativo por padrão mas não tem registro, cria um
             if (!$moduleAccess && in_array($moduleKey, $defaultActiveModules)) {
                 $this->paymentRepo->activateModule($userId, $moduleKey);
             }
@@ -176,23 +217,30 @@ class PaymentController
             // Busca preço via repository
             $rule = $this->paymentRepo->findPricingRule($moduleKey, $featureKey);
 
-            if (!$rule || $rule['price_per_use'] <= 0) {
+            if (!$rule) {
                 return Response::json(['success' => false, 'message' => 'Preço não configurado para este recurso'], 400);
             }
 
-            $amount = (float)$rule['price_per_use'];
+            $resolved = $this->resolveFeatureAmount($rule);
+            $amount = $resolved['amount'];
+            $durationDays = $resolved['duration_days'];
 
-            error_log("PURCHASE_PER_USE: module={$moduleKey}, feature={$featureKey}, amount={$amount}, paymentMethod={$paymentMethod}");
+            if ($amount <= 0) {
+                return Response::json(['success' => false, 'message' => 'Preço não configurado para este recurso'], 400);
+            }
+
+            error_log("PURCHASE: module={$moduleKey}, feature={$featureKey}, amount={$amount}, type={$rule['pricing_type']}, paymentMethod={$paymentMethod}");
 
             // === OPÇÃO 1: Usar saldo da carteira ===
             if ($paymentMethod === 'auto' || $paymentMethod === 'wallet') {
                 $balance = $this->creditService->getBalance($userId);
 
                 if ($balance >= $amount) {
-                    // Saldo suficiente - debita da carteira
                     $success = $this->creditService->debit($userId, $amount, $moduleKey, $featureKey);
 
                     if ($success) {
+                        $this->activateUserFeature($userId, $moduleKey, $featureKey, $durationDays);
+
                         return Response::json([
                             'success' => true,
                             'payment_method' => 'wallet',
@@ -203,7 +251,6 @@ class PaymentController
                     }
                 }
 
-                // Se escolheu carteira explicitamente mas não tem saldo
                 if ($paymentMethod === 'wallet') {
                     return Response::json([
                         'success' => false,
@@ -228,7 +275,6 @@ class PaymentController
                 ], 400);
             }
 
-            // Cria preferência MercadoPago
             $mpData = [
                 'title' => $rule['feature_name'] . ' - Chama Frete',
                 'amount' => $amount,
@@ -760,6 +806,12 @@ class PaymentController
                         ");
                         $stmt->execute([':user_id' => $tx['user_id'], ':module_key' => $tx['module_key'], ':expires_at' => $expiresAt, ':expires_at2' => $expiresAt]);
                         $this->applyVerificationBadge($tx['user_id'], $tx['plan_id']);
+
+                        // Activate specific feature in user_features (e.g. featured_profile, radar_highlight)
+                        if (!empty($tx['feature_key'])) {
+                            $this->activateUserFeature((int)$tx['user_id'], $tx['module_key'], $tx['feature_key'], $tx['transaction_type'] === 'monthly' ? 30 : null);
+                        }
+
                         return Response::json(['status' => 'module_activated'], 200);
                     }
 
@@ -1045,7 +1097,8 @@ class PaymentController
         }
 
         $userId = $loggedUser['id'];
-        error_log("DRIVER VERIFICATION: Usuário ID={$userId}, role={$loggedUser['role']}");
+        $paymentMethod = $data['payment_method'] ?? 'auto'; // 'auto', 'wallet', 'mercadopago'
+        error_log("DRIVER VERIFICATION: Usuário ID={$userId}, role={$loggedUser['role']}, payment_method={$paymentMethod}");
 
         // Verifica se é driver (role vem em maiúsculas do JWT)
         $userRole = $loggedUser['role'] ?? '';
@@ -1080,31 +1133,43 @@ class PaymentController
             return Response::json(['success' => false, 'message' => 'Regra de preço não encontrada'], 400);
         }
 
-        $amount = (float)$rule['price_monthly'];
-        error_log("DRIVER VERIFICATION: Amount={$amount}");
+        $pricingType = $rule['pricing_type'] ?? 'per_use';
+        $amount = match ($pricingType) {
+            'monthly' => (float)($rule['price_monthly'] ?? 0),
+            'daily' => (float)($rule['price_daily'] ?? 0),
+            default => (float)($rule['price_per_use'] ?? 0),
+        };
+        error_log("DRIVER VERIFICATION: pricing_type={$pricingType}, Amount={$amount}");
 
         if ($amount <= 0) {
             error_log("DRIVER VERIFICATION: Preço inválido {$amount}");
             return Response::json(['success' => false, 'message' => 'Preço não configurado para este recurso'], 400);
         }
 
-        // Verifica se há transação pendente ou awaiting_review
+        // Se já pagou e está aguardando análise, bloqueia
         $stmt = $this->db->prepare("
-            SELECT * FROM transactions
+            SELECT id FROM transactions
             WHERE user_id = ? AND module_key = 'driver' AND feature_key = 'document_verification'
-            AND status IN ('pending', 'awaiting_review')
-            ORDER BY created_at DESC LIMIT 1
+            AND status = 'awaiting_review'
+            LIMIT 1
         ");
         $stmt->execute([$userId]);
-        $pendingTx = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($pendingTx) {
-            error_log("DRIVER VERIFICATION: Usuário {$userId} já tem transação pendente");
+        if ($stmt->fetch()) {
+            error_log("DRIVER VERIFICATION: Usuário {$userId} já tem transação em análise");
             return Response::json([
                 'success' => false,
                 'message' => 'Você já possui uma solicitação pendente de verificação. Aguarde a análise.',
             ], 400);
         }
+
+        // Expira transações 'pending' antigas (MP não pago)
+        $stmt = $this->db->prepare("
+            UPDATE transactions SET status = 'expired', updated_at = NOW()
+            WHERE user_id = ? AND module_key = 'driver' AND feature_key = 'document_verification'
+            AND status = 'pending'
+        ");
+        $stmt->execute([$userId]);
 
         // Verifica se já foi rejeitada recentemente (para mostrar instruções)
         $stmt = $this->db->prepare("
@@ -1118,59 +1183,98 @@ class PaymentController
 
         // Verifica saldo na carteira
         $balance = $this->creditService->getBalance($userId);
-        if ($balance < $amount) {
-            error_log("DRIVER VERIFICATION: Saldo insuficiente. Saldo={$balance}, Necessário={$amount}");
+
+        // Se usuário escolheu MP explicitamente, pula carteira
+        if ($paymentMethod !== 'mercadopago' && $balance >= $amount) {
+            // Saldo suficiente — debita da carteira e cria transação
+            try {
+                $debitado = $this->creditService->debit($userId, $amount, 'driver', 'document_verification');
+
+                if (!$debitado) {
+                    error_log('DRIVER VERIFICATION: Falha ao debitar carteira');
+                    return Response::json([
+                        'success' => false,
+                        'message' => 'Erro ao processar pagamento. Tente novamente.',
+                    ], 500);
+                }
+
+                $stmt = $this->db->prepare("
+                    INSERT INTO transactions
+                    (user_id, module_key, feature_key, transaction_type, amount, status, external_reference, created_at)
+                    VALUES (:user_id, :module_key, :feature_key, :tx_type, :amount, 'awaiting_review', :external_ref, NOW())
+                ");
+                $externalRef = 'DRIVER_VERIFY_' . uniqid();
+                $stmt->execute([
+                    ':user_id' => $userId,
+                    ':module_key' => 'driver',
+                    ':feature_key' => 'document_verification',
+                    ':tx_type' => $pricingType,
+                    ':amount' => $amount,
+                    ':external_ref' => $externalRef,
+                ]);
+                $transactionId = $this->db->lastInsertId();
+                error_log("DRIVER VERIFICATION: Transação {$transactionId} criada. Valor: {$amount}");
+
+                return Response::json([
+                    'success' => true,
+                    'payment_method' => 'wallet',
+                    'message' => 'Solicitação enviada! Sua verificação está aguardando análise da equipe Chama Frete.',
+                    'payment_processed' => true,
+                    'transaction_id' => $transactionId,
+                    'status' => 'awaiting_review',
+                    'amount_charged' => $amount,
+                    'new_balance' => $this->creditService->getBalance($userId),
+                ]);
+
+            } catch (\Throwable $e) {
+                error_log('DRIVER VERIFICATION ERRO: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+                return Response::json(['success' => false, 'message' => 'Erro ao processar verificação: ' . $e->getMessage()], 500);
+            }
+        }
+
+        // Saldo insuficiente ou usuário escolheu MP — tenta Mercado Pago
+        error_log("DRIVER VERIFICATION: Usando Mercado Pago. Saldo={$balance}, Necessário={$amount}");
+
+        $mpToken = $_ENV['MP_ACCESS_TOKEN'] ?? getenv('MP_ACCESS_TOKEN') ?: '';
+
+        if (empty($mpToken)) {
             return Response::json([
                 'success' => false,
                 'message' => 'Saldo insuficiente. Você precisa de R$ ' . number_format($amount, 2, ',', '.') . ' para solicitar a verificação. Saldo atual: R$ ' . number_format($balance, 2, ',', '.') . '.',
                 'insufficient_balance' => true,
                 'balance' => $balance,
                 'required' => $amount,
-                'rejection_reason' => $rejectedTx['rejection_reason'] ?? null,
             ], 400);
         }
 
         try {
-            // Debita da carteira
-            $debitado = $this->creditService->debit($userId, $amount, 'driver', 'document_verification');
+            $mpData = [
+                'title' => 'Verificação de Identidade - Chama Frete',
+                'amount' => $amount,
+                'plan_id' => null,
+                'module_key' => 'driver',
+                'feature_key' => 'document_verification',
+            ];
 
-            if (!$debitado) {
-                error_log('DRIVER VERIFICATION: Falha ao debitar carteira');
-                return Response::json([
-                    'success' => false,
-                    'message' => 'Erro ao processar pagamento. Tente novamente.',
-                ], 500);
+            $result = $this->mpService->createPreference($mpData, $userId);
+
+            if (empty($result['init_point'])) {
+                error_log('DRIVER VERIFICATION: MP não retornou init_point');
+                return Response::json(['success' => false, 'message' => 'Erro ao gerar link de pagamento'], 500);
             }
-
-            // Registra transação com status 'awaiting_review'
-            $stmt = $this->db->prepare("
-                INSERT INTO transactions
-                (user_id, module_key, feature_key, transaction_type, amount, status, external_reference, created_at)
-                VALUES (:user_id, :module_key, :feature_key, 'monthly', :amount, 'awaiting_review', :external_ref, NOW())
-            ");
-            $externalRef = 'DRIVER_VERIFY_' . uniqid();
-            $stmt->execute([
-                ':user_id' => $userId,
-                ':module_key' => 'driver',
-                ':feature_key' => 'document_verification',
-                ':amount' => $amount,
-                ':external_ref' => $externalRef,
-            ]);
-            $transactionId = $this->db->lastInsertId();
-            error_log("DRIVER VERIFICATION: Transação {$transactionId} criada. Valor: {$amount}");
 
             return Response::json([
                 'success' => true,
-                'message' => 'Solicitação enviada! Sua verificação está aguardando análise da equipe Chama Frete.',
-                'payment_processed' => true,
-                'transaction_id' => $transactionId,
-                'status' => 'awaiting_review',
-                'amount_charged' => $amount,
+                'payment_method' => 'mercadopago',
+                'url' => $result['init_point'],
+                'transaction_id' => $result['transaction_id'],
+                'amount' => $amount,
+                'wallet_balance' => $balance,
             ]);
 
         } catch (\Throwable $e) {
-            error_log('DRIVER VERIFICATION ERRO: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
-            return Response::json(['success' => false, 'message' => 'Erro ao processar verificação: ' . $e->getMessage()], 500);
+            error_log('DRIVER VERIFICATION MP ERRO: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao processar pagamento: ' . $e->getMessage()], 500);
         }
     }
 
