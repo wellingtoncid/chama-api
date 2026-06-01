@@ -244,7 +244,7 @@ class DashboardController
             $stmt = $this->db->prepare("
                 SELECT
                     COUNT(*) as total,
-                    SUM(CASE WHEN f.status IN ('OPEN','PENDING') THEN 1 ELSE 0 END) as active_count,
+                    SUM(CASE WHEN f.status IN ('OPEN','PENDING') AND (f.expires_at IS NULL OR f.expires_at >= NOW()) THEN 1 ELSE 0 END) as active_count,
                     COALESCE(SUM(f.views_count), 0) as total_views,
                     COALESCE(SUM(f.clicks_count), 0) as total_interests
                 FROM freights f
@@ -344,7 +344,7 @@ class DashboardController
 
             // 6. Consumo do plano
             $usage = [
-                'freights' => ['used' => $freightStats['total'], 'limit' => 0, 'remaining' => 0],
+                'freights' => ['used' => $freightStats['active_count'], 'limit' => 0, 'remaining' => 0],
                 'marketplace' => ['used' => $listingCount, 'limit' => 0, 'remaining' => 0],
             ];
 

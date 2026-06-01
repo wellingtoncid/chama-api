@@ -226,60 +226,34 @@ class AccessControlService
     }
 
     /**
-     * Conta publicações do mês atual (com plano) ou ativas (sem plano)
+     * Conta publicações do mês atual
      */
     private function getCurrentMonthUsage(int $userId, string $moduleKey): int
     {
         $usageMonth = (int)date('n');
         $usageYear = (int)date('Y');
 
-        $moduleToCategory = [
-            'freights' => 'freight_subscription',
-            'marketplace' => 'marketplace_subscription',
-        ];
-        $category = $moduleToCategory[$moduleKey] ?? $moduleKey;
-        $plan = $this->getActivePlan($userId, $category);
-
-        // Com plano ativo: conta publicações criadas no mês (limite mensal recorrente)
-        if ($plan) {
-            if ($moduleKey === 'freights') {
-                $sql = 'SELECT COUNT(*) as total FROM freights
-                       WHERE user_id = :user_id
-                       AND MONTH(created_at) = :month
-                       AND YEAR(created_at) = :year
-                       AND deleted_at IS NULL';
-            } else {
-                $sql = "SELECT COUNT(*) as total FROM listings
-                       WHERE user_id = :user_id
-                       AND MONTH(created_at) = :month
-                       AND YEAR(created_at) = :year
-                       AND status != 'rejected'";
-            }
-
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
-                ':user_id' => $userId,
-                ':month' => $usageMonth,
-                ':year' => $usageYear,
-            ]);
-
-            return (int)($stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
-        }
-
-        // Sem plano (free tier): conta itens ativos (limite de concorrência)
         if ($moduleKey === 'freights') {
             $sql = 'SELECT COUNT(*) as total FROM freights
                    WHERE user_id = :user_id
-                   AND status IN (\'OPEN\', \'PENDING\')
-                   AND deleted_at IS NULL';
+                   AND MONTH(created_at) = :month
+                   AND YEAR(created_at) = :year
+                   AND deleted_at IS NULL
+                   AND status IN (\'OPEN\', \'PENDING\')';
         } else {
             $sql = "SELECT COUNT(*) as total FROM listings
                    WHERE user_id = :user_id
-                   AND status = 'active'";
+                   AND MONTH(created_at) = :month
+                   AND YEAR(created_at) = :year
+                   AND status != 'rejected'";
         }
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([':user_id' => $userId]);
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':month' => $usageMonth,
+            ':year' => $usageYear,
+        ]);
 
         return (int)($stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
     }

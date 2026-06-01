@@ -146,21 +146,45 @@ class GeocodingService
     }
 
     /**
-     * Calcula distância entre duas coordenadas (Haversine)
+     * Calcula distância rodoviária via OSRM, com fallback para Haversine
      */
     public function calculateDistance(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
-        $earthRadius = 6371; // km
+        $road = $this->roadDistance($lat1, $lng1, $lat2, $lng2);
+        if ($road !== null) {
+            return round($road, 2);
+        }
+        return round($this->haversineDistance($lat1, $lng1, $lat2, $lng2), 2);
+    }
 
+    /**
+     * Distância rodoviária via OSRM (rota real)
+     */
+    private function roadDistance(float $lat1, float $lng1, float $lat2, float $lng2): ?float
+    {
+        $url = "https://router.project-osrm.org/route/v1/driving/{$lng1},{$lat1};{$lng2},{$lat2}?overview=false";
+        $context = stream_context_create([
+            'http' => ['timeout' => 8, 'method' => 'GET'],
+        ]);
+        $response = @file_get_contents($url, false, $context);
+        if (!$response) return null;
+        $data = json_decode($response, true);
+        if (empty($data['routes'][0]['distance'])) return null;
+        return $data['routes'][0]['distance'] / 1000;
+    }
+
+    /**
+     * Distância em linha reta (Haversine)
+     */
+    private function haversineDistance(float $lat1, float $lng1, float $lat2, float $lng2): float
+    {
+        $earthRadius = 6371;
         $dLat = deg2rad($lat2 - $lat1);
         $dLng = deg2rad($lng2 - $lng1);
-
         $a = sin($dLat / 2) * sin($dLat / 2) +
              cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
              sin($dLng / 2) * sin($dLng / 2);
-
         $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
-
-        return round($earthRadius * $c, 2);
+        return $earthRadius * $c;
     }
 }

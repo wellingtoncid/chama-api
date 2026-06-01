@@ -1197,7 +1197,7 @@ class UserRepository
                     a.trade_name,
                     a.corporate_name,
                     a.document_number as cnpj,
-                    (SELECT COUNT(*) FROM freights WHERE user_id = u.id AND status = 'OPEN' AND deleted_at IS NULL) as total_active_freights,
+                    (SELECT COUNT(*) FROM freights WHERE user_id = u.id AND status IN ('OPEN', 'PENDING', 'in_progress') AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())) as total_active_freights,
                     (SELECT COUNT(*) FROM listings WHERE user_id = u.id AND status = 'active' AND deleted_at IS NULL) as total_active_listings,
                     (SELECT COUNT(*) FROM ads WHERE user_id = u.id AND status = 'active' AND deleted_at IS NULL) as total_active_ads
                 FROM user_profiles up

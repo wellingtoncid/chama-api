@@ -242,6 +242,31 @@ class AdminController
                 $settingsMap[$key] = $s['setting_value'];
                 $byCategory[$cat][$key] = $s['setting_value'];
             }
+            // Override 4 list keys with live data from lookup_lists (formato {value, label})
+            $listTypes = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types'];
+            foreach ($listTypes as $lt) {
+                $stmtL = $this->db->prepare(
+                    'SELECT value, label FROM lookup_lists WHERE list_type = ? AND is_active = 1 ORDER BY sort_order ASC'
+                );
+                $stmtL->execute([$lt]);
+                $items = $stmtL->fetchAll(PDO::FETCH_ASSOC);
+                // Preserva {value, label} para compatibilidade com syncListToCrud
+                $settingsMap[$lt] = json_encode($items ?: [], JSON_UNESCAPED_UNICODE);
+                $byCategory['lists'][$lt] = $settingsMap[$lt];
+            }
+            // Carrega cargo_types da tabela dedicada (formato {value, label})
+            try {
+                $ctStmt = $this->db->query(
+                    'SELECT id, name FROM cargo_types ORDER BY sort_order ASC, name ASC'
+                );
+                $ctItems = $ctStmt->fetchAll(PDO::FETCH_ASSOC);
+                $ctMapped = array_map(fn($ct) => ['value' => $ct['name'], 'label' => $ct['name']], $ctItems ?: []);
+                $settingsMap['cargo_types'] = json_encode($ctMapped, JSON_UNESCAPED_UNICODE);
+                $byCategory['lists']['cargo_types'] = $settingsMap['cargo_types'];
+            } catch (\Throwable $e) {
+                error_log('Tabela cargo_types não existe ou erro: ' . $e->getMessage());
+                $settingsMap['cargo_types'] = '[]';
+            }
             $plans = [];
             try {
                 $plansStmt = $this->db->query('SELECT id, name, price, duration_days, type, description FROM plans ORDER BY price ASC');
@@ -423,6 +448,122 @@ class AdminController
             return Response::json(['success' => false, 'message' => 'Item não encontrado'], 404);
         }
         return Response::json(['success' => true, 'message' => 'Item excluído']);
+    }
+
+    // ===================== CARGO TYPES CRUD =====================
+
+    public function listCargoTypes($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        try {
+            $stmt = $this->db->query(
+                'SELECT id, name, slug, description, icon, sort_order, is_active
+                 FROM cargo_types ORDER BY sort_order ASC, name ASC'
+            );
+            $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return Response::json(['success' => true, 'data' => $items]);
+        } catch (\Throwable $e) {
+            error_log('ERRO listCargoTypes: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao listar tipos de carga'], 500);
+        }
+    }
+
+    private function slugify($str): string
+    {
+        $str = preg_replace('/[^\pL\pN]+/u', '_', $str);
+        $str = mb_strtolower(trim($str, '_'));
+        return $str ?: 'item';
+    }
+
+    public function createCargoType($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $name = trim($data['name'] ?? '');
+        if (empty($name)) {
+            return Response::json(['success' => false, 'message' => 'Nome é obrigatório'], 400);
+        }
+        $slug = $this->slugify($name);
+        $description = trim($data['description'] ?? '') ?: null;
+        $icon = trim($data['icon'] ?? '') ?: null;
+        $sortOrder = (int)($data['sort_order'] ?? 0);
+        try {
+            $stmt = $this->db->prepare(
+                'INSERT INTO cargo_types (name, slug, description, icon, sort_order, is_active)
+                 VALUES (?, ?, ?, ?, ?, 1)'
+            );
+            $stmt->execute([$name, $slug, $description, $icon, $sortOrder]);
+            return Response::json(['success' => true, 'id' => (int)$this->db->lastInsertId()], 201);
+        } catch (\PDOException $e) {
+            if ($e->getCode() == 23000) {
+                return Response::json(['success' => false, 'message' => 'Já existe um tipo de carga com este nome'], 409);
+            }
+            error_log('ERRO createCargoType: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao criar tipo de carga'], 500);
+        }
+    }
+
+    public function updateCargoType($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $id = (int)($data['id'] ?? 0);
+        if (!$id) {
+            return Response::json(['success' => false, 'message' => 'ID inválido'], 400);
+        }
+        $name = trim($data['name'] ?? '');
+        if (empty($name)) {
+            return Response::json(['success' => false, 'message' => 'Nome é obrigatório'], 400);
+        }
+        $slug = $this->slugify($name);
+        $description = isset($data['description']) ? (trim($data['description']) ?: null) : null;
+        $icon = isset($data['icon']) ? (trim($data['icon']) ?: null) : null;
+        $sortOrder = isset($data['sort_order']) ? (int)$data['sort_order'] : null;
+        $isActive = isset($data['is_active']) ? (int)$data['is_active'] : null;
+        try {
+            $fields = ['name = ?, slug = ?'];
+            $params = [$name, $slug];
+            if ($description !== null) { $fields[] = 'description = ?'; $params[] = $description; }
+            if ($icon !== null) { $fields[] = 'icon = ?'; $params[] = $icon; }
+            if ($sortOrder !== null) { $fields[] = 'sort_order = ?'; $params[] = $sortOrder; }
+            if ($isActive !== null) { $fields[] = 'is_active = ?'; $params[] = $isActive; }
+            $params[] = $id;
+            $stmt = $this->db->prepare(
+                'UPDATE cargo_types SET ' . implode(', ', $fields) . ' WHERE id = ?'
+            );
+            $stmt->execute($params);
+            if ($stmt->rowCount() === 0) {
+                return Response::json(['success' => false, 'message' => 'Tipo de carga não encontrado'], 404);
+            }
+            return Response::json(['success' => true, 'message' => 'Tipo de carga atualizado']);
+        } catch (\PDOException $e) {
+            if ($e->getCode() == 23000) {
+                return Response::json(['success' => false, 'message' => 'Já existe um tipo de carga com este nome'], 409);
+            }
+            error_log('ERRO updateCargoType: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao atualizar tipo de carga'], 500);
+        }
+    }
+
+    public function deleteCargoType($data, $loggedUser)
+    {
+        $this->authorize($loggedUser, 'ADMIN');
+        $id = (int)($data['id'] ?? 0);
+        if (!$id) {
+            return Response::json(['success' => false, 'message' => 'ID inválido'], 400);
+        }
+        try {
+            $stmt = $this->db->prepare('DELETE FROM cargo_types WHERE id = ?');
+            $stmt->execute([$id]);
+            if ($stmt->rowCount() === 0) {
+                return Response::json(['success' => false, 'message' => 'Tipo de carga não encontrado'], 404);
+            }
+            return Response::json(['success' => true, 'message' => 'Tipo de carga excluído']);
+        } catch (\PDOException $e) {
+            if ($e->getCode() == 23000) {
+                return Response::json(['success' => false, 'message' => 'Tipo de carga está em uso por fretes existentes'], 409);
+            }
+            error_log('ERRO deleteCargoType: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao excluir tipo de carga'], 500);
+        }
     }
 
     // ===================== MATCHING DE MOTORISTAS =====================

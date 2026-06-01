@@ -135,15 +135,24 @@ try {
     $router->post('/api/accept-driver', 'FreightController@acceptDriver');
     $router->post('/api/contact-advertiser', 'FreightController@contact');
     $router->get('/api/list-interests', 'FreightController@listInterests');
-    $router->get('/api/invite-driver', 'FreightController@inviteDriver');
-    $router->post('/api/respond-invitation', 'FreightController@respondInvitation');
     $router->get('/api/user-alerts', 'FreightController@userAlerts');
     $router->get('/api/my-active-freight', 'FreightController@myActiveFreight');
+    // Invitations RESTful
+    $router->post('/api/freight-invitations', 'FreightController@createInvitation');
+    $router->put('/api/freight-invitations/:invitationId/respond', 'FreightController@respondInvitation');
+    $router->delete('/api/freight-invitations/:invitationId', 'FreightController@cancelInvitation');
+    $router->get('/api/freights/:id/invitations', 'FreightController@listInvitationsByFreight');
+    $router->get('/api/my-invitations', 'FreightController@listMyInvitations');
+    $router->get('/api/company/invitations', 'FreightController@listCompanyInvitations');
+    // Interest (driver candidacy)
+    $router->post('/api/freight-invitations/interest', 'FreightController@expressInterest');
     $router->get('/api/driver-stats', 'FreightController@getdriverstats');
     $router->get('/api/admin-click-logs', 'FreightController@getUserClickHistory');
     $router->get('/api/top-ads-freight', 'FreightController@getTopAdvertisersFreight');
     $router->get('/api/freight-tracking', 'FreightController@getFreightTracking');
     $router->get('/api/freight/:id/matching-drivers', 'FreightController@findMatchingDrivers');
+    $router->get('/api/cargo-types', 'FreightController@listCargoTypes');
+    $router->post('/api/freight/calc-distance', 'FreightController@calcDistance');
     // RESTful aliases
     $router->post('/api/freights', 'FreightController@createFreight');
     $router->put('/api/freights/:id', 'FreightController@updateFreight');
@@ -617,6 +626,11 @@ try {
         $router->post('/api/admin/lists/:type', 'AdminController@createItem');
         $router->put('/api/admin/lists/:type/:id', 'AdminController@updateItem');
         $router->delete('/api/admin/lists/:type/:id', 'AdminController@deleteItem');
+        // Cargo types CRUD
+        $router->get('/api/admin/cargo-types', 'AdminController@listCargoTypes');
+        $router->post('/api/admin/cargo-types', 'AdminController@createCargoType');
+        $router->put('/api/admin/cargo-types/:id', 'AdminController@updateCargoType');
+        $router->delete('/api/admin/cargo-types/:id', 'AdminController@deleteCargoType');
         $router->get('/api/admin-activity', 'AdminController@getActivityLogs');
         $router->get('/api/admin/freight-matching', 'AdminController@findMatchingDrivers');
         $router->post('/api/admin/driver-location', 'AdminController@updateDriverLocation');

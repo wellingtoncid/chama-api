@@ -110,6 +110,7 @@ class FreightRepository
             // 4. Query Principal
             $sql = "SELECT
                         f.*,
+                        ct.name as cargo_type_name,
                         COALESCE(a.trade_name, a.corporate_name, u.name) as company_name,
                         p.avatar_url,
                         (SELECT COUNT(*) FROM click_logs WHERE target_id = f.id AND event_type = 'WHATSAPP_CLICK') as total_leads,
@@ -118,6 +119,7 @@ class FreightRepository
                         (SELECT MAX(created_at) FROM click_logs WHERE target_id = f.id) as last_interaction_at,
                         (CASE WHEN fav.id IS NOT NULL THEN 1 ELSE 0 END) as is_favorite
                     FROM freights f
+                    LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                     LEFT JOIN users u ON f.user_id = u.id
                     LEFT JOIN accounts a ON u.account_id = a.id
                     LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -186,15 +188,16 @@ class FreightRepository
 
     public function save($data)
     {
-        // Usamos Named Parameters (:user_id) para evitar erros de ordem dos campos
         $sql = 'INSERT INTO freights (
                     user_id, account_id, origin_city, origin_state, dest_city,
                     dest_state, product, weight, vehicle_type, body_type, description,
+                    distance_km, cargo_type_id,
                     status, price, expires_at, is_featured, slug, created_at,
                     equipment_needed, certifications_needed
                 ) VALUES (
                     :user_id, :account_id, :origin_city, :origin_state, :dest_city, :dest_state,
                     :product, :weight, :vehicle_type, :body_type, :description,
+                    :distance_km, :cargo_type_id,
                     :status, :price, :expires_at, :is_featured, :slug, NOW(),
                     :equipment_needed, :certifications_needed
                 )';
@@ -202,9 +205,8 @@ class FreightRepository
         try {
             $stmt = $this->db->prepare($sql);
 
-            // Fazemos o bind explícito para garantir os tipos de dados
             $stmt->bindValue(':user_id', (int)$data['user_id'], PDO::PARAM_INT);
-            $stmt->bindValue(':account_id', (int)$data['account_id'], \PDO::PARAM_INT);
+            $stmt->bindValue(':account_id', !empty($data['account_id']) ? (int)$data['account_id'] : null, \PDO::PARAM_INT);
             $stmt->bindValue(':origin_city', $data['origin_city']);
             $stmt->bindValue(':origin_state', $data['origin_state']);
             $stmt->bindValue(':dest_city', $data['dest_city']);
@@ -214,6 +216,8 @@ class FreightRepository
             $stmt->bindValue(':vehicle_type', $data['vehicle_type']);
             $stmt->bindValue(':body_type', $data['body_type']);
             $stmt->bindValue(':description', $data['description']);
+            $stmt->bindValue(':distance_km', !empty($data['distance_km']) ? (float)$data['distance_km'] : null, \PDO::PARAM_STR);
+            $stmt->bindValue(':cargo_type_id', !empty($data['cargo_type_id']) ? (int)$data['cargo_type_id'] : null, \PDO::PARAM_INT);
             $stmt->bindValue(':status', $data['status']);
             $stmt->bindValue(':price', $data['price']);
             $stmt->bindValue(':expires_at', $data['expires_at']);
@@ -234,8 +238,6 @@ class FreightRepository
 
     public function update($id, $data)
     {
-        // Definimos exatamente o que o banco aceita.
-        // Se o React mandar 'whatsapp', o código vai ignorar e não vai quebrar.
         $sql = 'UPDATE freights SET
                     user_id = :user_id,
                     origin_city = :origin_city,
@@ -247,6 +249,8 @@ class FreightRepository
                     vehicle_type = :vehicle_type,
                     body_type = :body_type,
                     description = :description,
+                    distance_km = :distance_km,
+                    cargo_type_id = :cargo_type_id,
                     price = :price,
                     slug = :slug,
                     equipment_needed = :equipment_needed,
@@ -256,9 +260,8 @@ class FreightRepository
         try {
             $stmt = $this->db->prepare($sql);
 
-            // Binds manuais para garantir que o tipo do dado está correto
             $stmt->bindValue(':id', (int)$id, \PDO::PARAM_INT);
-            $stmt->bindValue(':user_id', (int)$data['user_id'], \PDO::PARAM_INT);
+            $stmt->bindValue(':user_id', isset($data['user_id']) ? (int)$data['user_id'] : 0, \PDO::PARAM_INT);
             $stmt->bindValue(':origin_city', $data['origin_city']);
             $stmt->bindValue(':origin_state', $data['origin_state']);
             $stmt->bindValue(':dest_city', $data['dest_city']);
@@ -268,6 +271,8 @@ class FreightRepository
             $stmt->bindValue(':vehicle_type', $data['vehicle_type']);
             $stmt->bindValue(':body_type', $data['body_type']);
             $stmt->bindValue(':description', $data['description']);
+            $stmt->bindValue(':distance_km', !empty($data['distance_km']) ? (float)$data['distance_km'] : null, \PDO::PARAM_STR);
+            $stmt->bindValue(':cargo_type_id', !empty($data['cargo_type_id']) ? (int)$data['cargo_type_id'] : null, \PDO::PARAM_INT);
             $stmt->bindValue(':price', $data['price']);
             $stmt->bindValue(':slug', $data['slug'] ?? '');
             $stmt->bindValue(':equipment_needed', $data['equipment_needed'] ?? '[]');
@@ -286,7 +291,6 @@ class FreightRepository
             return null;
         }
 
-        // Selecionamos explicitamente todos os campos que o seu formulário React usa
         $sql = 'SELECT
                     id,
                     user_id,
@@ -300,6 +304,8 @@ class FreightRepository
                     body_type,
                     price,
                     description,
+                    distance_km,
+                    cargo_type_id,
                     status,
                     slug
                 FROM freights
@@ -577,21 +583,29 @@ class FreightRepository
         $driverCertifications = [];
         if (!empty($profile['extended_attributes'])) {
             $extras = json_decode($profile['extended_attributes'], true) ?? [];
-            $driverCertifications = $extras['certifications'] ?? [];
+            $raw = $extras['certifications'] ?? [];
+            $driverCertifications = is_string($raw) ? json_decode($raw, true) ?? [] : $raw;
         }
 
-        // Usamos LIKE para evitar problemas com espaços ou letras maiúsculas/minúsculas
-        $sql = "SELECT f.*, 1 as is_smart_match
+        $sql = "SELECT f.*, ct.name as cargo_type_name, 1 as is_smart_match,
+                       COALESCE(a.trade_name, a.corporate_name, u.name) as company_name,
+                       u.name as user_name, p.avatar_url
                 FROM freights f
+                LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
+                LEFT JOIN users u ON f.user_id = u.id
+                LEFT JOIN accounts a ON u.account_id = a.id
+                LEFT JOIN user_profiles p ON u.id = p.user_id
                 WHERE f.deleted_at IS NULL
                 AND f.status = 'OPEN'
                 AND (f.expires_at IS NULL OR f.expires_at > NOW())
                 AND f.vehicle_type LIKE ?
                 AND f.body_type LIKE ?
+                AND LENGTH(f.vehicle_type) > 0
+                AND LENGTH(f.body_type) > 0
                 ORDER BY f.created_at DESC LIMIT 20";
 
         $stmt = $this->db->prepare($sql);
-        // O % ajuda a encontrar se o texto estiver ligeiramente diferente
+        // LIKE com % nas bordas para match parcial (ex: "Bitruck" encontra "Bitruck - 4 eixos...")
         $stmt->execute([
             '%' . $profile['vehicle_type'] . '%',
             '%' . $profile['body_type'] . '%',
@@ -634,10 +648,12 @@ class FreightRepository
         try {
             // Buscamos os fretes fazendo um JOIN com a tabela de favoritos
             $sql = "SELECT f.*,
+                    ct.name as cargo_type_name,
                     COALESCE(a.trade_name, u.name) as company_name,
                     1 as is_favorite
                     FROM favorites fav
                     INNER JOIN freights f ON fav.target_id = f.id
+                    LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                     LEFT JOIN users u ON f.user_id = u.id
                     LEFT JOIN accounts a ON f.account_id = a.id
                     WHERE fav.user_id = ?
@@ -669,11 +685,12 @@ class FreightRepository
 
         $sql = "SELECT
                     f.*,
-                    -- Contagem segmentada por tipo de evento
+                    ct.name as cargo_type_name,
                     IFNULL(SUM(CASE WHEN cl.event_type = 'WHATSAPP_CLICK' THEN 1 ELSE 0 END), 0) as total_leads,
                     IFNULL(SUM(CASE WHEN cl.event_type = 'VIEW_DETAILS' OR cl.event_type = 'VIEW' THEN 1 ELSE 0 END), 0) as total_views,
                     IFNULL(COUNT(cl.id), 0) as total_interactions
                 FROM freights f
+                LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                 LEFT JOIN click_logs cl ON f.id = cl.target_id AND cl.target_type = 'FREIGHT'
                 WHERE f.user_id = :u_id
                 AND f.deleted_at IS NULL
@@ -700,6 +717,7 @@ class FreightRepository
         }
 
         $sql = 'SELECT f.*,
+                    ct.name as cargo_type_name,
                     u.name as owner_name,
                     u.whatsapp as owner_whatsapp,
                     u.email as owner_email,
@@ -707,6 +725,7 @@ class FreightRepository
                     p.rating as owner_rating,
                     p.is_verified as owner_verified
                 FROM freights f
+                LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                 INNER JOIN users u ON f.user_id = u.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 WHERE f.id = :id
@@ -975,9 +994,10 @@ class FreightRepository
         }
 
         try {
-            // PASSO 1: Busca apenas a carga pelo slug (Sem travas de JOIN ou Status)
-            // Isso garante que se o slug existir, a carga seja encontrada.
-            $sql = 'SELECT * FROM freights WHERE slug = :slug LIMIT 1';
+            $sql = 'SELECT f.*, ct.name as cargo_type_name
+                    FROM freights f
+                    LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
+                    WHERE f.slug = :slug LIMIT 1';
             $stmt = $this->db->prepare($sql);
             $stmt->execute([':slug' => trim(strip_tags($slug))]);
             $freight = $stmt->fetch(\PDO::FETCH_ASSOC);
@@ -1002,8 +1022,10 @@ class FreightRepository
         }
 
         try {
-            // Passo 1: Busca apenas a carga pelo ID (Sem travas de JOIN)
-            $sql = 'SELECT * FROM freights WHERE id = :id LIMIT 1';
+            $sql = 'SELECT f.*, ct.name as cargo_type_name
+                    FROM freights f
+                    LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
+                    WHERE f.id = :id LIMIT 1';
             $stmt = $this->db->prepare($sql);
             $stmt->bindValue(':id', (int)$id, \PDO::PARAM_INT);
             $stmt->execute();
@@ -1041,7 +1063,7 @@ class FreightRepository
                     p.extended_attributes,
                     a.trade_name,
                     a.corporate_name,
-                    (SELECT COUNT(*) FROM freights f WHERE f.user_id = u.id AND f.status IN ('open', 'in_progress')) as total_owner_freights
+                    (SELECT COUNT(*) FROM freights f WHERE f.user_id = u.id AND f.status IN ('OPEN', 'PENDING', 'in_progress') AND (f.expires_at IS NULL OR f.expires_at > NOW())) as total_owner_freights
                 FROM users u
                 LEFT JOIN user_profiles p ON u.id = p.user_id
                 LEFT JOIN accounts a ON u.account_id = a.id
@@ -1220,7 +1242,9 @@ class FreightRepository
                     IFNULL(SUM(views_count), 0) as global_views,
                     IFNULL(SUM(clicks_count), 0) as global_clicks
                 FROM freights
-                WHERE user_id = :u_id AND deleted_at IS NULL';
+                WHERE user_id = :u_id AND deleted_at IS NULL
+                AND status IN (\'OPEN\', \'PENDING\', \'in_progress\')
+                AND (expires_at IS NULL OR expires_at > NOW())';
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':u_id' => (int)$userId]);
@@ -1246,23 +1270,27 @@ class FreightRepository
     public function getPublicPostsByUser($userId)
     {
         $sql = "SELECT
-                    id,
-                    product,
-                    origin_city,
-                    origin_state,
-                    dest_city,      -- Mantenha o nome igual ao banco
-                    dest_state,
-                    weight,
-                    price,
-                    vehicle_type,
-                    body_type,
-                    description,
-                    status,
-                    user_id,
-                    created_at,
-                    slug
-                FROM freights
-                WHERE user_id = :uid
+                    f.id,
+                    f.product,
+                    f.origin_city,
+                    f.origin_state,
+                    f.dest_city,
+                    f.dest_state,
+                    f.weight,
+                    f.price,
+                    f.vehicle_type,
+                    f.body_type,
+                    f.description,
+                    f.cargo_type_id,
+                    f.distance_km,
+                    ct.name as cargo_type_name,
+                    f.status,
+                    f.user_id,
+                    f.created_at,
+                    f.slug
+                FROM freights f
+                LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
+                WHERE f.user_id = :uid
                 AND status = 'OPEN'
                 AND (deleted_at IS NULL)
                 AND (expires_at IS NULL OR expires_at > NOW())
@@ -1406,14 +1434,173 @@ class FreightRepository
 
     public function getUserClickHistory($userId)
     {
-        $sql = "SELECT DISTINCT f.*, cl.created_at as clicked_at
+        $sql = "SELECT DISTINCT f.*, ct.name as cargo_type_name, cl.created_at as clicked_at
                 FROM click_logs cl
                 INNER JOIN freights f ON cl.target_id = f.id AND cl.target_type = 'FREIGHT'
+                LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                 WHERE cl.user_id = ?
                 ORDER BY cl.created_at DESC
                 LIMIT 50";
         $stmt = $this->db->prepare($sql);
         $stmt->execute([$userId]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function getAllCargoTypes()
+    {
+        $sql = 'SELECT id, name, slug, description, icon FROM cargo_types WHERE is_active = 1 ORDER BY sort_order ASC, name ASC';
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute();
+            return ['success' => true, 'data' => $stmt->fetchAll(\PDO::FETCH_ASSOC)];
+        } catch (\Exception $e) {
+            error_log('Erro ao buscar tipos de carga: ' . $e->getMessage());
+            return ['success' => false, 'message' => $e->getMessage(), 'data' => []];
+        }
+    }
+
+    // ===================== FREIGHT INVITATIONS =====================
+
+    public function createInvitation($freightId, $driverId, $companyId, $invitedBy = 'company', $message = null)
+    {
+        // Reusa registro existente (ON DUPLICATE KEY) para evitar conflito UNIQUE(freight_id, driver_id)
+        $stmt = $this->db->prepare('
+            INSERT INTO freight_invitations (freight_id, driver_id, company_id, status, invited_by, message, created_at, updated_at)
+            VALUES (?, ?, ?, \'pending\', ?, ?, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                status = \'pending\',
+                company_id = VALUES(company_id),
+                invited_by = VALUES(invited_by),
+                message = VALUES(message),
+                responded_at = NULL,
+                updated_at = NOW()
+        ');
+        $stmt->execute([$freightId, $driverId, $companyId, $invitedBy, $message]);
+        // Pega o ID do registro (se foi UPDATE, lastInsertId ainda retorna o ID correto no MySQL)
+        $id = (int)$this->db->lastInsertId();
+        if (!$id) {
+            // Se ON DUPLICATE KEY fez UPDATE, lastInsertId pode retornar 0 em alguns drivers;
+            // faz um SELECT pra pegar o ID
+            $stmt2 = $this->db->prepare('SELECT id FROM freight_invitations WHERE freight_id = ? AND driver_id = ?');
+            $stmt2->execute([$freightId, $driverId]);
+            $row = $stmt2->fetch(\PDO::FETCH_ASSOC);
+            $id = $row ? (int)$row['id'] : 0;
+        }
+        return $id;
+    }
+
+    public function respondToInvitationV2($invitationId, $action, $driverId)
+    {
+        // action: accepted | declined
+        $stmt = $this->db->prepare('
+            UPDATE freight_invitations
+            SET status = ?, responded_at = NOW()
+            WHERE id = ? AND driver_id = ? AND status = \'pending\'
+        ');
+        $stmt->execute([$action, $invitationId, $driverId]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function cancelInvitation($invitationId, $companyId)
+    {
+        $stmt = $this->db->prepare('
+            UPDATE freight_invitations
+            SET status = \'cancelled\'
+            WHERE id = ? AND company_id = ? AND status = \'pending\'
+        ');
+        $stmt->execute([$invitationId, $companyId]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public function getInvitationsByFreight($freightId)
+    {
+        $sql = 'SELECT fi.*, u.name as driver_name, u.whatsapp as driver_whatsapp,
+                       p.avatar_url, p.vehicle_type, p.body_type, p.verification_status
+                FROM freight_invitations fi
+                JOIN users u ON fi.driver_id = u.id
+                LEFT JOIN user_profiles p ON u.id = p.user_id
+                WHERE fi.freight_id = ?
+                ORDER BY fi.created_at DESC';
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$freightId]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function getInvitationsByDriver($driverId, $status = null)
+    {
+        $sql = 'SELECT fi.*, f.origin_city, f.origin_state, f.dest_city, f.dest_state,
+                       f.product, f.vehicle_type, f.body_type, f.slug as freight_slug,
+                       u.name as company_name
+                FROM freight_invitations fi
+                JOIN freights f ON fi.freight_id = f.id
+                JOIN users u ON fi.company_id = u.id
+                WHERE fi.driver_id = ?';
+        $params = [$driverId];
+        if ($status) {
+            $sql .= ' AND fi.status = ?';
+            $params[] = $status;
+        }
+        $sql .= ' ORDER BY fi.created_at DESC';
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function getInvitationsByCompany($companyId, $freightId = null, $status = null)
+    {
+        $sql = 'SELECT fi.*, u.name as driver_name, u.whatsapp as driver_whatsapp,
+                       p.avatar_url, p.vehicle_type, p.body_type, p.verification_status,
+                       f.origin_city, f.origin_state, f.dest_city, f.dest_state, f.product
+                FROM freight_invitations fi
+                JOIN users u ON fi.driver_id = u.id
+                LEFT JOIN user_profiles p ON u.id = p.user_id
+                JOIN freights f ON fi.freight_id = f.id
+                WHERE fi.company_id = ?';
+        $params = [$companyId];
+        if ($freightId) {
+            $sql .= ' AND fi.freight_id = ?';
+            $params[] = $freightId;
+        }
+        if ($status) {
+            $sql .= ' AND fi.status = ?';
+            $params[] = $status;
+        }
+        $sql .= ' ORDER BY fi.created_at DESC';
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function hasPendingInvitation($freightId, $driverId)
+    {
+        $stmt = $this->db->prepare('
+            SELECT id FROM freight_invitations
+            WHERE freight_id = ? AND driver_id = ? AND status = \'pending\'
+            LIMIT 1
+        ');
+        $stmt->execute([$freightId, $driverId]);
+        return (bool)$stmt->fetch();
+    }
+
+    public function getInvitationByFreightAndDriver($freightId, $driverId)
+    {
+        $stmt = $this->db->prepare('
+            SELECT id, status, invited_by FROM freight_invitations
+            WHERE freight_id = ? AND driver_id = ?
+            LIMIT 1
+        ');
+        $stmt->execute([$freightId, $driverId]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC) ?: null;
+    }
+
+    public function expireOldInvitations($hours = 72)
+    {
+        $stmt = $this->db->prepare('
+            UPDATE freight_invitations
+            SET status = \'expired\'
+            WHERE status = \'pending\' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR)
+        ');
+        $stmt->execute([$hours]);
+        return $stmt->rowCount();
     }
 }

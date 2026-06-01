@@ -220,6 +220,9 @@ class AdminRepository
                     f.vehicle_type,
                     f.body_type,
                     f.description,
+                    f.distance_km,
+                    f.cargo_type_id,
+                    ct.name as cargo_type_name,
                     f.is_featured,
                     f.requested_featured,
                     f.user_id,
@@ -229,6 +232,7 @@ class AdminRepository
                     COALESCE(a.trade_name, a.corporate_name, u.name) as company_name,
                     u.email as user_email
                 FROM freights f
+                LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                 LEFT JOIN users u ON f.user_id = u.id
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -824,8 +828,10 @@ class AdminRepository
     {
         $sql = 'SELECT
                     f.*,
+                    ct.name as cargo_type_name,
                     COALESCE(a.trade_name, p.name, u.name) as company_name
                 FROM freights f
+                LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                 LEFT JOIN users u ON f.user_id = u.id
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -853,15 +859,17 @@ class AdminRepository
     public function findCompatibleDrivers($vehicleType, $bodyType, $originState)
     {
         // Busca motoristas com perfil compatível e que possuam push_token para notificação
+        // FIND_IN_SET pois vehicle_type/body_type do frete pode ser multi-valor (comma-separated)
         $sql = "SELECT u.id, u.name, p.push_token
                 FROM users u
                 JOIN user_profiles p ON u.id = p.user_id
                 WHERE u.role = 'driver'
                 AND u.deleted_at IS NULL
-                AND ((p.vehicle_type = ? AND p.body_type = ?) OR p.preferred_region = ?)
+                AND ((FIND_IN_SET(p.vehicle_type, ?) OR FIND_IN_SET(?, p.vehicle_type)) AND (FIND_IN_SET(p.body_type, ?) OR FIND_IN_SET(?, p.body_type)))
+                OR p.preferred_region = ?
                 LIMIT 100";
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([$vehicleType, $bodyType, $originState]);
+        $stmt->execute([$vehicleType, $vehicleType, $bodyType, $bodyType, $originState]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 

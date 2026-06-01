@@ -6,6 +6,7 @@ use App\Core\Response;
 use App\Repositories\FreightRepository;
 use App\Services\AccessControlService;
 use App\Services\CreditService;
+use App\Services\GeocodingService;
 use Exception;
 
 class FreightController
@@ -118,6 +119,7 @@ class FreightController
     public function createFreight($data, $user)
     {
         // 0. Verificar limite de publicações (Access Control)
+        $canPublish = null;
         if ($this->accessControlService) {
             $canPublish = $this->accessControlService->canPublish((int)$user['id'], 'freights');
             if (!$canPublish['allowed']) {
@@ -144,12 +146,19 @@ class FreightController
             return Response::json(['success' => false, 'message' => 'Acesso negado.'], 403);
         }
 
-        // 3. Validação de Onboarding
-        if ($role === 'COMPANY' && (empty($user['document']) || empty($user['name']))) {
-            return Response::json([
-                'success' => false,
-                'message' => 'Perfil incompleto. Por favor, preencha seu CNPJ e nome para publicar.',
-            ], 403);
+        // 3. Validação de Onboarding (consulta dados reais do DB, não apenas JWT)
+        if ($role === 'COMPANY') {
+            $profileStmt = $this->db->prepare('SELECT u.name, a.document_number as document FROM users u LEFT JOIN accounts a ON a.id = u.account_id WHERE u.id = ?');
+            $profileStmt->execute([(int)$user['id']]);
+            $profileUser = $profileStmt->fetch(\PDO::FETCH_ASSOC);
+            $doc = $profileUser['document'] ?? '';
+            $name = $profileUser['name'] ?? '';
+            if (empty($doc) || empty($name)) {
+                return Response::json([
+                    'success' => false,
+                    'message' => 'Perfil incompleto. Por favor, preencha seu CNPJ e nome para publicar.',
+                ], 403);
+            }
         }
 
         // 4. Validação de Dados do Frete
@@ -179,6 +188,15 @@ class FreightController
 
         // Admin não paga
         $paymentRequired = ($role !== 'ADMIN');
+
+        // Se tem frete grátis disponível (plano ou free_limit), não cobra por publicações normais
+        if ($paymentRequired && $canPublish && !$isUrgent && !$isFeatured) {
+            $remaining = $canPublish['remaining'] ?? 0;
+            if ($remaining > 0) {
+                $paymentRequired = false;
+                $amount = 0;
+            }
+        }
 
         // 6. Verificar saldo e debitar
         if ($paymentRequired && $this->creditService) {
@@ -234,9 +252,11 @@ class FreightController
                 'dest_state'   => strtoupper(trim($data['dest_state'] ?? '')),
                 'product'      => trim($data['product']),
                 'weight'       => max(0.0, (float)($data['weight'] ?? 0)),
+                'cargo_type_id' => !empty($data['cargo_type_id']) ? (int)$data['cargo_type_id'] : null,
+                'distance_km'  => !empty($data['distance_km']) ? (float)$data['distance_km'] : null,
                 'price'        => max(0.0, (float)($data['price'] ?? 0)),
-                'vehicle_type' => $data['vehicle_type'] ?? 'Qualquer',
-                'body_type'    => $data['body_type'] ?? 'Qualquer',
+                'vehicle_type' => !empty($data['vehicle_type']) ? $data['vehicle_type'] : 'Qualquer',
+                'body_type'    => !empty($data['body_type']) ? $data['body_type'] : 'Qualquer',
                 'description'  => strip_tags($data['description'] ?? ''),
                 'status'       => $status,
                 'slug'         => $finalSlug,
@@ -365,7 +385,7 @@ class FreightController
         }
 
         // 2. Validação do ID do Frete
-        $freightId = (int)($data['id'] ?? 0);
+        $freightId = (int)($data['id'] ?? $data['freight_id'] ?? 0);
         if ($freightId <= 0) {
             return Response::json([
                 'success' => false,
@@ -641,6 +661,195 @@ class FreightController
         }
     }
 
+    // ===================== INVITATIONS (RESTful) =====================
+
+    public function createInvitation($data, $loggedUser)
+    {
+        $freightId = (int)($data['freight_id'] ?? 0);
+        $driverId = (int)($data['driver_id'] ?? 0);
+        $message = trim($data['message'] ?? '');
+
+        if (!$freightId || !$driverId) {
+            return Response::json(['success' => false, 'message' => 'freight_id e driver_id são obrigatórios'], 400);
+        }
+
+        // Verifica se o frete pertence ao usuário
+        $freight = $this->repo->getRawById($freightId);
+        if (!$freight || ((int)$freight['user_id'] !== (int)$loggedUser['id'] && strtolower($loggedUser['role'] ?? '') !== 'admin')) {
+            return Response::json(['success' => false, 'message' => 'Frete não encontrado ou acesso negado'], 403);
+        }
+
+        // Verifica se já tem convite pendente
+        if ($this->repo->hasPendingInvitation($freightId, $driverId)) {
+            return Response::json(['success' => false, 'message' => 'Já existe um convite pendente para este motorista'], 409);
+        }
+
+        try {
+            $invitationId = $this->repo->createInvitation($freightId, $driverId, (int)$loggedUser['id'], 'company', $message ?: null);
+
+            // Notifica o motorista
+            $stmt = $this->db->prepare('SELECT name FROM users WHERE id = ?');
+            $stmt->execute([(int)$loggedUser['id']]);
+            $company = $stmt->fetch();
+            $this->notificationService->send(
+                $driverId,
+                'Novo Convite de Frete! 🚛',
+                "A empresa {$company['name']} te convidou para um frete.",
+                'INVITATION',
+                'high',
+                "/frete/{$freightId}"
+            );
+
+            return Response::json(['success' => true, 'invitation_id' => $invitationId, 'message' => 'Convite enviado!'], 201);
+        } catch (\Exception $e) {
+            error_log('Erro createInvitation: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao enviar convite'], 500);
+        }
+    }
+
+    public function respondInvitation($data, $loggedUser)
+    {
+        $invitationId = (int)($data['invitationId'] ?? $data['invitation_id'] ?? 0);
+        $action = $data['action'] ?? '';
+
+        if (!$invitationId || !in_array($action, ['accepted', 'declined'], true)) {
+            return Response::json(['success' => false, 'message' => 'Dados inválidos'], 400);
+        }
+
+        try {
+            $this->db->beginTransaction();
+
+            $updated = $this->repo->respondToInvitationV2($invitationId, $action, (int)$loggedUser['id']);
+
+            if (!$updated) {
+                $this->db->rollBack();
+                return Response::json(['success' => false, 'message' => 'Convite não encontrado ou já respondido'], 404);
+            }
+
+            if ($action === 'accepted') {
+                // Busca dados do convite
+                $stmt = $this->db->prepare('
+                    SELECT fi.freight_id, fi.company_id, f.product
+                    FROM freight_invitations fi
+                    JOIN freights f ON fi.freight_id = f.id
+                    WHERE fi.id = ?
+                ');
+                $stmt->execute([$invitationId]);
+                $invite = $stmt->fetch();
+
+                // Registra na freight_tracking
+                $this->db->prepare("
+                    INSERT INTO freight_tracking (freight_id, driver_id, status, description, created_at)
+                    VALUES (?, ?, 'MATCH_ACCEPTED', 'Motorista aceitou o convite via plataforma.', NOW())
+                ")->execute([$invite['freight_id'], (int)$loggedUser['id']]);
+
+                // Notifica a empresa
+                $this->notificationService->send(
+                    $invite['company_id'],
+                    'Motorista Aceitou! 🎯',
+                    "O motorista aceitou seu convite para o frete: {$invite['product']}.",
+                    'MATCH',
+                    'high',
+                    "/encontrar-motoristas/{$invite['freight_id']}"
+                );
+            }
+
+            $this->db->commit();
+            $msg = $action === 'accepted' ? 'Convite aceito com sucesso!' : 'Convite recusado.';
+            return Response::json(['success' => true, 'message' => $msg]);
+        } catch (\Exception $e) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            error_log('Erro respondInvitation: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao processar resposta'], 500);
+        }
+    }
+
+    public function cancelInvitation($data, $loggedUser)
+    {
+        $invitationId = (int)($data['invitationId'] ?? $data['invitation_id'] ?? 0);
+        if (!$invitationId) {
+            return Response::json(['success' => false, 'message' => 'ID do convite é obrigatório'], 400);
+        }
+
+        if ($this->repo->cancelInvitation($invitationId, (int)$loggedUser['id'])) {
+            return Response::json(['success' => true, 'message' => 'Convite cancelado']);
+        }
+        return Response::json(['success' => false, 'message' => 'Convite não encontrado ou já respondido'], 404);
+    }
+
+    public function listInvitationsByFreight($data, $loggedUser)
+    {
+        $freightId = (int)($data['id'] ?? 0);
+        if (!$freightId) {
+            return Response::json(['success' => false, 'message' => 'ID do frete é obrigatório'], 400);
+        }
+
+        $invitations = $this->repo->getInvitationsByFreight($freightId);
+        return Response::json(['success' => true, 'data' => $invitations]);
+    }
+
+    public function listMyInvitations($data, $loggedUser)
+    {
+        $status = $data['status'] ?? null;
+        $invitations = $this->repo->getInvitationsByDriver((int)$loggedUser['id'], $status ?: null);
+        return Response::json(['success' => true, 'data' => $invitations]);
+    }
+
+    public function listCompanyInvitations($data, $loggedUser)
+    {
+        $freightId = isset($data['freight_id']) ? (int)$data['freight_id'] : null;
+        $status = $data['status'] ?? null;
+        $invitations = $this->repo->getInvitationsByCompany((int)$loggedUser['id'], $freightId, $status ?: null);
+        return Response::json(['success' => true, 'data' => $invitations]);
+    }
+
+    // ===================== INTEREST (Driver candidacy) =====================
+
+    public function expressInterest($data, $loggedUser)
+    {
+        $freightId = (int)($data['freight_id'] ?? 0);
+        if (!$freightId) {
+            return Response::json(['success' => false, 'message' => 'ID do frete é obrigatório'], 400);
+        }
+
+        // Verifica se o frete existe e está aberto
+        $freight = $this->repo->getRawById($freightId);
+        if (!$freight || $freight['status'] !== 'OPEN') {
+            return Response::json(['success' => false, 'message' => 'Frete não encontrado ou não está disponível'], 404);
+        }
+
+        try {
+            // Verifica se já existe algum convite (qualquer status)
+            $existing = $this->repo->getInvitationByFreightAndDriver($freightId, (int)$loggedUser['id']);
+            if ($existing) {
+                if ($existing['status'] === 'pending') {
+                    return Response::json(['success' => false, 'message' => 'Você já manifestou interesse neste frete'], 409);
+                }
+                if ($existing['status'] === 'accepted') {
+                    return Response::json(['success' => false, 'message' => 'Você já foi aceito para este frete'], 409);
+                }
+                // Se foi recusado/cancelado, permite registrar novo interesse
+            }
+
+            $this->repo->createInvitation($freightId, (int)$loggedUser['id'], (int)$freight['user_id'], 'driver');
+
+            // Notifica a empresa
+            $this->notificationService->send(
+                (int)$freight['user_id'],
+                'Motorista Interessado! 👋',
+                "Um motorista demonstrou interesse no seu frete: {$freight['product']}.",
+                'INTEREST',
+                'medium',
+                "/encontrar-motoristas/{$freightId}"
+            );
+
+            return Response::json(['success' => true, 'message' => 'Interesse registrado! A empresa será notificada.']);
+        } catch (\Exception $e) {
+            error_log('Erro expressInterest: ' . $e->getMessage());
+            return Response::json(['success' => false, 'message' => 'Erro ao registrar interesse'], 500);
+        }
+    }
+
     public function acceptDriver($data, $loggedUser)
     {
         // 1. Validação de Entrada
@@ -750,62 +959,6 @@ class FreightController
                 'success' => false,
                 'message' => 'Erro ao carregar lista de interessados.',
             ], 500);
-        }
-    }
-
-    public function inviteDriver($data, $loggedUser)
-    {
-        $freightId = (int)($data['freight_id'] ?? 0);
-        $driverId = (int)($data['driver_id'] ?? 0);
-        $companyId = (int)$loggedUser['id'];
-
-        if (!$freightId || !$driverId) {
-            return Response::json(['success' => false, 'message' => 'Dados incompletos: freight_id e driver_id são obrigatórios'], 400);
-        }
-
-        $stmtF = $this->db->prepare('SELECT product, origin_city, dest_city FROM freights WHERE id = :id');
-        $stmtF->execute([':id' => $freightId]);
-        $f = $stmtF->fetch();
-        $stmtC = $this->db->prepare('SELECT name FROM users WHERE id = :id');
-        $stmtC->execute([':id' => $companyId]);
-        $company = $stmtC->fetch();
-
-        $message = "A empresa {$company['name']} te convidou para transportar {$f['product']} de {$f['origin_city']} para {$f['dest_city']}.";
-
-        $sql = "INSERT INTO notifications (user_id, type, message, action_url, is_read, created_at)
-                VALUES (?, 'INVITATION', ?, ?, 0, NOW())";
-
-        $stmt = $this->db->prepare($sql);
-        $link = '/frete/' . $freightId;
-
-        $stmt->execute([$driverId, $message, $link]);
-        return Response::json(['success' => true, 'message' => 'Convite enviado com sucesso!']);
-    }
-
-    public function respondInvitation($data, $loggedUser)
-    {
-        $alertId = $data['alert_id'] ?? null;
-        $action = $data['action'] ?? null;
-
-        if (!$alertId || !$action) {
-            return Response::json(['success' => false, 'message' => 'Dados incompletos'], 400);
-        }
-
-        // Ownership check: verifica se o alerta pertence ao usuário logado
-        $stmt = $this->db->prepare('SELECT user_id FROM notifications WHERE id = ?');
-        $stmt->execute([$alertId]);
-        $alert = $stmt->fetch();
-
-        if (!$alert || (int)$alert['user_id'] !== (int)$loggedUser['id']) {
-            return Response::json(['success' => false, 'message' => 'Convite não encontrado ou acesso negado'], 403);
-        }
-
-        $success = $this->repo->respondToInvitation($alertId, $action);
-
-        if ($success) {
-            return Response::json(['success' => true, 'message' => 'Resposta registrada!']);
-        } else {
-            return Response::json(['success' => false, 'message' => 'Erro ao processar convite.'], 500);
         }
     }
 
@@ -1016,17 +1169,19 @@ class FreightController
                 'dest_state'   => strtoupper(trim($data['dest_state'] ?? $currentFreight['dest_state'])),
                 'product'      => trim($data['product'] ?? $currentFreight['product']),
                 'weight'       => (float)($data['weight'] ?? $currentFreight['weight']),
-                'vehicle_type' => $data['vehicle_type'] ?? $currentFreight['vehicle_type'],
-                'body_type'    => $data['body_type'] ?? $currentFreight['body_type'],
+                'cargo_type_id' => isset($data['cargo_type_id']) ? (int)$data['cargo_type_id'] : ($currentFreight['cargo_type_id'] ?? null),
+                'distance_km'  => isset($data['distance_km']) ? (float)$data['distance_km'] : ($currentFreight['distance_km'] ?? null),
+                'vehicle_type' => !empty($data['vehicle_type']) ? $data['vehicle_type'] : ($currentFreight['vehicle_type'] ?? 'Qualquer'),
+                'body_type'    => !empty($data['body_type']) ? $data['body_type'] : ($currentFreight['body_type'] ?? 'Qualquer'),
                 'description'  => strip_tags($data['description'] ?? $currentFreight['description']),
                 'price'        => (float)($data['price'] ?? $currentFreight['price']),
                 'equipment_needed' => $equipmentNeeded,
                 'certifications_needed' => $certificationsNeeded,
             ];
 
-            if ($is_admin && isset($data['user_id'])) {
-                $payload['user_id'] = (int)$data['user_id'];
-            }
+            $payload['user_id'] = $is_admin && isset($data['user_id'])
+                ? (int)$data['user_id']
+                : (int)$currentFreight['user_id'];
 
             // --- CORREÇÃO DO SLUG ---
             $hasLocationChanged = ($payload['origin_city'] !== $currentFreight['origin_city'] || $payload['dest_city'] !== $currentFreight['dest_city']);
@@ -1082,6 +1237,55 @@ class FreightController
                 $this->db->rollBack();
             }
             return Response::json(['success' => false, 'message' => 'Erro: ' . $e->getMessage()], 500);
+        }
+    }
+
+    public function listCargoTypes()
+    {
+        $result = $this->repo->getAllCargoTypes();
+        return Response::json($result);
+    }
+
+    public function calcDistance($data)
+    {
+        $originCity = trim($data['origin_city'] ?? '');
+        $originState = strtoupper(trim($data['origin_state'] ?? ''));
+        $destCity = trim($data['dest_city'] ?? '');
+        $destState = strtoupper(trim($data['dest_state'] ?? ''));
+
+        if (!$originCity || !$destCity) {
+            return Response::json(['success' => false, 'message' => 'Informe origem e destino.'], 400);
+        }
+
+        try {
+            $geoService = new GeocodingService($this->db);
+            $originCoords = $geoService->geocodeCity($originCity, $originState);
+            $destCoords = $geoService->geocodeCity($destCity, $destState);
+
+            if (!$originCoords || !$destCoords) {
+                return Response::json([
+                    'success' => false,
+                    'message' => 'Não foi possível calcular a distância. Tente informar manualmente.',
+                ], 422);
+            }
+
+            $distance = $geoService->calculateDistance(
+                $originCoords['lat'], $originCoords['lng'],
+                $destCoords['lat'], $destCoords['lng']
+            );
+
+            return Response::json([
+                'success' => true,
+                'distance_km' => $distance,
+                'origin' => $originCoords,
+                'destination' => $destCoords,
+            ]);
+        } catch (\Exception $e) {
+            error_log('Erro calcDistance: ' . $e->getMessage());
+            return Response::json([
+                'success' => false,
+                'message' => 'Erro ao calcular distância.',
+            ], 500);
         }
     }
 
@@ -1151,7 +1355,7 @@ class FreightController
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':q' => $query . '%']);
-        $suggestions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $suggestions = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
         return Response::json(['success' => true, 'data' => $suggestions]);
     }
@@ -1219,15 +1423,17 @@ class FreightController
                 FROM users u
                 INNER JOIN user_profiles up ON u.id = up.user_id
                 WHERE u.role = 'driver'
-                AND up.vehicle_type = :v_type
-                AND (u.city = :city OR up.preferred_region = :city)
+                AND up.vehicle_type LIKE :v_type
+                AND (u.city = :city OR u.state = :state2)
                 ORDER BY rating DESC, total_reviews DESC
                 LIMIT 4";
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute([
-            ':v_type' => $freight['vehicle_type'],
+            ':v_type' => '%' . ($freight['vehicle_type'] ?? '') . '%',
             ':city'   => $freight['origin_city'],
+            ':city2'  => $freight['origin_city'],
+            ':state2' => $freight['origin_state'] ?? '',
         ]);
 
         return Response::json(['success' => true, 'data' => $stmt->fetchAll()]);
@@ -1398,15 +1604,6 @@ class FreightController
                 return Response::json(['success' => false, 'message' => 'Acesso negado'], 403);
             }
 
-            // Se não tem coordenadas, retorna mensagem
-            if (!$freight['origin_lat'] || !$freight['origin_lng']) {
-                return Response::json([
-                    'success' => true,
-                    'drivers' => [],
-                    'message' => 'Frete ainda não possui localização georreferenciada. Atualize o endereço para encontrar motoristas próximos.',
-                ]);
-            }
-
             // Parse equipment/certifications needed do frete
             $freightEquipment = !empty($freight['equipment_needed'])
                 ? (json_decode($freight['equipment_needed'], true) ?? [])
@@ -1415,91 +1612,148 @@ class FreightController
                 ? (json_decode($freight['certifications_needed'], true) ?? [])
                 : [];
 
-            // Busca motoristas compatíveis
-            $query = "
-                SELECT
-                    u.id AS driver_id,
-                    u.name AS driver_name,
-                    u.slug AS driver_slug,
-                    u.whatsapp AS driver_whatsapp,
-                    p.vehicle_type,
-                    p.body_type,
-                    p.home_city,
-                    p.home_state,
-                    p.service_radius_km,
-                    p.available_equipment,
-                    p.extended_attributes,
-                    p.rntrc_number,
-                    p.avatar_url,
-                    p.verification_status,
-                    p.profile_completeness,
-                    CASE WHEN uf_featured.id IS NOT NULL THEN 1 ELSE 0 END AS is_featured,
-                    CASE WHEN uf_radar.id IS NOT NULL THEN 1 ELSE 0 END AS is_radar_highlighted,
-                    ROUND(
-                        6371 * ACOS(
-                            LEAST(1.0, GREATEST(-1.0,
-                            COS(RADIANS(:origin_lat)) * COS(RADIANS(p.home_lat)) *
-                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng)) +
-                            SIN(RADIANS(:origin_lat)) * SIN(RADIANS(p.home_lat))
-                            ))
-                        )
-                    , 2) AS distance_km,
-                    CASE WHEN p.availability_status = 'available' THEN 30 ELSE 0 END +
-                    CASE WHEN p.vehicle_type = :vehicle_type THEN 30 ELSE 0 END +
-                    CASE WHEN p.body_type = :body_type THEN 20 ELSE 0 END +
-                    CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END +
-                    CASE WHEN uf_featured.id IS NOT NULL THEN 50 ELSE 0 END AS match_score
-                FROM users u
-                INNER JOIN user_profiles p ON u.id = p.user_id
-                LEFT JOIN user_features uf_featured
-                    ON u.id = uf_featured.user_id
-                    AND uf_featured.feature_key = 'featured_profile'
-                    AND uf_featured.status = 'active'
-                    AND (uf_featured.expires_at IS NULL OR uf_featured.expires_at > NOW())
-                LEFT JOIN user_features uf_radar
-                    ON u.id = uf_radar.user_id
-                    AND uf_radar.feature_key = 'radar_highlight'
-                    AND uf_radar.status = 'active'
-                    AND (uf_radar.expires_at IS NULL OR uf_radar.expires_at > NOW())
-                WHERE u.role = 'driver'
-                    AND u.status = 'active'
-                    AND p.availability_status = 'available'
-                    AND p.home_lat IS NOT NULL
-                    AND p.home_lng IS NOT NULL
-                    AND ROUND(
-                        6371 * ACOS(
-                            LEAST(1.0, GREATEST(-1.0,
-                            COS(RADIANS(:origin_lat2)) * COS(RADIANS(p.home_lat)) *
-                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng2)) +
-                            SIN(RADIANS(:origin_lat2)) * SIN(RADIANS(p.home_lat))
-                            ))
-                        )
-                    , 2) <= :max_distance
-                    AND ROUND(
-                        6371 * ACOS(
-                            LEAST(1.0, GREATEST(-1.0,
-                            COS(RADIANS(:origin_lat3)) * COS(RADIANS(p.home_lat)) *
-                            COS(RADIANS(p.home_lng) - RADIANS(:origin_lng3)) +
-                            SIN(RADIANS(:origin_lat3)) * SIN(RADIANS(p.home_lat))
-                            ))
-                        )
-                    , 2) <= p.service_radius_km
-                ORDER BY match_score DESC, distance_km ASC
-                LIMIT 30
-            ";
+            // Se tem coordenadas, usa matching por geolocalização
+            $hasCoords = !empty($freight['origin_lat']) && !empty($freight['origin_lng']);
+
+            if ($hasCoords) {
+                $query = "
+                    SELECT
+                        u.id AS driver_id,
+                        u.name AS driver_name,
+                        p.slug AS driver_slug,
+                        u.whatsapp AS driver_whatsapp,
+                        p.vehicle_type,
+                        p.body_type,
+                        u.city as home_city,
+                        u.state as home_state,
+                        p.service_radius_km,
+                        p.available_equipment,
+                        p.extended_attributes,
+                        p.rntrc_number,
+                        p.avatar_url,
+                        p.verification_status,
+                        p.profile_completeness,
+                        CASE WHEN uf_featured.id IS NOT NULL THEN 1 ELSE 0 END AS is_featured,
+                        CASE WHEN uf_radar.id IS NOT NULL THEN 1 ELSE 0 END AS is_radar_highlighted,
+                        ROUND(
+                            6371 * ACOS(
+                                LEAST(1.0, GREATEST(-1.0,
+                                COS(RADIANS(:origin_lat)) * COS(RADIANS(p.home_lat)) *
+                                COS(RADIANS(p.home_lng) - RADIANS(:origin_lng)) +
+                                SIN(RADIANS(:origin_lat)) * SIN(RADIANS(p.home_lat))
+                                ))
+                            )
+                        , 2) AS distance_km,
+                        CASE WHEN p.availability_status = 'available' THEN 30 ELSE 0 END +
+                        CASE WHEN p.vehicle_type LIKE :vehicle_type THEN 30 ELSE 0 END +
+                        CASE WHEN p.body_type LIKE :body_type THEN 20 ELSE 0 END +
+                        CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END +
+                        CASE WHEN uf_featured.id IS NOT NULL THEN 50 ELSE 0 END AS match_score
+                    FROM users u
+                    INNER JOIN user_profiles p ON u.id = p.user_id
+                    LEFT JOIN user_features uf_featured
+                        ON u.id = uf_featured.user_id
+                        AND uf_featured.feature_key = 'featured_profile'
+                        AND uf_featured.status = 'active'
+                        AND (uf_featured.expires_at IS NULL OR uf_featured.expires_at > NOW())
+                    LEFT JOIN user_features uf_radar
+                        ON u.id = uf_radar.user_id
+                        AND uf_radar.feature_key = 'radar_highlight'
+                        AND uf_radar.status = 'active'
+                        AND (uf_radar.expires_at IS NULL OR uf_radar.expires_at > NOW())
+                    WHERE u.role = 'driver'
+                        AND u.status = 'active'
+                        AND p.availability_status = 'available'
+                        AND p.home_lat IS NOT NULL
+                        AND p.home_lng IS NOT NULL
+                        AND ROUND(
+                            6371 * ACOS(
+                                LEAST(1.0, GREATEST(-1.0,
+                                COS(RADIANS(:origin_lat2)) * COS(RADIANS(p.home_lat)) *
+                                COS(RADIANS(p.home_lng) - RADIANS(:origin_lng2)) +
+                                SIN(RADIANS(:origin_lat2)) * SIN(RADIANS(p.home_lat))
+                                ))
+                            )
+                        , 2) <= :max_distance
+                        AND ROUND(
+                            6371 * ACOS(
+                                LEAST(1.0, GREATEST(-1.0,
+                                COS(RADIANS(:origin_lat3)) * COS(RADIANS(p.home_lat)) *
+                                COS(RADIANS(p.home_lng) - RADIANS(:origin_lng3)) +
+                                SIN(RADIANS(:origin_lat3)) * SIN(RADIANS(p.home_lat))
+                                ))
+                            )
+                        , 2) <= p.service_radius_km
+                    ORDER BY match_score DESC, distance_km ASC
+                    LIMIT 30
+                ";
+                $params = [
+                    ':origin_lat' => $freight['origin_lat'],
+                    ':origin_lng' => $freight['origin_lng'],
+                    ':vehicle_type' => '%' . ($freight['vehicle_type'] ?? '') . '%',
+                    ':body_type' => '%' . ($freight['body_type'] ?? '') . '%',
+                    ':origin_lat2' => $freight['origin_lat'],
+                    ':origin_lng2' => $freight['origin_lng'],
+                    ':origin_lat3' => $freight['origin_lat'],
+                    ':origin_lng3' => $freight['origin_lng'],
+                    ':max_distance' => $maxDistance,
+                ];
+            } else {
+                // Fallback: matching por cidade + veículo/carroceria
+                $query = "
+                    SELECT
+                        u.id AS driver_id,
+                        u.name AS driver_name,
+                        p.slug AS driver_slug,
+                        u.whatsapp AS driver_whatsapp,
+                        p.vehicle_type,
+                        p.body_type,
+                        u.city as home_city,
+                        u.state as home_state,
+                        p.service_radius_km,
+                        p.available_equipment,
+                        p.extended_attributes,
+                        p.rntrc_number,
+                        p.avatar_url,
+                        p.verification_status,
+                        p.profile_completeness,
+                        CASE WHEN uf_featured.id IS NOT NULL THEN 1 ELSE 0 END AS is_featured,
+                        CASE WHEN uf_radar.id IS NOT NULL THEN 1 ELSE 0 END AS is_radar_highlighted,
+                        0 AS distance_km,
+                        CASE WHEN p.availability_status = 'available' THEN 30 ELSE 0 END +
+                        CASE WHEN p.vehicle_type LIKE :vehicle_type THEN 30 ELSE 0 END +
+                        CASE WHEN p.body_type LIKE :body_type THEN 20 ELSE 0 END +
+                        CASE WHEN p.verification_status = 'verified' THEN 20 ELSE 0 END +
+                        CASE WHEN uf_featured.id IS NOT NULL THEN 50 ELSE 0 END AS match_score
+                    FROM users u
+                    INNER JOIN user_profiles p ON u.id = p.user_id
+                    LEFT JOIN user_features uf_featured
+                        ON u.id = uf_featured.user_id
+                        AND uf_featured.feature_key = 'featured_profile'
+                        AND uf_featured.status = 'active'
+                        AND (uf_featured.expires_at IS NULL OR uf_featured.expires_at > NOW())
+                    LEFT JOIN user_features uf_radar
+                        ON u.id = uf_radar.user_id
+                        AND uf_radar.feature_key = 'radar_highlight'
+                        AND uf_radar.status = 'active'
+                        AND (uf_radar.expires_at IS NULL OR uf_radar.expires_at > NOW())
+                    WHERE u.role = 'driver'
+                        AND u.status = 'active'
+                        AND p.availability_status = 'available'
+                        AND (u.city = :city OR u.state = :state)
+                    ORDER BY match_score DESC
+                    LIMIT 30
+                ";
+                $params = [
+                    ':vehicle_type' => '%' . ($freight['vehicle_type'] ?? '') . '%',
+                    ':body_type' => '%' . ($freight['body_type'] ?? '') . '%',
+                    ':city' => $freight['origin_city'],
+                    ':state' => $freight['origin_state'],
+                ];
+            }
 
             $stmt = $this->db->prepare($query);
-            $stmt->execute([
-                ':origin_lat' => $freight['origin_lat'],
-                ':origin_lng' => $freight['origin_lng'],
-                ':vehicle_type' => $freight['vehicle_type'] ?? '',
-                ':body_type' => $freight['body_type'] ?? '',
-                ':origin_lat2' => $freight['origin_lat'],
-                ':origin_lng2' => $freight['origin_lng'],
-                ':origin_lat3' => $freight['origin_lat'],
-                ':origin_lng3' => $freight['origin_lng'],
-                ':max_distance' => $maxDistance,
-            ]);
+            $stmt->execute($params);
 
             $drivers = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
@@ -1521,7 +1775,8 @@ class FreightController
                 $driverCertifications = [];
                 if (!empty($driver['extended_attributes'])) {
                     $extras = json_decode($driver['extended_attributes'], true) ?? [];
-                    $driverCertifications = $extras['certifications'] ?? [];
+                    $raw = $extras['certifications'] ?? [];
+                    $driverCertifications = is_string($raw) ? json_decode($raw, true) ?? [] : $raw;
                 }
                 if (!empty($freightCertifications) && !empty($driverCertifications)) {
                     $intersection = array_intersect($freightCertifications, $driverCertifications);
