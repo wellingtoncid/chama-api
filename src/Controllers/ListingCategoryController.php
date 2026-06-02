@@ -14,10 +14,21 @@ class ListingCategoryController
         $this->repository = new ListingCategoryRepository($db);
     }
 
+    public function getSubcategories($data, $loggedUser, $slug = null)
+    {
+        $parentSlug = $slug ?? ($data['slug'] ?? null);
+        if (!$parentSlug) {
+            return Response::json(['success' => false, 'message' => 'Slug da categoria não informado'], 400);
+        }
+        $subcategories = $this->repository->findByParent($parentSlug);
+        return Response::json(['success' => true, 'data' => $subcategories]);
+    }
+
     public function getAll($data)
     {
         $activeOnly = !isset($data['include_inactive']) || $data['include_inactive'] != 'true';
-        $categories = $this->repository->findAll($activeOnly);
+        $parentsOnly = !empty($data['parents_only']) && $data['parents_only'] === 'true';
+        $categories = $this->repository->findAll($activeOnly, $parentsOnly);
         return Response::json(['success' => true, 'data' => $categories]);
     }
 

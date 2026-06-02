@@ -78,6 +78,11 @@ class ListingController
             return Response::json(['success' => false, 'message' => 'Dados insuficientes'], 400);
         }
 
+        // Limitar título a 70 caracteres (padrão mercado)
+        if (mb_strlen($data['title']) > 70) {
+            return Response::json(['success' => false, 'message' => 'O título deve ter no máximo 70 caracteres.'], 400);
+        }
+
         // Validar conteúdo com ContentFilter
         if (!ContentFilterService::isClean($data['title'])) {
             $reason = ContentFilterService::getReason($data['title']);
@@ -312,6 +317,8 @@ class ListingController
             'latitude' => $data['latitude'] ?? null,
             'longitude' => $data['longitude'] ?? null,
             'radius' => $data['radius'] ?? 50,
+            'sort' => $data['sort'] ?? 'recent',
+            'subcategory' => $data['subcategory'] ?? null,
         ];
 
         $listings = $this->repository->findActiveWithFilters($filters, $page);
@@ -352,6 +359,21 @@ class ListingController
 
         // Adicionar dados do vendedor
         $listing['total_listings'] = $this->repository->countUserListings($listing['user_id']);
+
+        // Buscar mais anúncios do mesmo vendedor
+        $sellerListings = $this->repository->findByUserExceptId(
+            $listing['user_id'],
+            $listing['id'],
+            4
+        );
+        if (!empty($sellerListings)) {
+            $sellerIds = array_column($sellerListings, 'id');
+            $sellerImages = $this->repository->getImagesForList($sellerIds);
+            foreach ($sellerListings as &$sl) {
+                $sl['images'] = $sellerImages[$sl['id']] ?? [];
+            }
+        }
+        $listing['seller_listings'] = $sellerListings;
 
         // Buscar sugestões "podem interessar" (mesma categoria + mesmo estado + outros vendedores)
         $state = $listing['location_state'] ?? null;
@@ -526,6 +548,9 @@ class ListingController
         }
 
         // Validar conteúdo com ContentFilter
+        if (!empty($data['title']) && mb_strlen($data['title']) > 70) {
+            return Response::json(['success' => false, 'message' => 'O título deve ter no máximo 70 caracteres.'], 400);
+        }
         if (!empty($data['title']) && !ContentFilterService::isClean($data['title'])) {
             $reason = ContentFilterService::getReason($data['title']);
             return Response::json(['success' => false, 'message' => $reason ?: 'O título contém conteúdo não permitido.'], 400);
@@ -635,10 +660,46 @@ class ListingController
 
         try {
             $this->repository->delete($listingId);
+
+            // Salvar feedback se fornecido
+            if (!empty($data['reason'])) {
+                $this->saveFeedbackInternal($listingId, $loggedUser['id'], $data['reason'], $data['details'] ?? null);
+            }
+
             return Response::json(['success' => true, 'message' => 'Anúncio excluído']);
         } catch (Exception $e) {
             return Response::json(['success' => false, 'message' => 'Erro ao excluir'], 500);
         }
+    }
+
+    public function saveFeedback($data, $loggedUser)
+    {
+        if (!$loggedUser) {
+            return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
+        }
+
+        $listingId = (int)($data['listing_id'] ?? 0);
+        $reason = $data['reason'] ?? '';
+
+        if (!$listingId || !$reason) {
+            return Response::json(['success' => false, 'message' => 'listing_id e reason são obrigatórios'], 400);
+        }
+
+        try {
+            $this->saveFeedbackInternal($listingId, $loggedUser['id'], $reason, $data['details'] ?? null);
+            return Response::json(['success' => true, 'message' => 'Feedback salvo']);
+        } catch (Exception $e) {
+            return Response::json(['success' => false, 'message' => 'Erro ao salvar feedback'], 500);
+        }
+    }
+
+    private function saveFeedbackInternal($listingId, $userId, $reason, $details = null)
+    {
+        $stmt = $this->db->prepare('
+            INSERT INTO listing_feedback (listing_id, user_id, reason, details, created_at)
+            VALUES (?, ?, ?, ?, NOW())
+        ');
+        $stmt->execute([$listingId, $userId, $reason, $details]);
     }
 
     public function getMyListing($data, $loggedUser)

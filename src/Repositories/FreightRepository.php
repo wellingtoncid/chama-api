@@ -117,7 +117,15 @@ class FreightRepository
                         (SELECT COUNT(*) FROM click_logs WHERE target_id = f.id AND (event_type = 'VIEW_DETAILS' OR event_type = 'VIEW')) as total_views,
                         (SELECT COUNT(*) FROM click_logs WHERE target_id = f.id AND event_type = 'CARD_CLICK') as total_clicks,
                         (SELECT MAX(created_at) FROM click_logs WHERE target_id = f.id) as last_interaction_at,
-                        (CASE WHEN fav.id IS NOT NULL THEN 1 ELSE 0 END) as is_favorite
+                        (CASE WHEN fav.id IS NOT NULL THEN 1 ELSE 0 END) as is_favorite,
+                        (SELECT fi.status FROM freight_invitations fi
+                         WHERE fi.freight_id = f.id AND fi.driver_id = :fav_id
+                         AND fi.status IN ('pending','accepted','declined','cancelled')
+                         LIMIT 1) AS invitation_status,
+                        (SELECT fi.invited_by FROM freight_invitations fi
+                         WHERE fi.freight_id = f.id AND fi.driver_id = :fav_id
+                         AND fi.status IN ('pending','accepted','declined','cancelled')
+                         LIMIT 1) AS invitation_invited_by
                     FROM freights f
                     LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                     LEFT JOIN users u ON f.user_id = u.id
@@ -589,7 +597,15 @@ class FreightRepository
 
         $sql = "SELECT f.*, ct.name as cargo_type_name, 1 as is_smart_match,
                        COALESCE(a.trade_name, a.corporate_name, u.name) as company_name,
-                       u.name as user_name, p.avatar_url
+                       u.name as user_name, p.avatar_url,
+                       (SELECT fi.status FROM freight_invitations fi
+                        WHERE fi.freight_id = f.id AND fi.driver_id = ?
+                        AND fi.status IN ('pending','accepted','declined','cancelled')
+                        LIMIT 1) AS invitation_status,
+                       (SELECT fi.invited_by FROM freight_invitations fi
+                        WHERE fi.freight_id = f.id AND fi.driver_id = ?
+                        AND fi.status IN ('pending','accepted','declined','cancelled')
+                        LIMIT 1) AS invitation_invited_by
                 FROM freights f
                 LEFT JOIN cargo_types ct ON f.cargo_type_id = ct.id
                 LEFT JOIN users u ON f.user_id = u.id
@@ -607,6 +623,8 @@ class FreightRepository
         $stmt = $this->db->prepare($sql);
         // LIKE com % nas bordas para match parcial (ex: "Bitruck" encontra "Bitruck - 4 eixos...")
         $stmt->execute([
+            (int)$userId,
+            (int)$userId,
             '%' . $profile['vehicle_type'] . '%',
             '%' . $profile['body_type'] . '%',
         ]);
@@ -1510,6 +1528,54 @@ class FreightRepository
         ');
         $stmt->execute([$invitationId, $companyId]);
         return $stmt->rowCount() > 0;
+    }
+
+    public function cancelAcceptedInvitation($invitationId, $userId, $role)
+    {
+        try {
+            $this->db->beginTransaction();
+
+            // Só permite cancelar se status = 'accepted' e for o dono do frete ou o motorista
+            $field = $role === 'driver' ? 'driver_id' : 'company_id';
+            $stmt = $this->db->prepare("
+                SELECT fi.freight_id, fi.driver_id
+                FROM freight_invitations fi
+                WHERE fi.id = ? AND fi.$field = ? AND fi.status = 'accepted'
+                LIMIT 1
+            ");
+            $stmt->execute([$invitationId, $userId]);
+            $invite = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if (!$invite) {
+                $this->db->rollBack();
+                return false;
+            }
+
+            // Atualiza status do convite
+            $this->db->prepare("
+                UPDATE freight_invitations SET status = 'cancelled', responded_at = NOW() WHERE id = ?
+            ")->execute([$invitationId]);
+
+            // Se o freight ainda tem este motorista como assigned, libera o frete
+            $this->db->prepare("
+                UPDATE freights
+                SET assigned_driver_id = NULL, status = 'OPEN', updated_at = NOW()
+                WHERE id = ? AND assigned_driver_id = ? AND status = 'IN_PROGRESS'
+            ")->execute([$invite['freight_id'], $invite['driver_id']]);
+
+            // Registra na freight_tracking
+            $this->db->prepare("
+                INSERT INTO freight_tracking (freight_id, driver_id, status, description, created_at)
+                VALUES (?, ?, 'MATCH_CANCELLED', 'Match cancelado pelo " . ($role === 'driver' ? 'motorista' : 'contratante') . ".', NOW())
+            ")->execute([$invite['freight_id'], $invite['driver_id']]);
+
+            $this->db->commit();
+            return true;
+        } catch (\Exception $e) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            error_log('Erro cancelAcceptedInvitation: ' . $e->getMessage());
+            return false;
+        }
     }
 
     public function getInvitationsByFreight($freightId)

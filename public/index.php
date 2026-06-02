@@ -140,6 +140,7 @@ try {
     // Invitations RESTful
     $router->post('/api/freight-invitations', 'FreightController@createInvitation');
     $router->put('/api/freight-invitations/:invitationId/respond', 'FreightController@respondInvitation');
+    $router->put('/api/freight-invitations/:invitationId/cancel-match', 'FreightController@cancelMatchAfterAccept');
     $router->delete('/api/freight-invitations/:invitationId', 'FreightController@cancelInvitation');
     $router->get('/api/freights/:id/invitations', 'FreightController@listInvitationsByFreight');
     $router->get('/api/my-invitations', 'FreightController@listMyInvitations');
@@ -196,8 +197,12 @@ try {
     $router->put('/api/listings/:id', 'ListingController@update');
     $router->delete('/api/listings/:id', 'ListingController@delete');
 
+    // Listing feedback (delete reasons, etc.)
+    $router->post('/api/listing-feedback', 'ListingController@saveFeedback');
+
     // --- LISTING CATEGORIES (Marketplace) ---
     $router->get('/api/listing-categories', 'ListingCategoryController@getAll');
+    $router->get('/api/listing-categories/:slug/subcategories', 'ListingCategoryController@getSubcategories');
     $router->get('/api/listing-category/:id', 'ListingCategoryController@get');
     $router->post('/api/listing-category', 'ListingCategoryController@create');
     $router->put('/api/listing-category/:id', 'ListingCategoryController@update');

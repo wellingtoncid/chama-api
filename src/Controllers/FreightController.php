@@ -679,9 +679,21 @@ class FreightController
             return Response::json(['success' => false, 'message' => 'Frete não encontrado ou acesso negado'], 403);
         }
 
-        // Verifica se já tem convite pendente
-        if ($this->repo->hasPendingInvitation($freightId, $driverId)) {
-            return Response::json(['success' => false, 'message' => 'Já existe um convite pendente para este motorista'], 409);
+        // Verifica se já existe algum convite (impede reenvio após qualquer status)
+        $existing = $this->repo->getInvitationByFreightAndDriver($freightId, $driverId);
+        if ($existing) {
+            if ($existing['status'] === 'pending') {
+                return Response::json(['success' => false, 'message' => 'Já existe um convite pendente para este motorista'], 409);
+            }
+            if ($existing['status'] === 'accepted') {
+                return Response::json(['success' => false, 'message' => 'Motorista já foi aceito para este frete'], 409);
+            }
+            if ($existing['status'] === 'declined') {
+                return Response::json(['success' => false, 'message' => 'Motorista recusou o convite anteriormente'], 409);
+            }
+            if ($existing['status'] === 'cancelled') {
+                return Response::json(['success' => false, 'message' => 'Convite anterior foi cancelado'], 409);
+            }
         }
 
         try {
@@ -775,6 +787,24 @@ class FreightController
             return Response::json(['success' => true, 'message' => 'Convite cancelado']);
         }
         return Response::json(['success' => false, 'message' => 'Convite não encontrado ou já respondido'], 404);
+    }
+
+    public function cancelMatchAfterAccept($data, $loggedUser)
+    {
+        $invitationId = (int)($data['invitationId'] ?? $data['invitation_id'] ?? 0);
+        if (!$invitationId) {
+            return Response::json(['success' => false, 'message' => 'ID do convite é obrigatório'], 400);
+        }
+
+        $role = strtolower($loggedUser['role'] ?? '');
+        if (!in_array($role, ['company', 'driver', 'admin'], true)) {
+            return Response::json(['success' => false, 'message' => 'Ação não permitida'], 403);
+        }
+
+        if ($this->repo->cancelAcceptedInvitation($invitationId, (int)$loggedUser['id'], $role)) {
+            return Response::json(['success' => true, 'message' => 'Match cancelado com sucesso.']);
+        }
+        return Response::json(['success' => false, 'message' => 'Match não encontrado ou não pode ser cancelado'], 404);
     }
 
     public function listInvitationsByFreight($data, $loggedUser)
@@ -1666,6 +1696,12 @@ class FreightController
                         AND p.availability_status = 'available'
                         AND p.home_lat IS NOT NULL
                         AND p.home_lng IS NOT NULL
+                        AND NOT EXISTS (
+                            SELECT 1 FROM freight_invitations fi
+                            WHERE fi.freight_id = :freight_id_h
+                            AND fi.driver_id = u.id
+                            AND fi.status IN ('pending', 'accepted', 'declined', 'cancelled')
+                        )
                         AND ROUND(
                             6371 * ACOS(
                                 LEAST(1.0, GREATEST(-1.0,
@@ -1697,6 +1733,7 @@ class FreightController
                     ':origin_lat3' => $freight['origin_lat'],
                     ':origin_lng3' => $freight['origin_lng'],
                     ':max_distance' => $maxDistance,
+                    ':freight_id_h' => $freightId,
                 ];
             } else {
                 // Fallback: matching por cidade + veículo/carroceria
@@ -1740,6 +1777,12 @@ class FreightController
                     WHERE u.role = 'driver'
                         AND u.status = 'active'
                         AND p.availability_status = 'available'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM freight_invitations fi
+                            WHERE fi.freight_id = :freight_id_f
+                            AND fi.driver_id = u.id
+                            AND fi.status IN ('pending', 'accepted', 'declined', 'cancelled')
+                        )
                         AND (u.city = :city OR u.state = :state)
                     ORDER BY match_score DESC
                     LIMIT 30
@@ -1749,6 +1792,7 @@ class FreightController
                     ':body_type' => '%' . ($freight['body_type'] ?? '') . '%',
                     ':city' => $freight['origin_city'],
                     ':state' => $freight['origin_state'],
+                    ':freight_id_f' => $freightId,
                 ];
             }
 

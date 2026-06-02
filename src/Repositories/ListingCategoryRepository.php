@@ -13,16 +13,32 @@ class ListingCategoryRepository
         $this->db = $db;
     }
 
-    public function findAll($activeOnly = true)
+    public function findAll($activeOnly = true, $parentsOnly = false)
     {
         $sql = 'SELECT * FROM listing_categories WHERE 1=1';
         if ($activeOnly) {
             $sql .= ' AND is_active = 1 AND deleted_at IS NULL';
         }
+        if ($parentsOnly) {
+            $sql .= ' AND parent_id IS NULL';
+        }
         $sql .= ' ORDER BY sort_order ASC, name ASC';
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function findByParent($parentSlug)
+    {
+        $sql = "SELECT sc.* FROM listing_categories sc
+                JOIN listing_categories p ON sc.parent_id = p.id
+                WHERE p.slug = ?
+                AND sc.is_active = 1 AND sc.deleted_at IS NULL
+                AND p.is_active = 1 AND p.deleted_at IS NULL
+                ORDER BY sc.sort_order ASC, sc.name ASC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$parentSlug]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
@@ -43,13 +59,14 @@ class ListingCategoryRepository
     public function create($data)
     {
         $stmt = $this->db->prepare('
-            INSERT INTO listing_categories (name, slug, icon, description, sort_order, is_active)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO listing_categories (parent_id, name, slug, icon, description, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ');
 
         $maxOrder = $this->db->query('SELECT COALESCE(MAX(sort_order), 0) + 1 FROM listing_categories')->fetchColumn();
 
         $stmt->execute([
+            $data['parent_id'] ?? null,
             $data['name'],
             $data['slug'] ?? $this->generateSlug($data['name']),
             $data['icon'] ?? null,
@@ -89,6 +106,10 @@ class ListingCategoryRepository
         if (isset($data['is_active'])) {
             $fields[] = 'is_active = ?';
             $params[] = $data['is_active'];
+        }
+        if (array_key_exists('parent_id', $data)) {
+            $fields[] = 'parent_id = ?';
+            $params[] = $data['parent_id'];
         }
 
         if (empty($fields)) {

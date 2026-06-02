@@ -53,6 +53,13 @@ class ListingRepository
             $params[':cat'] = $filters['category'];
         }
 
+        // Filtro por subcategoria
+        if (!empty($filters['subcategory'])) {
+            $sql .= ' AND l.subcategory = :subcat';
+            $countSql .= ' AND l.subcategory = :subcat';
+            $params[':subcat'] = $filters['subcategory'];
+        }
+
         // Filtro de busca inteligente (Google-like)
         if (!empty($filters['search'])) {
             $searchTerm = trim($filters['search']);
@@ -108,7 +115,20 @@ class ListingRepository
             $params[':max_price'] = floatval($filters['max_price']);
         }
 
-        $sql .= " ORDER BY l.is_featured DESC, l.created_at DESC LIMIT $limit OFFSET $offset";
+        // Ordenação
+        $sort = $filters['sort'] ?? 'recent';
+        switch ($sort) {
+            case 'price_asc':
+                $sql .= ' ORDER BY l.is_featured DESC, l.price ASC, l.created_at DESC';
+                break;
+            case 'price_desc':
+                $sql .= ' ORDER BY l.is_featured DESC, l.price DESC, l.created_at DESC';
+                break;
+            default:
+                $sql .= ' ORDER BY l.is_featured DESC, l.created_at DESC';
+                break;
+        }
+        $sql .= " LIMIT $limit OFFSET $offset";
 
         $stmt = $this->db->prepare($sql);
         foreach ($params as $key => $val) {
@@ -295,12 +315,13 @@ class ListingRepository
 
     public function save($data)
     {
-        $sql = "INSERT INTO listings (user_id, title, slug, description, price, category, main_image, location_city, location_state, status, expires_at, is_featured, latitude, longitude, item_condition, is_affiliate, external_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)";
+        $sql = "INSERT INTO listings (user_id, title, slug, description, price, category, subcategory, main_image, location_city, location_state, status, expires_at, is_featured, latitude, longitude, item_condition, is_affiliate, external_url, accepting_offers, contact_preference, accepting_trade)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         $stmt = $this->db->prepare($sql);
         $success = $stmt->execute([
             $data['user_id'], $data['title'], $data['slug'],
             $data['description'], $data['price'], $data['category'],
+            $data['subcategory'] ?? null,
             $data['main_image'] ?? null,
             $data['location_city'] ?? null,
             $data['location_state'] ?? null,
@@ -309,8 +330,11 @@ class ListingRepository
             $data['latitude'] ?? null,
             $data['longitude'] ?? null,
             $data['item_condition'] ?? null,
-            !empty($data['is_affiliate']) ? 1 : 0,
+                !empty($data['is_affiliate']) ? 1 : 0,
             $data['external_url'] ?? null,
+            !empty($data['accepting_offers']) ? 1 : 0,
+            $data['contact_preference'] ?? 'whatsapp',
+            !empty($data['accepting_trade']) ? 1 : 0,
         ]);
         return $success ? $this->db->lastInsertId() : false;
     }
@@ -404,12 +428,31 @@ class ListingRepository
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
+    public function findByUserExceptId(int $userId, int $excludeId, int $limit = 4): array
+    {
+        $stmt = $this->db->prepare("
+            SELECT l.*, u.name as seller_name, p.slug as seller_slug,
+            (SELECT image_url FROM listing_images WHERE listing_id = l.id ORDER BY sort_order ASC LIMIT 1) as main_image
+            FROM listings l
+            JOIN users u ON l.user_id = u.id
+            LEFT JOIN user_profiles p ON u.id = p.user_id
+            WHERE l.user_id = ?
+            AND l.id != ?
+            AND l.status = 'active'
+            AND (l.expires_at IS NULL OR l.expires_at > NOW())
+            ORDER BY l.created_at DESC
+            LIMIT ?
+        ");
+        $stmt->execute([$userId, $excludeId, $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     public function update($id, $data)
     {
         $fields = [];
         $params = [':id' => $id];
 
-        $allowedFields = ['title', 'description', 'price', 'category', 'location_city', 'location_state', 'status', 'is_featured', 'expires_at', 'latitude', 'longitude', 'item_condition', 'main_image', 'is_affiliate', 'external_url'];
+        $allowedFields = ['title', 'description', 'price', 'category', 'subcategory', 'location_city', 'location_state', 'status', 'is_featured', 'expires_at', 'latitude', 'longitude', 'item_condition', 'main_image', 'is_affiliate', 'external_url', 'accepting_offers', 'contact_preference', 'accepting_trade'];
 
         foreach ($allowedFields as $field) {
             if (array_key_exists($field, $data)) {
