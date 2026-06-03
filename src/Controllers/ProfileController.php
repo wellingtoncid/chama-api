@@ -36,7 +36,7 @@ class ProfileController
                 SELECT u.id, u.name, u.email, u.phone, u.whatsapp, u.role, u.user_type,
                     u.city, u.state, u.plan_type, u.status, u.created_at,
                     u.is_verified, u.rating_avg, u.rating_count,
-                    p.bio, p.avatar_url, p.cover_url, p.instagram, p.website,
+                    p.bio, p.avatar_url, p.cover_url, p.instagram, p.website, p.linkedin,
                     p.social_links, p.full_address, p.documents,
                     p.rntrc_number, p.verification_status, p.availability_status,
                     p.vehicle_type, p.body_type, p.preferred_region,
@@ -85,7 +85,7 @@ class ProfileController
             }
 
             $userFields = ['name', 'phone', 'whatsapp', 'city', 'state'];
-            $profileFields = ['bio', 'instagram', 'website', 'vehicle_type', 'body_type', 'preferred_region'];
+            $profileFields = ['bio', 'instagram', 'website', 'linkedin', 'vehicle_type', 'body_type', 'preferred_region'];
 
             $this->db->beginTransaction();
 
@@ -115,7 +115,7 @@ class ProfileController
                 }
             }
 
-            if (isset($data['facebook']) || isset($data['linkedin'])) {
+            if (isset($data['facebook'])) {
                 $socialLinks = [];
                 $getStmt = $this->db->prepare('SELECT social_links FROM user_profiles WHERE user_id = ?');
                 $getStmt->execute([$userId]);
@@ -123,12 +123,7 @@ class ProfileController
                 if ($existing && $existing['social_links']) {
                     $socialLinks = json_decode($existing['social_links'], true) ?: [];
                 }
-                if (isset($data['facebook'])) {
-                    $socialLinks['facebook'] = $data['facebook'];
-                }
-                if (isset($data['linkedin'])) {
-                    $socialLinks['linkedin'] = $data['linkedin'];
-                }
+                $socialLinks['facebook'] = $data['facebook'];
                 $profileData['social_links'] = json_encode($socialLinks);
             }
 

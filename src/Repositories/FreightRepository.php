@@ -1073,14 +1073,24 @@ class FreightRepository
 
         $sql = "SELECT
                     u.name as owner_user_name,
+                    u.email as owner_email,
                     u.whatsapp as owner_whatsapp,
                     u.is_verified as owner_is_verified,
                     u.created_at as owner_created_at,
+                    u.last_login as owner_last_active,
+                    u.email_verified_at,
+                    u.whatsapp_verified,
+                    u.document_verified_at,
+                    u.city as owner_city,
+                    u.state as owner_state,
                     p.avatar_url,
                     p.slug as owner_slug,
                     p.extended_attributes,
+                    p.instagram,
                     a.trade_name,
                     a.corporate_name,
+                    a.document_number,
+                    a.document_type,
                     (SELECT COUNT(*) FROM freights f WHERE f.user_id = u.id AND f.status IN ('OPEN', 'PENDING', 'in_progress') AND (f.expires_at IS NULL OR f.expires_at > NOW())) as total_owner_freights
                 FROM users u
                 LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -1099,6 +1109,15 @@ class FreightRepository
                     ?? ($owner['trade_name']
                     ?? ($owner['corporate_name'] ?? $owner['owner_user_name']));
 
+                $hasCompany = !empty($details['company_name'])
+                    || !empty($owner['trade_name'])
+                    || !empty($owner['corporate_name']);
+
+                if (!$hasCompany && $displayName === $owner['owner_user_name']) {
+                    $parts = explode(' ', $displayName);
+                    $displayName = $parts[0];
+                }
+
                 $freight['owner_name'] = $displayName;
                 $freight['company_name'] = $displayName;
 
@@ -1108,6 +1127,18 @@ class FreightRepository
                 $freight['owner_is_verified'] = (int)($owner['owner_is_verified'] ?? 0);
                 $freight['owner_created_at'] = $owner['owner_created_at'];
                 $freight['total_owner_freights'] = (int)($owner['total_owner_freights'] ?? 0);
+                $freight['owner_is_company'] = $hasCompany ? 1 : 0;
+                $freight['owner_last_active'] = $owner['owner_last_active'];
+                $freight['owner_city'] = $owner['owner_city'];
+                $freight['owner_state'] = $owner['owner_state'];
+                $instagram = $owner['instagram'] ?: ($details['instagram'] ?? null);
+
+                $freight['owner_verifications'] = [
+                    'email' => !empty($owner['owner_email']),
+                    'whatsapp' => !empty($owner['owner_whatsapp']),
+                    'document' => !empty($owner['document_number']),
+                    'instagram' => !empty($instagram),
+                ];
             }
 
             return method_exists($this, 'formatFreightData') ? $this->formatFreightData($freight) : $freight;

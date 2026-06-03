@@ -256,7 +256,8 @@ class ListingRepository
             WHERE l.slug = ? AND l.status IN ('active', 'paused', 'sold')
         ");
         $stmt->execute([$slug]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        $listing = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $listing ? $this->attachSellerData($listing) : null;
     }
 
     public function countUserListings($userId)
@@ -365,6 +366,77 @@ class ListingRepository
         } catch (\Exception $e) {
             error_log("Erro ao incrementar contador na tabela {$tableName}: " . $e->getMessage());
             return false;
+        }
+    }
+
+    private function attachSellerData($listing)
+    {
+        $sql = "SELECT
+                    u.name as seller_user_name,
+                    u.email,
+                    u.whatsapp,
+                    u.email_verified_at,
+                    u.whatsapp_verified,
+                    u.document_verified_at,
+                    u.last_login as last_active_at,
+                    u.city,
+                    u.state,
+                    p.avatar_url,
+                    p.slug,
+                    p.extended_attributes,
+                    p.instagram,
+                    a.trade_name,
+                    a.corporate_name,
+                    a.document_number,
+                    a.document_type
+                FROM users u
+                LEFT JOIN user_profiles p ON u.id = p.user_id
+                LEFT JOIN accounts a ON u.account_id = a.id
+                WHERE u.id = :uid LIMIT 1";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([':uid' => $listing['user_id']]);
+            $seller = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if ($seller) {
+                $details = json_decode($seller['extended_attributes'] ?? '{}', true);
+
+                $displayName = $details['company_name']
+                    ?? ($seller['trade_name']
+                    ?? ($seller['corporate_name']
+                    ?? $seller['seller_user_name']));
+
+                $hasCompany = !empty($details['company_name'])
+                    || !empty($seller['trade_name'])
+                    || !empty($seller['corporate_name']);
+
+                if (!$hasCompany && $displayName === $seller['seller_user_name']) {
+                    $parts = explode(' ', $displayName);
+                    $displayName = $parts[0];
+                }
+
+                $listing['seller_display_name'] = $displayName;
+                $listing['seller_name_original'] = $listing['seller_name'] ?? $seller['seller_user_name'];
+                $listing['seller_is_company'] = $hasCompany ? 1 : 0;
+                $listing['seller_last_active'] = $seller['last_active_at'];
+                $listing['seller_city'] = $seller['city'] ?? $listing['seller_city'];
+                $listing['seller_state'] = $seller['state'] ?? $listing['seller_state'];
+                $instagram = $seller['instagram'] ?: ($details['instagram'] ?? null);
+
+                $listing['seller_verifications'] = [
+                    'email' => !empty($seller['email']),
+                    'whatsapp' => !empty($seller['whatsapp']),
+                    'document' => !empty($seller['document_number']),
+                    'instagram' => !empty($instagram),
+                ];
+            }
+
+            return $listing;
+
+        } catch (\Exception $e) {
+            error_log('Erro attachSellerData: ' . $e->getMessage());
+            return $listing;
         }
     }
 

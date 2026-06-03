@@ -362,15 +362,9 @@ class UserRepository
                 'neighborhood'       => $data['neighborhood'] ?? null,
                 'postal_code'        => preg_replace('/\D/', '', $data['postal_code'] ?? ''),
                 'business_segment'   => $data['business_segment'] ?? 'transport',
-                'fleet_types'        => $data['fleet_types'] ?? [],       // Array de tipos de frota
-                'transport_services' => $data['transport_services'] ?? [], // Ex: Mudanças, Refrigeração
-                'certifications'     => $data['certifications'] ?? [],     // Ex: SASSMAQ, ISO
-                'website'            => $data['website'] ?? null,
-                'social' => [
-                    'instagram' => $data['instagram'] ?? null,
-                    'linkedin'  => $data['linkedin'] ?? null,
-                ],
-                // Disponibilidade do motorista (0/1) mantida também no JSON para possíveis usos futuros
+                'fleet_types'        => $data['fleet_types'] ?? [],
+                'transport_services' => $data['transport_services'] ?? [],
+                'certifications'     => $data['certifications'] ?? [],
                 'is_available'       => isset($data['is_available']) ? (int)$data['is_available'] : null,
             ];
 
@@ -384,21 +378,29 @@ class UserRepository
                             experience_years = :exp,
                             rntrc_number = :antt,
                             slug = :slug,
+                            instagram = :instagram,
+                            website = :website,
+                            linkedin = :linkedin,
+                            home_cep = :home_cep,
                             extended_attributes = :json,
                             updated_at = NOW()
                         WHERE user_id = :id';
 
             $this->db->prepare($sqlProfile)->execute([
-                ':bio'    => $nullIfEmpty($data['bio'] ?? null),
-                ':avatar' => $data['avatar_url'] ?? null,
-                ':cover'  => $data['cover_url'] ?? null,
-                ':v_type' => $data['vehicle_type'] ?? null,
-                ':b_type' => $data['body_type'] ?? null,
-                ':exp'    => (int)($data['experience_years'] ?? 0),
-                ':antt'   => $data['antt'] ?? $data['rntrc_number'] ?? null,
-                ':slug'   => $data['slug'] ?? null,
-                ':json'   => json_encode($extraDetails, JSON_UNESCAPED_UNICODE),
-                ':id'     => $userId,
+                ':bio'       => $nullIfEmpty($data['bio'] ?? null),
+                ':avatar'    => $data['avatar_url'] ?? null,
+                ':cover'     => $data['cover_url'] ?? null,
+                ':v_type'    => $data['vehicle_type'] ?? null,
+                ':b_type'    => $data['body_type'] ?? null,
+                ':exp'       => (int)($data['experience_years'] ?? 0),
+                ':antt'      => $data['antt'] ?? $data['rntrc_number'] ?? null,
+                ':slug'      => $data['slug'] ?? null,
+                ':instagram' => $nullIfEmpty($data['instagram'] ?? null),
+                ':website'   => $nullIfEmpty($data['website'] ?? null),
+                ':linkedin'  => $nullIfEmpty($data['linkedin'] ?? null),
+                ':home_cep'  => $nullIfEmpty($data['home_cep'] ?? null),
+                ':json'      => json_encode($extraDetails, JSON_UNESCAPED_UNICODE),
+                ':id'        => $userId,
             ]);
 
             $this->db->commit();
@@ -446,7 +448,8 @@ class UserRepository
                     p.avatar_url, p.cover_url, p.bio, p.slug,
                     u.city as profile_city, u.state as profile_state,
                     p.vehicle_type, p.body_type, p.verification_status,
-                    p.availability_status, p.extended_attributes
+                    p.availability_status, p.extended_attributes,
+                    p.instagram, p.website, p.linkedin, p.home_cep
                 FROM users u
                 LEFT JOIN accounts a ON u.account_id = a.id
                 LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -478,10 +481,11 @@ class UserRepository
             $row[$field] = $row['details'][$field] ?? ($field === 'fleet_types' || $field === 'transport_services' ? [] : '');
         }
 
-        // --- REDES SOCIAIS (compatibilidade com formato antigo e novo "social") ---
+        // --- REDES SOCIAIS (colunas diretas com fallback JSON) ---
         $social = is_array($row['details']['social'] ?? null) ? $row['details']['social'] : [];
-        $row['instagram'] = $social['instagram'] ?? ($row['details']['instagram'] ?? null);
-        $row['linkedin']  = $social['linkedin']  ?? ($row['details']['linkedin']  ?? null);
+        $row['instagram'] = $row['instagram'] ?? ($social['instagram'] ?? ($row['details']['instagram'] ?? null));
+        $row['linkedin']  = $row['linkedin']  ?? ($social['linkedin']  ?? ($row['details']['linkedin']  ?? null));
+        $row['website']   = $row['website']   ?? ($row['details']['website'] ?? null);
 
         // --- NORMALIZAÇÃO DE LOCALIZAÇÃO ---
         $row['city'] = $row['profile_city'] ?: ($row['user_city'] ?: '');
@@ -1190,6 +1194,8 @@ class UserRepository
                     up.availability_status,
                     up.instagram as profile_instagram,
                     up.website as profile_website,
+                    up.linkedin as profile_linkedin,
+                    up.home_cep,
                     up.extended_attributes,
                     up.views_count,
                     up.clicks_count,
@@ -1249,11 +1255,12 @@ class UserRepository
             $profile['city'] = $profile['user_city'];
             $profile['state'] = $profile['user_state'];
 
-            // Redes sociais (compatível com JSON antigo e novo)
+            // Redes sociais (colunas diretas com fallback JSON)
             $social = is_array($details['social'] ?? null) ? $details['social'] : [];
             $profile['instagram'] = $profile['profile_instagram']
                 ?? ($social['instagram'] ?? ($details['instagram'] ?? null));
-            $profile['linkedin'] = $social['linkedin'] ?? ($details['linkedin'] ?? null);
+            $profile['linkedin'] = $profile['profile_linkedin']
+                ?? ($social['linkedin'] ?? ($details['linkedin'] ?? null));
             $profile['website'] = $profile['profile_website'] ?? ($details['website'] ?? null);
 
             // Disponibilidade pública
