@@ -24,8 +24,8 @@ class ArticleRepository
     public function create($data)
     {
         $stmt = $this->db->prepare('
-            INSERT INTO articles (title, slug, excerpt, content, author_id, category_id, featured, is_paid, paid_plan, paid_until, paid_banner_image, paid_banner_url, status, created_at)
-            VALUES (:title, :slug, :excerpt, :content, :author_id, :category_id, :featured, :is_paid, :paid_plan, :paid_until, :paid_banner_image, :paid_banner_url, :status, NOW())
+            INSERT INTO articles (title, slug, excerpt, content, image_url, author_id, category_id, featured, is_paid, paid_plan, paid_until, paid_banner_image, paid_banner_url, status, created_at)
+            VALUES (:title, :slug, :excerpt, :content, :image_url, :author_id, :category_id, :featured, :is_paid, :paid_plan, :paid_until, :paid_banner_image, :paid_banner_url, :status, NOW())
         ');
 
         $stmt->execute([
@@ -33,6 +33,7 @@ class ArticleRepository
             ':slug' => $data['slug'],
             ':excerpt' => $data['excerpt'] ?? null,
             ':content' => $data['content'],
+            ':image_url' => $data['image_url'] ?? null,
             ':author_id' => $data['author_id'],
             ':category_id' => $data['category_id'] ?? null,
             ':featured' => $data['featured'] ?? false,
@@ -189,7 +190,7 @@ class ArticleRepository
         $fields = [];
         $params = [':id' => $id];
 
-        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'category_id', 'featured', 'status', 'rejection_reason'];
+        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'image_url', 'category_id', 'featured', 'status', 'rejection_reason'];
 
         foreach ($allowedFields as $field) {
             if (isset($data[$field])) {

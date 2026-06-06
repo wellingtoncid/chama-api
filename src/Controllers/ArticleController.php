@@ -49,7 +49,38 @@ class ArticleController
     }
 
     /**
-     * GET /api/articles/:slug - Get single article
+     * GET /api/articles/by-id/:id - Get article by ID (for editing, author or admin only)
+     */
+    public function showById($data)
+    {
+        $user = Auth::requireAuth();
+        $id = (int)($data['id'] ?? 0);
+
+        if ($id <= 0) {
+            return Response::json(['success' => false, 'message' => 'ID inválido'], 400);
+        }
+
+        $article = $this->articleRepo->findById($id);
+
+        if (!$article) {
+            return Response::json(['success' => false, 'message' => 'Artigo não encontrado'], 404);
+        }
+
+        if ($article['author_id'] != $user['id'] && !Auth::hasRole('admin')) {
+            return Response::json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+
+        // Don't expose sensitive fields
+        unset($article['rejection_reason'], $article['rejection_count']);
+
+        return Response::json([
+            'success' => true,
+            'data' => ['article' => $article],
+        ]);
+    }
+
+    /**
+     * GET /api/articles/:slug - Show article by slug (public)
      */
     public function show($data)
     {
@@ -153,6 +184,7 @@ class ArticleController
             'slug' => $slug,
             'excerpt' => $data['excerpt'] ?? null,
             'content' => $data['content'],
+            'image_url' => $data['image_url'] ?? null,
             'author_id' => $user['id'],
             'category_id' => $data['category_id'] ?? null,
             'featured' => false,
@@ -237,8 +269,8 @@ class ArticleController
             'category_id' => $data['category_id'] ?? $article['category_id'],
         ];
 
-        // If was rejected, reset to pending
-        if ($article['status'] === 'rejected') {
+        // If not admin, any edit resets to pending for re-approval
+        if (!Auth::hasRole('admin') && $article['status'] !== 'draft') {
             $updateData['status'] = 'pending';
         }
 

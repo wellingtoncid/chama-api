@@ -267,6 +267,19 @@ class AdminController
                 error_log('Tabela cargo_types não existe ou erro: ' . $e->getMessage());
                 $settingsMap['cargo_types'] = '[]';
             }
+            // Carrega article_categories (formato {value, label})
+            try {
+                $acStmt = $this->db->query(
+                    'SELECT id, name FROM article_categories WHERE deleted_at IS NULL ORDER BY name ASC'
+                );
+                $acItems = $acStmt->fetchAll(PDO::FETCH_ASSOC);
+                $acMapped = array_map(fn($ac) => ['value' => $ac['name'], 'label' => $ac['name']], $acItems ?: []);
+                $settingsMap['article_categories'] = json_encode($acMapped, JSON_UNESCAPED_UNICODE);
+                $byCategory['lists']['article_categories'] = $settingsMap['article_categories'];
+            } catch (\Throwable $e) {
+                error_log('Tabela article_categories não existe ou erro: ' . $e->getMessage());
+                $settingsMap['article_categories'] = '[]';
+            }
             $plans = [];
             try {
                 $plansStmt = $this->db->query('SELECT id, name, price, duration_days, type, description FROM plans ORDER BY price ASC');
@@ -287,8 +300,8 @@ class AdminController
         try {
             $key = $data['key'] ?? null;
             $value = $data['value'] ?? null;
-            // Bloqueia salvamento das 4 listas — agora gerenciadas via lookup_lists
-            $blockedListKeys = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types'];
+            // Bloqueia salvamento das listas — gerenciadas via CRUD próprio
+            $blockedListKeys = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types', 'article_categories'];
             foreach ($blockedListKeys as $bk) {
                 if (isset($data[$bk])) {
                     return Response::json([

@@ -239,16 +239,17 @@ try {
 
     $router->get('/api/articles/user/:userId', 'ArticleController@byAuthor');
 
-    // IMPORTANTE: :slug deve vir DEPOIS de /me e /user/, senão "me"/"user" casa como slug
+    if ($loggedUser) {
+        $router->get('/api/articles/by-id/:id', 'ArticleController@showById');
+    }
+
+    // IMPORTANTE: :slug deve vir DEPOIS de /me, /user/ e /by-id/, senão casam como slug
     $router->get('/api/articles/:slug', 'ArticleController@show');
 
     if ($loggedUser) {
-
-        if (Auth::hasPermission('articles.create')) {
-            $router->post('/api/articles', 'ArticleController@store');
-            $router->put('/api/articles/:id', 'ArticleController@update');
-            $router->delete('/api/articles/:id', 'ArticleController@destroy');
-        }
+        $router->post('/api/articles', 'ArticleController@store');
+        $router->put('/api/articles/:id', 'ArticleController@update');
+        $router->delete('/api/articles/:id', 'ArticleController@destroy');
 
         if (Auth::hasPermission('articles.approve')) {
             $router->put('/api/articles/:id/approve', 'ArticleController@approve');
