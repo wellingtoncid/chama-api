@@ -54,7 +54,7 @@ class ArticleRepository
     public function findById($id)
     {
         $stmt = $this->db->prepare('
-            SELECT a.*, u.name as author_name, up.avatar_url as author_avatar, ac.name as category_name, ac.slug as category_slug
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar, ac.name as category_name, ac.slug as category_slug
             FROM articles a
             LEFT JOIN users u ON a.author_id = u.id
             LEFT JOIN user_profiles up ON a.author_id = up.user_id
@@ -71,7 +71,7 @@ class ArticleRepository
     public function findBySlug($slug)
     {
         $stmt = $this->db->prepare("
-            SELECT a.*, u.name as author_name, up.avatar_url as author_avatar, up.bio as author_bio, up.slug as author_slug,
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar, up.bio as author_bio, up.slug as author_slug,
                    ac.name as category_name, ac.slug as category_slug
             FROM articles a
             LEFT JOIN users u ON a.author_id = u.id
@@ -109,7 +109,7 @@ class ArticleRepository
             $where .= ' AND a.is_paid = 1 AND (a.paid_until IS NULL OR a.paid_until > NOW())';
         }
 
-        $orderBy = 'a.published_at DESC';
+        $orderBy = 'a.featured_at DESC, a.published_at DESC';
         if (!empty($filters['order'])) {
             switch ($filters['order']) {
                 case 'popular':
@@ -119,7 +119,7 @@ class ArticleRepository
                     $orderBy = 'a.published_at ASC';
                     break;
                 default:
-                    $orderBy = 'a.published_at DESC';
+                    $orderBy = 'a.featured_at DESC, a.published_at DESC';
             }
         }
 
@@ -127,7 +127,7 @@ class ArticleRepository
         $offset = $filters['offset'] ?? 0;
 
         $stmt = $this->db->prepare("
-            SELECT a.*, u.name as author_name, up.avatar_url as author_avatar, ac.name as category_name, ac.slug as category_slug
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar, ac.name as category_name, ac.slug as category_slug
             FROM articles a
             LEFT JOIN users u ON a.author_id = u.id
             LEFT JOIN user_profiles up ON a.author_id = up.user_id
@@ -190,7 +190,7 @@ class ArticleRepository
         $fields = [];
         $params = [':id' => $id];
 
-        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'image_url', 'category_id', 'featured', 'status', 'rejection_reason'];
+        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'image_url', 'category_id', 'featured', 'featured_at', 'status', 'rejection_reason', 'is_paid', 'paid_plan', 'paid_until', 'paid_banner_image', 'paid_banner_url'];
 
         foreach ($allowedFields as $field) {
             if (isset($data[$field])) {
@@ -330,7 +330,7 @@ class ArticleRepository
     public function getRelated($articleId, $categoryId, $limit = 3)
     {
         $stmt = $this->db->prepare("
-            SELECT a.*, u.name as author_name, up.avatar_url as author_avatar
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar
             FROM articles a
             LEFT JOIN users u ON a.author_id = u.id
             LEFT JOIN user_profiles up ON a.author_id = up.user_id
@@ -362,13 +362,17 @@ class ArticleRepository
             $params[':status'] = $filters['status'];
         }
 
+        if (!empty($filters['is_paid'])) {
+            $where .= ' AND a.is_paid = 1';
+        }
+
         $orderBy = 'a.created_at DESC';
 
         $limit = $filters['limit'] ?? 50;
         $offset = $filters['offset'] ?? 0;
 
         $stmt = $this->db->prepare("
-            SELECT a.*, u.name as author_name, u.email as author_email, up.avatar_url as author_avatar, ac.name as category_name
+            SELECT a.*, u.name as author_name, u.email as author_email, up.headline as author_headline, up.avatar_url as author_avatar, ac.name as category_name
             FROM articles a
             LEFT JOIN users u ON a.author_id = u.id
             LEFT JOIN user_profiles up ON a.author_id = up.user_id
@@ -393,7 +397,8 @@ class ArticleRepository
                 SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
                 SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END) as published,
                 SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
-                SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) as draft
+                SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) as draft,
+                SUM(CASE WHEN status = 'pending' AND is_paid = 1 THEN 1 ELSE 0 END) as paid_pending
             FROM articles
             WHERE deleted_at IS NULL
         ");
@@ -406,7 +411,7 @@ class ArticleRepository
     public function getPublishedByAuthor($authorId, $limit = 10, $offset = 0)
     {
         $stmt = $this->db->prepare("
-            SELECT a.*, u.name as author_name, up.avatar_url as author_avatar, up.slug as author_slug,
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar, up.slug as author_slug,
                    ac.name as category_name, ac.slug as category_slug
             FROM articles a
             LEFT JOIN users u ON a.author_id = u.id

@@ -779,6 +779,25 @@ class PaymentController
                 $tx = $stmt->fetch(PDO::FETCH_ASSOC);
 
                 if ($tx) {
+                    // Publieditorial: update article as paid
+                    if (!empty($tx['module_key']) && $tx['module_key'] === 'publeditorial') {
+                        $stmt = $this->db->prepare("UPDATE transactions SET status = 'approved', gateway_id = :mp_id, payment_method = :method, approved_at = NOW() WHERE id = :id");
+                        $stmt->execute([':mp_id' => $resourceId, ':method' => $paymentData['payment_method_id'] ?? 'mercadopago', ':id' => $externalRef]);
+
+                        // Extract article_id from description
+                        $articleId = null;
+                        if (!empty($tx['description']) && preg_match('/article_id:(\d+)/', $tx['description'], $m)) {
+                            $articleId = (int)$m[1];
+                        }
+                        if ($articleId) {
+                            $duration = $tx['duration_days'] ?? ($tx['feature_key'] === 'premium' ? 60 : 30);
+                            $paidUntil = date('Y-m-d H:i:s', strtotime("+{$duration} days"));
+                            $stmt = $this->db->prepare('UPDATE articles SET is_paid = 1, paid_plan = :plan, paid_until = :until WHERE id = :id');
+                            $stmt->execute([':plan' => $tx['feature_key'], ':until' => $paidUntil, ':id' => $articleId]);
+                        }
+                        return Response::json(['status' => 'publeditorial_activated'], 200);
+                    }
+
                     // Se tem module_key, processa como módulo
                     if (!empty($tx['module_key'])) {
                         $isDriverVerification = ($tx['module_key'] === 'driver' && $tx['feature_key'] === 'document_verification');
@@ -1708,6 +1727,84 @@ class PaymentController
         }
 
         return Response::json(['success' => false, 'message' => 'Erro ao gerar link de pagamento'], 500);
+    }
+
+    /**
+     * POST /api/articles/purchase-publieditorial - Pay for publieditorial
+     */
+    public function purchasePublieditorial($data, $loggedUser = null)
+    {
+        $user = $loggedUser ?: \App\Core\Auth::requireAuth();
+        $userId = $user['id'];
+
+        $articleId = $data['article_id'] ?? null;
+        $plan = $data['plan'] ?? '';
+        $paymentMethod = $data['payment_method'] ?? 'auto';
+
+        if (!$articleId || !in_array($plan, ['standard', 'premium'])) {
+            return Response::json(['success' => false, 'message' => 'Parâmetros inválidos'], 400);
+        }
+
+        // Check article ownership
+        $stmt = $this->db->prepare('SELECT * FROM articles WHERE id = :id AND author_id = :user_id');
+        $stmt->execute([':id' => $articleId, ':user_id' => $userId]);
+        $article = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$article) {
+            return Response::json(['success' => false, 'message' => 'Artigo não encontrado'], 404);
+        }
+
+        if ($article['is_paid']) {
+            return Response::json(['success' => false, 'message' => 'Artigo já é publieditorial'], 400);
+        }
+
+        // Get pricing
+        $rule = $this->paymentRepo->findPricingRule('publeditorial', $plan);
+        $amount = $rule ? floatval($rule['price_per_use']) : ($plan === 'premium' ? 497 : 297);
+        $durationDays = $rule ? intval($rule['duration_days'] ?? ($plan === 'premium' ? 60 : 30)) : ($plan === 'premium' ? 60 : 30);
+        $planName = $plan === 'premium' ? 'Premium' : 'Standard';
+
+        // Wallet payment
+        if ($paymentMethod === 'wallet' || $paymentMethod === 'auto') {
+            $balance = $this->creditService->getBalance($userId);
+            if ($balance >= $amount) {
+                $txId = $this->creditService->debit($userId, $amount, "Publieditorial {$planName}");
+                if ($txId) {
+                    $paidUntil = date('Y-m-d H:i:s', strtotime("+{$durationDays} days"));
+                    $stmt = $this->db->prepare('UPDATE articles SET is_paid = 1, paid_plan = :plan, paid_until = :until WHERE id = :id');
+                    $stmt->execute([':plan' => $plan, ':until' => $paidUntil, ':id' => $articleId]);
+                    return Response::json(['success' => true, 'payment_method' => 'wallet', 'transaction_id' => $txId]);
+                }
+            }
+            if ($paymentMethod === 'wallet') {
+                return Response::json(['success' => false, 'message' => 'Saldo insuficiente'], 402);
+            }
+        }
+
+        // MP payment
+        $result = $this->mpService->createPreference([
+            'amount' => $amount,
+            'title' => "Publieditorial {$planName}",
+            'duration_days' => $durationDays,
+            'billing_cycle' => 'one_time',
+            'module_key' => 'publeditorial',
+            'feature_key' => $plan,
+        ], $userId);
+
+        if (!empty($result['init_point'])) {
+            // Store article_id in gateway_payload for webhook processing
+            $this->db->prepare('UPDATE transactions SET description = :desc WHERE id = :id')
+                ->execute([':desc' => "article_id:{$articleId}", ':id' => $result['transaction_id']]);
+
+            return Response::json([
+                'success' => true,
+                'checkout_url' => $result['init_point'],
+                'transaction_id' => $result['transaction_id'],
+                'amount' => $amount,
+            ]);
+        }
+
+        return Response::json(['success' => false, 'message' => 'Erro ao gerar pagamento'], 500);
     }
 
     private function activateModuleForUser(int $userId, string $moduleKey, int $transactionId): void

@@ -371,6 +371,7 @@ class UserRepository
             // 4. Atualiza Vitrine e Dados Técnicos (user_profiles)
             $sqlProfile = 'UPDATE user_profiles SET
                             bio = :bio,
+                            headline = :headline,
                             avatar_url = COALESCE(:avatar, avatar_url),
                             cover_url = COALESCE(:cover, cover_url),
                             vehicle_type = :v_type,
@@ -388,6 +389,7 @@ class UserRepository
 
             $this->db->prepare($sqlProfile)->execute([
                 ':bio'       => $nullIfEmpty($data['bio'] ?? null),
+                ':headline'  => $nullIfEmpty($data['headline'] ?? null),
                 ':avatar'    => $data['avatar_url'] ?? null,
                 ':cover'     => $data['cover_url'] ?? null,
                 ':v_type'    => $data['vehicle_type'] ?? null,
@@ -445,7 +447,7 @@ class UserRepository
                     u.user_type, u.account_id, u.parent_id,
                     u.city as user_city, u.state as user_state, u.is_verified,
                     a.document_number as document, a.corporate_name, a.trade_name as account_trade_name,
-                    p.avatar_url, p.cover_url, p.bio, p.slug,
+                    p.avatar_url, p.cover_url, p.bio, p.headline, p.slug,
                     u.city as profile_city, u.state as profile_state,
                     p.vehicle_type, p.body_type, p.verification_status,
                     p.availability_status, p.extended_attributes,

@@ -248,6 +248,7 @@ try {
 
     if ($loggedUser) {
         $router->post('/api/articles', 'ArticleController@store');
+        $router->post('/api/articles/upload-image', 'ArticleController@uploadImage');
         $router->put('/api/articles/:id', 'ArticleController@update');
         $router->delete('/api/articles/:id', 'ArticleController@destroy');
 
@@ -305,6 +306,7 @@ try {
 
     // --- DESTAQUE/URGENTE DE FRETE ---
     $router->post('/api/freight/promote', 'PaymentController@promoteFreight');
+    $router->post('/api/articles/purchase-publieditorial', 'PaymentController@purchasePublieditorial');
 
     // --- DRIVER VERIFICATION ---
     $router->post('/api/driver/verification/purchase', 'PaymentController@purchaseDriverVerification');

@@ -105,11 +105,20 @@ class ArticleController
             $related = $this->articleRepo->getRelated($article['id'], $article['category_id']);
         }
 
+        // Get popular articles
+        $popular = $this->articleRepo->getAll(['order' => 'popular', 'limit' => 5]);
+
+        // Get author's other articles
+        $authorArticles = $this->articleRepo->getPublishedByAuthor($article['author_id'], 5);
+        $authorArticles = array_values(array_filter($authorArticles, fn($a) => $a['id'] != $article['id']));
+
         return Response::json([
             'success' => true,
             'data' => [
                 'article' => $article,
                 'related' => $related,
+                'popular' => $popular,
+                'author_articles' => $authorArticles,
             ],
         ]);
     }
@@ -169,15 +178,10 @@ class ArticleController
             $counter++;
         }
 
-        // Check if it's a paid article (publieditorial)
-        $isPaid = !empty($data['is_paid']);
-        $paidPlan = $data['paid_plan'] ?? null;
+        // Check if it's a paid article (publieditorial) — only set after payment
+        $isPaid = false;
+        $paidPlan = null;
         $paidUntil = null;
-
-        if ($isPaid && $paidPlan) {
-            $duration = ($paidPlan === 'premium') ? 60 : 30;
-            $paidUntil = date('Y-m-d H:i:s', strtotime("+{$duration} days"));
-        }
 
         $articleId = $this->articleRepo->create([
             'title' => $data['title'],
@@ -266,8 +270,33 @@ class ArticleController
             'slug' => $slug,
             'excerpt' => $data['excerpt'] ?? $article['excerpt'],
             'content' => $data['content'] ?? $article['content'],
+            'image_url' => $data['image_url'] ?? $article['image_url'],
             'category_id' => $data['category_id'] ?? $article['category_id'],
         ];
+
+        // Featured (admin only)
+        if (isset($data['featured']) && Auth::hasRole('admin')) {
+            $updateData['featured'] = $data['featured'] ? 1 : 0;
+            $updateData['featured_at'] = $data['featured'] ? date('Y-m-d H:i:s') : null;
+        }
+
+        // Paid article (publieditorial)
+        $isPaid = !empty($data['is_paid']);
+        $paidPlan = $data['paid_plan'] ?? $article['paid_plan'];
+        $updateData['is_paid'] = $isPaid;
+        $updateData['paid_plan'] = $isPaid ? $paidPlan : null;
+
+        if ($isPaid && $paidPlan) {
+            $duration = ($paidPlan === 'premium') ? 60 : 30;
+            if (empty($article['paid_until']) || $article['paid_until'] < date('Y-m-d H:i:s')) {
+                $updateData['paid_until'] = date('Y-m-d H:i:s', strtotime("+{$duration} days"));
+            }
+        } else {
+            $updateData['paid_until'] = null;
+        }
+
+        $updateData['paid_banner_image'] = $data['paid_banner_image'] ?? $article['paid_banner_image'];
+        $updateData['paid_banner_url'] = $data['paid_banner_url'] ?? $article['paid_banner_url'];
 
         // If not admin, any edit resets to pending for re-approval
         if (!Auth::hasRole('admin') && $article['status'] !== 'draft') {
@@ -389,6 +418,7 @@ class ArticleController
 
         $filters = [
             'status' => $data['status'] ?? null,
+            'is_paid' => $data['is_paid'] ?? null,
             'limit' => min((int)($data['limit'] ?? 50), 100),
             'offset' => (int)($data['offset'] ?? 0),
         ];
@@ -405,6 +435,7 @@ class ArticleController
                     'pending' => (int)$stats['pending'],
                     'published' => (int)$stats['published'],
                     'rejected' => (int)$stats['rejected'],
+                    'paid_pending' => (int)$stats['paid_pending'],
                 ],
             ],
         ]);
@@ -473,6 +504,63 @@ class ArticleController
                 'offset' => $offset,
             ],
         ]);
+    }
+
+    /**
+     * POST /api/articles/upload-image - Upload article featured image
+     */
+    public function uploadImage()
+    {
+        $user = Auth::requireAuth();
+
+        if (empty($_FILES['image'])) {
+            return Response::json(['success' => false, 'message' => 'Nenhuma imagem enviada'], 400);
+        }
+
+        $file = $_FILES['image'];
+
+        if ($file['error'] !== UPLOAD_ERR_OK) {
+            $messages = [
+                UPLOAD_ERR_INI_SIZE => 'Arquivo excede o limite máximo do servidor (2MB)',
+                UPLOAD_ERR_FORM_SIZE => 'Arquivo excede o limite máximo do formulário',
+                UPLOAD_ERR_PARTIAL => 'Upload foi parcialmente enviado',
+                UPLOAD_ERR_NO_FILE => 'Nenhum arquivo foi enviado',
+                UPLOAD_ERR_NO_TMP_DIR => 'Pasta temporária ausente no servidor',
+                UPLOAD_ERR_CANT_WRITE => 'Falha ao escrever arquivo no disco',
+            ];
+            $msg = $messages[$file['error']] ?? 'Erro desconhecido no upload';
+            return Response::json(['success' => false, 'message' => $msg], 400);
+        }
+
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        $allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+
+        if (!in_array($ext, $allowedExts)) {
+            return Response::json(['success' => false, 'message' => 'Formato não permitido. Use JPG, PNG ou WebP.'], 400);
+        }
+
+        if ($file['size'] > 5 * 1024 * 1024) {
+            return Response::json(['success' => false, 'message' => 'Imagem deve ter no máximo 5MB'], 400);
+        }
+
+        $targetDir = __DIR__ . '/../../public/uploads/articles/';
+        if (!is_dir($targetDir)) {
+            mkdir($targetDir, 0777, true);
+        }
+
+        $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $fileName = 'article_' . $user['id'] . '_' . time() . '_' . uniqid() . '.' . $ext;
+
+        if (move_uploaded_file($file['tmp_name'], $targetDir . $fileName)) {
+            return Response::json([
+                'success' => true,
+                'data' => ['url' => '/uploads/articles/' . $fileName],
+            ]);
+        }
+
+        $error = error_get_last();
+        error_log('Erro ao salvar imagem: ' . ($error['message'] ?? 'move_uploaded_file failed'));
+        return Response::json(['success' => false, 'message' => 'Erro ao salvar imagem'], 500);
     }
 
     /**
