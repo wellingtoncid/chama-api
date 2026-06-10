@@ -24,8 +24,8 @@ class ArticleRepository
     public function create($data)
     {
         $stmt = $this->db->prepare('
-            INSERT INTO articles (title, slug, excerpt, content, image_url, author_id, category_id, featured, is_paid, paid_plan, paid_until, paid_banner_image, paid_banner_url, status, created_at)
-            VALUES (:title, :slug, :excerpt, :content, :image_url, :author_id, :category_id, :featured, :is_paid, :paid_plan, :paid_until, :paid_banner_image, :paid_banner_url, :status, NOW())
+            INSERT INTO articles (title, slug, excerpt, content, image_url, author_id, category_id, featured, is_paid, is_ai_generated, paid_plan, paid_until, paid_banner_image, paid_banner_url, status, created_at)
+            VALUES (:title, :slug, :excerpt, :content, :image_url, :author_id, :category_id, :featured, :is_paid, :is_ai_generated, :paid_plan, :paid_until, :paid_banner_image, :paid_banner_url, :status, NOW())
         ');
 
         $stmt->execute([
@@ -38,6 +38,7 @@ class ArticleRepository
             ':category_id' => $data['category_id'] ?? null,
             ':featured' => $data['featured'] ?? false,
             ':is_paid' => $data['is_paid'] ?? false,
+            ':is_ai_generated' => $data['is_ai_generated'] ?? false,
             ':paid_plan' => $data['paid_plan'] ?? null,
             ':paid_until' => $data['paid_until'] ?? null,
             ':paid_banner_image' => $data['paid_banner_image'] ?? null,
@@ -190,7 +191,7 @@ class ArticleRepository
         $fields = [];
         $params = [':id' => $id];
 
-        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'image_url', 'category_id', 'featured', 'featured_at', 'status', 'rejection_reason', 'is_paid', 'paid_plan', 'paid_until', 'paid_banner_image', 'paid_banner_url'];
+        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'image_url', 'category_id', 'featured', 'featured_at', 'status', 'rejection_reason', 'is_paid', 'is_ai_generated', 'paid_plan', 'paid_until', 'paid_banner_image', 'paid_banner_url'];
 
         foreach ($allowedFields as $field) {
             if (isset($data[$field])) {
@@ -372,7 +373,7 @@ class ArticleRepository
         $offset = $filters['offset'] ?? 0;
 
         $stmt = $this->db->prepare("
-            SELECT a.*, u.name as author_name, u.email as author_email, up.headline as author_headline, up.avatar_url as author_avatar, ac.name as category_name
+            SELECT a.*, u.name as author_name, u.email as author_email, u.plagiarism_strikes, up.headline as author_headline, up.avatar_url as author_avatar, ac.name as category_name
             FROM articles a
             LEFT JOIN users u ON a.author_id = u.id
             LEFT JOIN user_profiles up ON a.author_id = up.user_id

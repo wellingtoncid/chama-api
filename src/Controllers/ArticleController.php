@@ -141,11 +141,27 @@ class ArticleController
             ], 403);
         }
 
+        // Check plagiarism strikes
+        $stmt = $this->articleRepo->getDb()->prepare("SELECT plagiarism_strikes FROM users WHERE id = :id");
+        $stmt->execute([':id' => $user['id']]);
+        $plagiarismStrikes = (int)$stmt->fetchColumn();
+        if ($plagiarismStrikes >= 3) {
+            return Response::json([
+                'success' => false,
+                'message' => 'Seu acesso de publicação foi bloqueado devido a reincidências de plágio. Entre em contato com o suporte.',
+            ], 403);
+        }
+
         $required = ['title', 'content'];
         foreach ($required as $field) {
             if (empty($data[$field])) {
                 return Response::json(['success' => false, 'message' => "{$field} é obrigatório"], 400);
             }
+        }
+
+        // is_ai_generated must be explicitly provided (true or false)
+        if (!isset($data['is_ai_generated'])) {
+            return Response::json(['success' => false, 'message' => 'Informe se o artigo foi gerado com auxílio de inteligência artificial'], 400);
         }
 
         // Validate character limits
@@ -193,6 +209,7 @@ class ArticleController
             'category_id' => $data['category_id'] ?? null,
             'featured' => false,
             'is_paid' => $isPaid,
+            'is_ai_generated' => !empty($data['is_ai_generated']),
             'paid_plan' => $paidPlan,
             'paid_until' => $paidUntil,
             'paid_banner_image' => $data['paid_banner_image'] ?? null,
@@ -272,6 +289,7 @@ class ArticleController
             'content' => $data['content'] ?? $article['content'],
             'image_url' => $data['image_url'] ?? $article['image_url'],
             'category_id' => $data['category_id'] ?? $article['category_id'],
+            'is_ai_generated' => isset($data['is_ai_generated']) ? ($data['is_ai_generated'] ? 1 : 0) : $article['is_ai_generated'],
         ];
 
         // Featured (admin only)
@@ -303,7 +321,14 @@ class ArticleController
             $updateData['status'] = 'pending';
         }
 
-        $this->articleRepo->update($id, $updateData);
+        $result = $this->articleRepo->update($id, $updateData);
+        if (!$result) {
+            error_log('ArticleController::update - falhou ao atualizar artigo ID: ' . $id . ' data: ' . json_encode($updateData));
+            return Response::json([
+                'success' => false,
+                'message' => 'Erro ao salvar alterações no banco',
+            ], 500);
+        }
 
         return Response::json([
             'success' => true,
@@ -342,6 +367,7 @@ class ArticleController
 
         $id = (int)$data['id'];
         $reason = $data['reason'] ?? 'Artigo não atender aos critérios de publicação';
+        $rejectionType = $data['rejection_type'] ?? 'other';
 
         $article = $this->articleRepo->findById($id);
         if (!$article) {
@@ -349,6 +375,12 @@ class ArticleController
         }
 
         $this->articleRepo->reject($id, $reason);
+
+        // If plagiarism, increment strikes on author
+        if ($rejectionType === 'plagiarism') {
+            $stmt = $this->articleRepo->getDb()->prepare("UPDATE users SET plagiarism_strikes = plagiarism_strikes + 1 WHERE id = :id");
+            $stmt->execute([':id' => $article['author_id']]);
+        }
 
         return Response::json([
             'success' => true,

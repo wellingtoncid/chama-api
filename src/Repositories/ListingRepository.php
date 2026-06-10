@@ -253,7 +253,7 @@ class ListingRepository
             FROM listings l
             JOIN users u ON l.user_id = u.id
             LEFT JOIN user_profiles p ON u.id = p.user_id
-            WHERE l.slug = ? AND l.status IN ('active', 'paused', 'sold')
+            WHERE l.slug = ? AND l.status IN ('active', 'paused', 'sold', 'expired')
         ");
         $stmt->execute([$slug]);
         $listing = $stmt->fetch(PDO::FETCH_ASSOC);

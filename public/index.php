@@ -21,6 +21,9 @@ if (file_exists($envFile)) {
 $appEnv = $_ENV['APP_ENV'] ?? 'local';
 $isProduction = $appEnv === 'production';
 
+// Fuso horário Brasil (mesmo do MySQL)
+date_default_timezone_set('America/Sao_Paulo');
+
 // 2. CORS e Headers
 $allowedOrigins = $isProduction
     ? ['https://www.chamafrete.com.br', 'https://chamafrete.com.br']

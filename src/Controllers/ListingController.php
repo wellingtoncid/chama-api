@@ -305,6 +305,7 @@ class ListingController
 
     public function getAll($data)
     {
+        $this->repository->expireOldListings();
         $page = $data['page'] ?? 1;
         $filters = [
             'category' => $data['category'] ?? null,
@@ -338,7 +339,11 @@ class ListingController
 
     public function getPublicBySlug($data)
     {
-        $slug = $data['slug'] ?? '';
+        $url = $data['slug'] ?? '';
+        // Extrair slug da URL (se for URL completa)
+        $slug = basename($url);
+
+        $this->repository->expireOldListings();
 
         if (!$slug) {
             return Response::json(['success' => false, 'message' => 'Slug não informado'], 400);
@@ -350,10 +355,8 @@ class ListingController
             return Response::json(['success' => false, 'message' => 'Anúncio não encontrado'], 404);
         }
 
-        // Verificar se listing expirou
-        if ($listing['expires_at'] && strtotime($listing['expires_at']) < time()) {
-            return Response::json(['success' => false, 'message' => 'Anúncio expirado'], 410);
-        }
+        // Marcar se expirou (mas ainda retorna os dados)
+        $listing['is_expired'] = $listing['expires_at'] && strtotime($listing['expires_at']) < time();
 
         $listing['gallery'] = $this->repository->getImages($listing['id']);
 
@@ -410,6 +413,7 @@ class ListingController
             return Response::json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
 
+        $this->repository->expireOldListings();
         $userId = $loggedUser['id'];
         $listings = $this->repository->findByUser($userId);
 
