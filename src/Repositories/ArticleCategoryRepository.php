@@ -21,7 +21,7 @@ class ArticleCategoryRepository
         $stmt = $this->db->query('
             SELECT * FROM article_categories
             WHERE deleted_at IS NULL
-            ORDER BY name ASC
+            ORDER BY sort_order ASC, name ASC
         ');
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -34,7 +34,7 @@ class ArticleCategoryRepository
         $stmt = $this->db->query('
             SELECT * FROM article_categories
             WHERE deleted_at IS NULL
-            ORDER BY name ASC
+            ORDER BY sort_order ASC, name ASC
         ');
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }

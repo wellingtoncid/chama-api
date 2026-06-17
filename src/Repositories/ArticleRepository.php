@@ -24,8 +24,8 @@ class ArticleRepository
     public function create($data)
     {
         $stmt = $this->db->prepare('
-            INSERT INTO articles (title, slug, excerpt, content, image_url, author_id, category_id, featured, is_paid, is_ai_generated, paid_plan, paid_until, paid_banner_image, paid_banner_url, status, created_at)
-            VALUES (:title, :slug, :excerpt, :content, :image_url, :author_id, :category_id, :featured, :is_paid, :is_ai_generated, :paid_plan, :paid_until, :paid_banner_image, :paid_banner_url, :status, NOW())
+            INSERT INTO articles (title, slug, excerpt, content, image_url, author_id, category_id, tags, featured, is_paid, is_ai_generated, paid_plan, paid_until, paid_banner_image, paid_banner_url, status, created_at)
+            VALUES (:title, :slug, :excerpt, :content, :image_url, :author_id, :category_id, :tags, :featured, :is_paid, :is_ai_generated, :paid_plan, :paid_until, :paid_banner_image, :paid_banner_url, :status, NOW())
         ');
 
         $stmt->execute([
@@ -36,6 +36,7 @@ class ArticleRepository
             ':image_url' => $data['image_url'] ?? null,
             ':author_id' => $data['author_id'],
             ':category_id' => $data['category_id'] ?? null,
+            ':tags' => isset($data['tags']) ? json_encode($data['tags'], JSON_UNESCAPED_UNICODE) : null,
             ':featured' => $data['featured'] ?? false,
             ':is_paid' => $data['is_paid'] ?? false,
             ':is_ai_generated' => $data['is_ai_generated'] ?? false,
@@ -63,7 +64,7 @@ class ArticleRepository
             WHERE a.id = :id AND a.deleted_at IS NULL
         ');
         $stmt->execute([':id' => $id]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetch(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -81,7 +82,7 @@ class ArticleRepository
             WHERE a.slug = :slug AND a.status = 'published' AND a.deleted_at IS NULL
         ");
         $stmt->execute([':slug' => $slug]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetch(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -139,7 +140,7 @@ class ArticleRepository
         ");
 
         $stmt->execute(array_merge($params, [':limit' => $limit, ':offset' => $offset]));
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -156,7 +157,7 @@ class ArticleRepository
             LIMIT :limit OFFSET :offset
         ");
         $stmt->execute([':limit' => $limit, ':offset' => $offset]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -180,7 +181,7 @@ class ArticleRepository
             ORDER BY a.created_at DESC
         ");
         $stmt->execute($params);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -191,12 +192,12 @@ class ArticleRepository
         $fields = [];
         $params = [':id' => $id];
 
-        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'image_url', 'category_id', 'featured', 'featured_at', 'status', 'rejection_reason', 'is_paid', 'is_ai_generated', 'paid_plan', 'paid_until', 'paid_banner_image', 'paid_banner_url'];
+        $allowedFields = ['title', 'slug', 'excerpt', 'content', 'image_url', 'category_id', 'tags', 'featured', 'featured_at', 'status', 'rejection_reason', 'is_paid', 'is_ai_generated', 'paid_plan', 'paid_until', 'paid_banner_image', 'paid_banner_url'];
 
         foreach ($allowedFields as $field) {
             if (isset($data[$field])) {
                 $fields[] = "{$field} = :{$field}";
-                $params[":{$field}"] = $data[$field];
+                $params[":{$field}"] = $field === 'tags' ? json_encode($data[$field], JSON_UNESCAPED_UNICODE) : $data[$field];
             }
         }
 
@@ -347,7 +348,7 @@ class ArticleRepository
             ':category_id' => $categoryId,
             ':limit' => $limit,
         ]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -384,7 +385,7 @@ class ArticleRepository
         ");
 
         $stmt->execute(array_merge($params, [':limit' => $limit, ':offset' => $offset]));
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -426,7 +427,7 @@ class ArticleRepository
         $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
         $stmt->bindValue(':offset', (int)$offset, PDO::PARAM_INT);
         $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -443,6 +444,73 @@ class ArticleRepository
     }
 
     /**
+     * Get most read articles (top by views_count)
+     */
+    public function getMostRead($limit = 5)
+    {
+        $stmt = $this->db->prepare("
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar, ac.name as category_name, ac.slug as category_slug
+            FROM articles a
+            LEFT JOIN users u ON a.author_id = u.id
+            LEFT JOIN user_profiles up ON a.author_id = up.user_id
+            LEFT JOIN article_categories ac ON a.category_id = ac.id
+            WHERE a.status = 'published' AND a.deleted_at IS NULL
+            ORDER BY a.views_count DESC
+            LIMIT :limit
+        ");
+        $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * Get latest articles from each unique author (colunistas)
+     */
+    public function getColunistas($limit = 5)
+    {
+        $stmt = $this->db->prepare("
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar, up.slug as author_slug, ac.name as category_name, ac.slug as category_slug
+            FROM articles a
+            INNER JOIN (
+                SELECT author_id, MAX(published_at) as last_pub
+                FROM articles
+                WHERE status = 'published' AND deleted_at IS NULL
+                GROUP BY author_id
+                ORDER BY last_pub DESC
+                LIMIT :limit
+            ) latest ON a.author_id = latest.author_id AND a.published_at = latest.last_pub
+            LEFT JOIN users u ON a.author_id = u.id
+            LEFT JOIN user_profiles up ON a.author_id = up.user_id
+            LEFT JOIN article_categories ac ON a.category_id = ac.id
+            WHERE a.status = 'published' AND a.deleted_at IS NULL
+            ORDER BY a.published_at DESC
+        ");
+        $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * Get latest published articles
+     */
+    public function getLatest($limit = 5)
+    {
+        $stmt = $this->db->prepare("
+            SELECT a.*, u.name as author_name, up.headline as author_headline, up.avatar_url as author_avatar, ac.name as category_name, ac.slug as category_slug
+            FROM articles a
+            LEFT JOIN users u ON a.author_id = u.id
+            LEFT JOIN user_profiles up ON a.author_id = up.user_id
+            LEFT JOIN article_categories ac ON a.category_id = ac.id
+            WHERE a.status = 'published' AND a.deleted_at IS NULL
+            ORDER BY a.published_at DESC
+            LIMIT :limit
+        ");
+        $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
      * Get expired paid articles
      */
     public function getExpiredPaidArticles()
@@ -454,7 +522,7 @@ class ArticleRepository
             AND paid_until < NOW()
             AND status = 'published'
         ");
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->formatTags($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -468,5 +536,23 @@ class ArticleRepository
             WHERE id = :id
         ');
         return $stmt->execute([':id' => $id]);
+    }
+
+    private function formatTags($articles)
+    {
+        if (empty($articles)) return $articles;
+
+        if (isset($articles['id'])) {
+            if (isset($articles['tags']) && is_string($articles['tags'])) {
+                $articles['tags'] = json_decode($articles['tags'], true) ?? [];
+            }
+        } else {
+            foreach ($articles as &$a) {
+                if (isset($a['tags']) && is_string($a['tags'])) {
+                    $a['tags'] = json_decode($a['tags'], true) ?? [];
+                }
+            }
+        }
+        return $articles;
     }
 }

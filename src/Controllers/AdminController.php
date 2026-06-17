@@ -243,7 +243,7 @@ class AdminController
                 $byCategory[$cat][$key] = $s['setting_value'];
             }
             // Override 4 list keys with live data from lookup_lists (formato {value, label})
-            $listTypes = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types'];
+            $listTypes = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types', 'article_tags'];
             foreach ($listTypes as $lt) {
                 $stmtL = $this->db->prepare(
                     'SELECT value, label FROM lookup_lists WHERE list_type = ? AND is_active = 1 ORDER BY sort_order ASC'
@@ -301,7 +301,7 @@ class AdminController
             $key = $data['key'] ?? null;
             $value = $data['value'] ?? null;
             // Bloqueia salvamento das listas — gerenciadas via CRUD próprio
-            $blockedListKeys = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types', 'article_categories'];
+            $blockedListKeys = ['vehicle_types', 'body_types', 'equipment_types', 'certification_types', 'article_categories', 'article_tags'];
             foreach ($blockedListKeys as $bk) {
                 if (isset($data[$bk])) {
                     return Response::json([
@@ -357,7 +357,7 @@ class AdminController
 
     private function validateListType(string $type): bool
     {
-        return in_array($type, ['vehicle_types', 'body_types', 'equipment_types', 'certification_types']);
+        return in_array($type, ['vehicle_types', 'body_types', 'equipment_types', 'certification_types', 'article_tags']);
     }
 
     public function listItems($data, $loggedUser)

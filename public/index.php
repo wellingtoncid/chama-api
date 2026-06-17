@@ -235,6 +235,7 @@ try {
 
     // --- ARTIGOS ---
     $router->get('/api/articles', 'ArticleController@index');
+    $router->get('/api/articles/home', 'ArticleController@home');
 
     if ($loggedUser) {
         $router->get('/api/articles/me', 'ArticleController@myArticles');
@@ -246,7 +247,7 @@ try {
         $router->get('/api/articles/by-id/:id', 'ArticleController@showById');
     }
 
-    // IMPORTANTE: :slug deve vir DEPOIS de /me, /user/ e /by-id/, senão casam como slug
+    // IMPORTANTE: :slug deve vir DEPOIS de /me, /user/, /home e /by-id/, senão casam como slug
     $router->get('/api/articles/:slug', 'ArticleController@show');
 
     if ($loggedUser) {
@@ -266,6 +267,11 @@ try {
     // --- ARTIGOS - CATEGORIAS ---
     $router->get('/api/article-categories', 'ArticleCategoryController@getAll');
     $router->get('/api/article-categories/active', 'ArticleCategoryController@getActive');
+    $router->get('/api/article-tags', function () use ($db) {
+        $stmt = $db->query("SELECT value, label FROM lookup_lists WHERE list_type = 'article_tags' AND is_active = 1 ORDER BY sort_order ASC");
+        $tags = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return \App\Core\Response::json(['success' => true, 'data' => $tags]);
+    });
 
     // --- ARTIGOS - SOLICITAÇÃO DE AUTOR ---
     $router->get('/api/article-author-status', 'ArticleAuthorRequestController@status');

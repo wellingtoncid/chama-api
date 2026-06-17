@@ -20,6 +20,25 @@ class ArticleController
     }
 
     /**
+     * GET /api/articles/home - Homepage data (most_read, latest, colunistas)
+     */
+    public function home()
+    {
+        $mostRead = $this->articleRepo->getMostRead(5);
+        $latest = $this->articleRepo->getLatest(5);
+        $colunistas = $this->articleRepo->getColunistas(5);
+
+        return Response::json([
+            'success' => true,
+            'data' => [
+                'most_read' => $mostRead,
+                'latest' => $latest,
+                'colunistas' => $colunistas,
+            ],
+        ]);
+    }
+
+    /**
      * GET /api/articles - List published articles
      */
     public function index($data)
@@ -207,6 +226,7 @@ class ArticleController
             'image_url' => $data['image_url'] ?? null,
             'author_id' => $user['id'],
             'category_id' => $data['category_id'] ?? null,
+            'tags' => $data['tags'] ?? null,
             'featured' => false,
             'is_paid' => $isPaid,
             'is_ai_generated' => !empty($data['is_ai_generated']),
@@ -289,6 +309,7 @@ class ArticleController
             'content' => $data['content'] ?? $article['content'],
             'image_url' => $data['image_url'] ?? $article['image_url'],
             'category_id' => $data['category_id'] ?? $article['category_id'],
+            'tags' => $data['tags'] ?? null,
             'is_ai_generated' => isset($data['is_ai_generated']) ? ($data['is_ai_generated'] ? 1 : 0) : $article['is_ai_generated'],
         ];
 
