@@ -248,6 +248,26 @@ try {
     }
 
     // IMPORTANTE: :slug deve vir DEPOIS de /me, /user/, /home e /by-id/, senão casam como slug
+    // --- HEALTH CHECK ---
+    $router->get('/api/health', function () {
+        $db = Database::getConnection();
+        $dbStatus = $db ? 'connected' : 'disconnected';
+        $health = [
+            'success' => true,
+            'status' => $dbStatus === 'connected' ? 'healthy' : 'unhealthy',
+            'timestamp' => date('c'),
+            'services' => [
+                'database' => $dbStatus,
+                'disk' => [
+                    'free' => round(disk_free_space('/') / 1024 / 1024, 2) . 'MB',
+                    'used_percent' => round(100 - (disk_free_space('/') / disk_total_space('/') * 100), 2) . '%',
+                ],
+            ],
+            'version' => '1.0.0',
+        ];
+        return Response::json($health, $dbStatus === 'connected' ? 200 : 503);
+    });
+
     $router->get('/api/articles/:slug', 'ArticleController@show');
 
     if ($loggedUser) {

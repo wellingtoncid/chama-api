@@ -8,6 +8,7 @@ use App\Services\AccessControlService;
 use App\Services\CreditService;
 use App\Services\GeocodingService;
 use Exception;
+use PDO;
 
 class FreightController
 {

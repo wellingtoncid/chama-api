@@ -8,6 +8,7 @@ use App\Repositories\QuoteRepository;
 use App\Repositories\UserRepository;
 use App\Services\CreditService;
 use Exception;
+use PDO;
 
 class QuoteController
 {

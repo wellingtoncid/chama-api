@@ -1,6 +1,20 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
+
+    # Proteger adminer.php - exigir IP ou desabilitar em produção
+    # Descomente para liberar apenas seu IP:
+    # RewriteCond %{REMOTE_ADDR} !^192\.168\.1\.
+    # RewriteRule ^adminer\.php$ - [F,L]
+
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^(.*)$ index.php [QSA,L]
 </IfModule>
+
+# Proteger arquivos sensíveis
+<FilesMatch "\.(env|log|sql|md|lock)$">
+    Require all denied
+</FilesMatch>
+
+# Proteger diretórios
+Options -Indexes
