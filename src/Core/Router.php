@@ -88,6 +88,10 @@ class Router
             return ['success' => false, 'error' => "Rota {$this->uri} não encontrada"];
         }
 
+        if (is_callable($matchedHandler)) {
+            return $matchedHandler($data, $loggedUser ?? null);
+        }
+
         [$controllerName, $method] = explode('@', $matchedHandler);
         $controllerClass = "App\\Controllers\\$controllerName";
 
@@ -146,6 +150,10 @@ class Router
                 break;
 
             case 'ReviewController':
+                $controller = new $controllerClass($db);
+                break;
+
+            case 'PromotionController':
                 $controller = new $controllerClass($db);
                 break;
 

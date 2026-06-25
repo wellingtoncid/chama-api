@@ -310,6 +310,11 @@ try {
     $router->get('/api/group-categories', 'GroupCategoryController@getAll');
     $router->get('/api/group-categories/active', 'GroupCategoryController@getActive');
 
+    // --- PROMOÇÕES WHATSAPP (OpenWA) ---
+    $router->post('/api/promotions', 'PromotionController@store');
+    $router->get('/api/promotions', 'PromotionController@index');
+    $router->post('/api/promotions/:id/confirm-payment', 'PromotionController@confirmPayment');
+
     // --- PAGAMENTOS & MEMBRESIA ---
     $router->post('/api/checkout', 'PaymentController@checkout');
     $router->post('/api/payments/create', 'PaymentController@createPayment');
@@ -540,6 +545,14 @@ try {
         $router->delete('/api/admin/group-categories/:id', 'GroupCategoryController@delete');
         $router->post('/api/admin/group-categories/:id/toggle', 'GroupCategoryController@toggle');
         $router->post('/api/admin/group-categories/reorder', 'GroupCategoryController@reorder');
+
+        // Promoções WhatsApp (OpenWA)
+        $router->get('/api/admin/promotions', 'PromotionController@index');
+        $router->get('/api/admin/promotions/stats', 'PromotionController@stats');
+        $router->post('/api/admin/promotions/:id/approve', 'PromotionController@approve');
+        $router->post('/api/admin/promotions/:id/reject', 'PromotionController@reject');
+        $router->post('/api/admin/promotions/sync-groups', 'PromotionController@syncGroups');
+        $router->get('/api/admin/openwa/session', 'PromotionController@sessionStatus');
     }
 
     // Gestão de Artigos - permissão: marketplace.view
