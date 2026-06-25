@@ -53,3 +53,7 @@ Desktop.ini
 !/public/uploads/.gitkeep
 # --- DEV FILES (nunca subir) ---
 /_dev/
+/tmp_*
+tmp_*
+*.log
+test_*

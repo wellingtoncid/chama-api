@@ -1,4 +1,0 @@
-[Fri May 29 17:13:18 2026] PHP 8.3.6 Development Server (http://localhost:8000) started
-[Fri May 29 17:13:20 2026] 127.0.0.1:51944 Accepted
-[Fri May 29 17:13:20 2026] 127.0.0.1:51944 [404]: GET /api/ping
-[Fri May 29 17:13:20 2026] 127.0.0.1:51944 Closing

@@ -90,12 +90,12 @@ class MercadoPagoService
             $payload['auto_return'] = 'approved';
         }
 
-        $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE);
-        error_log('MercadoPagoService: Enviando para MP - ' . $jsonPayload);
-
         $response = $this->callAPI('POST', 'checkout/preferences', $payload);
 
-        error_log('MercadoPagoService: Resposta API - ' . json_encode($response));
+        $debug = ($_ENV['APP_DEBUG'] ?? false) === 'true';
+        if ($debug) {
+            error_log('MercadoPagoService: createPreference response - ID: ' . ($response['id'] ?? 'unknown'));
+        }
 
         if (empty($response) || isset($response['error'])) {
             throw new Exception('Erro do MercadoPago: ' . ($response['error'] ?? 'Resposta vazia'));
@@ -157,7 +157,6 @@ class MercadoPagoService
             curl_setopt($ch, CURLOPT_POST, true);
             $jsonBody = json_encode($payload, JSON_UNESCAPED_UNICODE);
             curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
-            error_log('MercadoPago API Request Body: ' . $jsonBody);
         }
 
         $response = curl_exec($ch);
@@ -165,12 +164,19 @@ class MercadoPagoService
         $error = curl_error($ch);
         curl_close($ch);
 
-        error_log("MercadoPago API: HTTP Code = {$httpCode}");
-
         if ($httpCode >= 400 || $error) {
+            $responseContent = $httpCode >= 400 ? substr($response, 0, 500) : '';
             error_log("MercadoPago API Error: HTTP {$httpCode} - {$error}");
-            error_log("MercadoPago API Error Response: {$response}");
-            return ['error' => "HTTP {$httpCode}: {$error}", 'response' => $response];
+            $debug = ($_ENV['APP_DEBUG'] ?? false) === 'true';
+            if ($debug && !empty($responseContent)) {
+                error_log("MercadoPago API Error Response (truncated): {$responseContent}");
+            }
+            return ['error' => "HTTP {$httpCode}: {$error}", 'response' => substr($response, 0, 1000)];
+        }
+
+        $debug = ($_ENV['APP_DEBUG'] ?? false) === 'true';
+        if ($debug) {
+            error_log("MercadoPago API: HTTP {$httpCode} - OK");
         }
 
         return json_decode($response, true);

@@ -21,6 +21,18 @@ if (file_exists($envFile)) {
 $appEnv = $_ENV['APP_ENV'] ?? 'local';
 $isProduction = $appEnv === 'production';
 
+// 1a. Sentry (error monitoring)
+$sentryDsn = $_ENV['SENTRY_DSN'] ?? '';
+if ($sentryDsn) {
+    \Sentry\init([
+        'dsn' => $sentryDsn,
+        'environment' => $appEnv,
+        'traces_sample_rate' => 1.0,
+        'profiles_sample_rate' => 1.0,
+        'enable_logs' => true,
+    ]);
+}
+
 // Fuso horário Brasil (mesmo do MySQL)
 date_default_timezone_set('America/Sao_Paulo');
 
