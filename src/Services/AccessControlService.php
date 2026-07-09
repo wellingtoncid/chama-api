@@ -230,29 +230,29 @@ class AccessControlService
      */
     private function getCurrentMonthUsage(int $userId, string $moduleKey): int
     {
-        $usageMonth = (int)date('n');
-        $usageYear = (int)date('Y');
+        $monthStart = date('Y-m-01 00:00:00');
+        $nextMonth = date('Y-m-01 00:00:00', strtotime('+1 month'));
 
         if ($moduleKey === 'freights') {
             $sql = 'SELECT COUNT(*) as total FROM freights
                    WHERE user_id = :user_id
-                   AND MONTH(created_at) = :month
-                   AND YEAR(created_at) = :year
+                   AND created_at >= :month_start
+                   AND created_at < :next_month
                    AND deleted_at IS NULL
                    AND status IN (\'OPEN\', \'PENDING\')';
         } else {
             $sql = "SELECT COUNT(*) as total FROM listings
                    WHERE user_id = :user_id
-                   AND MONTH(created_at) = :month
-                   AND YEAR(created_at) = :year
+                   AND created_at >= :month_start
+                   AND created_at < :next_month
                    AND status != 'rejected'";
         }
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute([
             ':user_id' => $userId,
-            ':month' => $usageMonth,
-            ':year' => $usageYear,
+            ':month_start' => $monthStart,
+            ':next_month' => $nextMonth,
         ]);
 
         return (int)($stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);

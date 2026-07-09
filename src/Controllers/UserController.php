@@ -159,7 +159,13 @@ class UserController
                 $data['name'] = $data['trade_name'];
             }
 
-            // 6. Salvar no banco (users, accounts, user_profiles)
+            // 6. Remover campos sensíveis que não podem ser alterados pelo perfil
+            unset($data['role'], $data['password'], $data['user_type'],
+                $data['status'], $data['account_id'], $data['email'],
+                $data['document_type'], $data['register_type'],
+                $data['deleted_at'], $data['permissions'], $data['id']);
+
+            // 7. Salvar no banco (users, accounts, user_profiles)
             $this->userRepo->updateFullProfile($userId, $data);
 
             // 7. Retornar perfil atualizado

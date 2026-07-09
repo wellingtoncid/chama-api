@@ -126,6 +126,12 @@ class AuthController
                 return Response::json(['success' => false, 'message' => 'Campos obrigatórios ausentes.'], 400);
             }
 
+            // Validação de senha
+            $passwordError = $this->validatePassword($data['password']);
+            if ($passwordError) {
+                return Response::json(['success' => false, 'message' => $passwordError], 400);
+            }
+
             // Sanitização dos dados vindos do Front
             $email = filter_var($data['email'], FILTER_SANITIZE_EMAIL);
             $whatsapp = preg_replace('/\D/', '', $data['whatsapp'] ?? '');
@@ -234,8 +240,9 @@ class AuthController
                 return Response::json(['success' => false, 'message' => 'Dados incompletos'], 400);
             }
 
-            if (strlen($newPassword) < 6) {
-                return Response::json(['success' => false, 'message' => 'A nova senha deve ter no mínimo 6 caracteres'], 400);
+            $passwordError = $this->validatePassword($newPassword);
+            if ($passwordError) {
+                return Response::json(['success' => false, 'message' => $passwordError], 400);
             }
 
             // Valida o token contra o banco (já checa expiração e status do usuário)
@@ -281,8 +288,9 @@ class AuthController
             return Response::json(['success' => false, 'message' => 'A nova senha e a confirmação não coincidem'], 400);
         }
 
-        if (strlen($newPassword) < 6) {
-            return Response::json(['success' => false, 'message' => 'A nova senha deve ter no mínimo 6 caracteres'], 400);
+        $passwordError = $this->validatePassword($newPassword);
+        if ($passwordError) {
+            return Response::json(['success' => false, 'message' => $passwordError], 400);
         }
 
         // Busca usuário completo para verificar senha atual
@@ -437,5 +445,22 @@ class AuthController
             error_log("Erro ao enviar boas-vindas para {$to}: " . $e->getMessage());
             return false;
         }
+    }
+
+    private function validatePassword(string $password): ?string
+    {
+        if (strlen($password) < 8) {
+            return 'A senha deve ter no mínimo 8 caracteres';
+        }
+        if (!preg_match('/[A-Z]/', $password)) {
+            return 'A senha deve conter pelo menos uma letra maiúscula';
+        }
+        if (!preg_match('/[a-z]/', $password)) {
+            return 'A senha deve conter pelo menos uma letra minúscula';
+        }
+        if (!preg_match('/[0-9]/', $password)) {
+            return 'A senha deve conter pelo menos um número';
+        }
+        return null;
     }
 }
